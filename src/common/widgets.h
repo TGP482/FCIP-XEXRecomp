@@ -1,0 +1,50 @@
+// the game's menu widgets as both images lay them out (CryUI): reading, captioning and cloning them
+#pragma once
+#include <cstdint>
+#include <initializer_list>
+
+struct PPCContext;
+
+namespace fcip::ui {
+
+// widget names, crc32 of the layout's names
+constexpr uint32_t kCrcRecompSettings = 0x7B8654F7u;  // B_RecompSettings
+constexpr uint32_t kCrcMouseKeyboard = 0xFF898DA7u;   // B_MouseKeyboard
+constexpr uint32_t kCrcMultiplayerSetup = 0x5FC27D09u;
+
+// CUIWidget
+constexpr uint32_t kWidgetNameCrc = 0x04u;
+constexpr uint32_t kWidgetElement = 0x08u;
+constexpr uint32_t kWidgetVisible = 0x18u;  // bit 0x80
+constexpr uint32_t kWidgetUp = 0x3Cu;       // then down, left, right
+constexpr uint32_t kWidgetDown = 0x40u;
+constexpr uint32_t kWidgetEnabled = 0x4Cu;  // bit 0x40
+constexpr uint32_t kPageNameCrc = 0x14u;
+
+// guest memory with a guard: menu objects sit on the heap below 0xC0000000
+bool AddrOk(uint32_t addr);
+uint32_t Read32(uint32_t addr);
+void Write32(uint32_t addr, uint32_t value);
+int16_t ReadS16(uint32_t addr);
+uint8_t Read8(uint32_t addr);
+void Write8(uint32_t addr, uint8_t value);
+
+// the container's child named name_crc, 0 if none
+uint32_t FindWidget(uint32_t container, uint32_t name_crc);
+// a UTF-16 copy of text in guest memory, and a std::wstring view of it the callee only reads; one buffer for all
+uint32_t Text(const char* text);
+uint32_t View(const char* text);
+void SetCaption(PPCContext& ctx, uint32_t element, const char* text);
+
+// our entries: caption, help and the panel page they open, by widget name; nullptr / -1 when not ours
+const char* CaptionFor(uint32_t crc);
+const char* HelpFor(uint32_t crc);
+int PageFor(uint32_t crc);
+void SetEntryCaptions(PPCContext& ctx, uint32_t page);
+
+// Adds the entries below `last`, one row apart, once per page object (the pages live in the layout, so a later menu
+// instance finds them there). Clones copy `source`, `above` sits a row over it, `push` moves a row down per clone.
+void AddEntries(PPCContext& ctx, uint32_t page, uint32_t last, uint32_t source_crc, uint32_t above_crc,
+                std::initializer_list<uint32_t> crcs, uint32_t push = 0);
+
+}  // namespace fcip::ui

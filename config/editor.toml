@@ -61,4 +61,15 @@ XAudioVoice_SetVoiceOutputVolume     = 0x8274AFD8
 XAudioVoice_SetVolume                = 0x8274B3F0
 XAudioVoice_Stop                     = 0x8274B190
 
+# CryUI, the menus
+PtrVector_PushBack = 0x82310BF0
+UIElement_SetCaption = 0x820C1980
+UIWidget_AddListener = 0x823189B0
+UIWidget_Clone = 0x825AB088
+
 [data]
+# CryUI, the menus
+UICloneVisitor_vtable = 0x820197B0
+UITransform_vtable = 0x82005AC0
+UIWidgetFocus_vtable = 0x820022C4
+UIWidgetText_vtable = 0x8201E158
