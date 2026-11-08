@@ -38,6 +38,7 @@ std::atomic<bool> g_open{false};
 constexpr uint32_t kAnisoValues[] = {0, 2, 4, 8, 16};
 const char* const kAnisoNames[] = {"GAME DEFAULT", "2x", "4x", "8x", "16x"};
 constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, 360, app::kFpsCapRefresh, 0};
+constexpr uint32_t kDistances[] = {1, 2, 4, 6, 8, 12, 16, 32};
 
 int StepIndex(int index, int step, int count) {
     if (count <= 0) return 0;
@@ -82,7 +83,8 @@ void Flip(bool& on, int step) {
 
 enum RowId {
     kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivity, kInvertY, kSmoothing,
-    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kFov, kBlur, kFpsCounter, kSkipIntros
+    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kFov, kBlur, kFpsCounter, kSkipIntros, kObjectDistance,
+    kDetailDistance, kVegetationDetail, kModelDetail
 };
 
 constexpr Row kSettingsRows[] = {
@@ -99,6 +101,12 @@ constexpr Row kSettingsRows[] = {
     {Kind::Heading, -1, "GRAPHICS", nullptr},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
+    {Kind::Heading, -1, "DRAW DISTANCE", nullptr},
+    {Kind::Value, kObjectDistance, "OBJECT DISTANCE", "Scales how far trees, buildings, props and characters are drawn"},
+    {Kind::Value, kDetailDistance, "DETAIL OBJECTS", "Scales how far small detail objects are drawn"},
+    {Kind::Value, kVegetationDetail, "VEGETATION DETAIL",
+     "Scales how far vegetation stays a full model before switching to its sprite"},
+    {Kind::Value, kModelDetail, "MODEL DETAIL", "Scales how far models keep their higher detail levels"},
     {Kind::Heading, -1, "GENERAL", nullptr},
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
     {Kind::Defaults, -1, "RESTORE DEFAULTS", "Puts every setting on this page back to its default"},
@@ -183,6 +191,17 @@ bool* ToggleFlag(int id) {
     }
 }
 
+uint32_t* DistanceField(int id) {
+    Settings& g = Get();
+    switch (id) {
+        case kObjectDistance: return &g.object_distance;
+        case kDetailDistance: return &g.detail_distance;
+        case kVegetationDetail: return &g.vegetation_detail;
+        case kModelDetail: return &g.model_detail;
+        default: return nullptr;
+    }
+}
+
 void StepInputRow(int id, int step, char (&text)[64]) {
     Settings& g = Get();
     if (bool* on = ToggleFlag(id)) {
@@ -196,6 +215,9 @@ void StepInputRow(int id, int step, char (&text)[64]) {
             g.sensitivity = float(shown) / 50.0f;
         }
         std::snprintf(text, sizeof(text), "%.1f", float(shown) / 10.0f);
+    } else if (uint32_t* scale = DistanceField(id)) {
+        uint32_t v = kDistances[StepTable(kDistances, *scale, step)];
+        std::snprintf(text, sizeof(text), v == 1 ? "DEFAULT" : "%ux", v);
     } else if (id == kFov) {
         // 45 to 140 in steps of 1
         int fov = StepRange(int(std::lround(g.fov)), 45, 140, 1, step);

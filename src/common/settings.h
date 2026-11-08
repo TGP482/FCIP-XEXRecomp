@@ -8,6 +8,10 @@ struct Settings {
     float fov = 90.0f;  // true horizontal degrees, 45 to 140
     bool fps_counter = false;
     bool blur = true;   // the game's blur while scoped and during feral run
+    uint32_t object_distance = 1;  // multipliers on the level's own values, 1 is stock
+    uint32_t detail_distance = 1;
+    uint32_t vegetation_detail = 1;  // sprite switch distance
+    uint32_t model_detail = 1;       // mesh LOD distance
     float sensitivity = 1.0f;      // mouse look, the game's own pad look is 1
     bool invert_y = false;
     bool mouse_smoothing = false;  // the game's pitch lag on the body and weapon

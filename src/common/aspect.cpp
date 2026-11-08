@@ -105,6 +105,13 @@ float Short2D() { return std::min(1.0f, DisplayAspect() / SetAspect()); }
 
 void Anchor2D(float side) { g_anchor = side; }
 
+void AspectTick() {
+    static std::atomic<float> applied{0.0f};
+    uint32_t renderer = g_renderer;
+    float aspect = DisplayAspect();
+    if (renderer && applied.exchange(aspect) != aspect) WriteRenderer(aspect, renderer);
+}
+
 }  // namespace fcip
 
 PPC_EXTERN_FUNC(GUEST_ORIG(Device_Init));
@@ -113,7 +120,6 @@ PPC_EXTERN_FUNC(GUEST_ORIG(Bink_DrawFrame));
 PPC_EXTERN_FUNC(GUEST_ORIG(UIWidget_Draw));
 PPC_EXTERN_FUNC(GUEST_ORIG(UIRect_Draw));
 PPC_EXTERN_FUNC(GUEST_ORIG(UI_DrawQuad));
-PPC_EXTERN_FUNC(GUEST_ORIG(C3DEngine_RenderWorld));
 
 PPC_FUNC(GUEST(Device_Init)) {
     GUEST_ORIG(Device_Init)(ctx, base);
@@ -125,15 +131,6 @@ PPC_FUNC(GUEST(Renderer_Init)) {
     uint32_t renderer = uint32_t(ctx.r[3]);
     GUEST_ORIG(Renderer_Init)(ctx, base);
     g_renderer = renderer;
-}
-
-// once a rendered frame: a new output shape goes into the renderer
-PPC_FUNC(GUEST(C3DEngine_RenderWorld)) {
-    static std::atomic<float> applied{0.0f};
-    uint32_t renderer = g_renderer;
-    float aspect = fcip::DisplayAspect();
-    if (renderer && applied.exchange(aspect) != aspect) WriteRenderer(aspect, renderer);
-    GUEST_ORIG(C3DEngine_RenderWorld)(ctx, base);
 }
 
 // movie frame draw (f1 x offset, f2 y offset, f3 x scale, f4 y scale): the player fills the width and takes the height
