@@ -96,6 +96,10 @@ UIText_Draw = 0x825DF150
 UIText_Measure = 0x825DF5E0
 UIWidget_CanFocus = 0x82316558
 
+# CrySystem, the startup movies
+PlayMovie = 0x82390100
+RaiseStartupScreen = 0x82114FC8
+
 # CryRender and Cry3DEngine: aspect, HUD, field of view, blur, fps counter
 Bink_DrawFrame = 0x824CDF70
 C3DEngine_RenderWorld = 0x82342C18
@@ -132,6 +136,12 @@ MenuManager_vtable = 0x82070C34
 UIGlyph_table = 0x82067160
 UIList_vtable = 0x82002F20
 UISystem_pointer = 0x828DE514
+
+# CrySystem: return addresses of the startup movie and screen calls
+BrandScreen_return = 0x82313914
+IntroMovie_return = 0
+LogoScreen_return = 0x8231393C
+UbisoftMovie_return = 0x82313608
 
 # CryRender and Cry3DEngine: the display block and the engine
 C3DEngine_pointer = 0x828C7208

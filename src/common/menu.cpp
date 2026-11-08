@@ -82,7 +82,7 @@ void Flip(bool& on, int step) {
 
 enum RowId {
     kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivity, kInvertY, kSmoothing,
-    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kFov, kBlur, kFpsCounter
+    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kFov, kBlur, kFpsCounter, kSkipIntros
 };
 
 constexpr Row kSettingsRows[] = {
@@ -99,6 +99,8 @@ constexpr Row kSettingsRows[] = {
     {Kind::Heading, -1, "GRAPHICS", nullptr},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
+    {Kind::Heading, -1, "GENERAL", nullptr},
+    {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
     {Kind::Defaults, -1, "RESTORE DEFAULTS", "Puts every setting on this page back to its default"},
 };
 
@@ -176,6 +178,7 @@ bool* ToggleFlag(int id) {
         case kAutoHelpers: return &g.auto_helpers;
         case kBlur: return &g.blur;
         case kFpsCounter: return &g.fps_counter;
+        case kSkipIntros: return &g.skip_intros;
         default: return nullptr;
     }
 }

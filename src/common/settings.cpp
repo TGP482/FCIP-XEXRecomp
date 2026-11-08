@@ -26,6 +26,7 @@ void LoadSettings(const void* table) {
     s.hold_sprint = t["hold_to_sprint"].value_or(s.hold_sprint);
     s.walk_speed = std::clamp(t["walk_speed"].value_or(s.walk_speed), 0.1f, 1.0f);
     s.auto_helpers = t["auto_disable_helpers"].value_or(s.auto_helpers);
+    s.skip_intros = t["skip_intros"].value_or(s.skip_intros);
     keys::Load(table);
 }
 
@@ -42,6 +43,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("hold_to_sprint", s.hold_sprint);
     t.insert_or_assign("walk_speed", double(s.walk_speed));
     t.insert_or_assign("auto_disable_helpers", s.auto_helpers);
+    t.insert_or_assign("skip_intros", s.skip_intros);
     keys::Save(table);
 }
 

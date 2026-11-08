@@ -15,6 +15,7 @@ struct Settings {
     bool hold_sprint = true;       // feral run while its key is held, not a toggle
     float walk_speed = 0.5f;       // of running
     bool auto_helpers = true;      // the aiming helper off while the keyboard or mouse is in use
+    bool skip_intros = true;       // the logo, the branding plate and the intro movie
 };
 
 Settings& Get();
