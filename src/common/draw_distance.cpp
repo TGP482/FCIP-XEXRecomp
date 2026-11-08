@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #include "common/aspect.h"
@@ -17,14 +19,19 @@ namespace {
 // C3DEngine
 constexpr uint32_t kDetailViewDistance = 0x4C0;
 constexpr uint32_t kSunSlopeScale = 0x4E8;
+constexpr uint32_t kGrassViewDistance = 0xB30;
 constexpr uint32_t kShadowSectorRadius = 0x1170;
 constexpr uint32_t kShadowRadius = 0x1174;
 constexpr uint32_t kShadowRadiusSpeed = 0x11F4;
+// grass tiles (layers 5 and 9) sort far to near on view depth over this renderer value, 50 at construction; deeper
+// tiles all key 0 and draw in sector order, blending farther blades over nearer ones
+constexpr uint32_t kGrassSortDepth = 0x94;
 // CObjManager
 constexpr uint32_t kObjLodRatio = 0xF4;
 constexpr uint32_t kObjViewDistRatio = 0xF8;
 constexpr uint32_t kObjSpriteSwitchRatio = 0xFC;
 constexpr uint32_t kStockShadowSide = 1344;
+constexpr float kSectorSize = 64.0f;
 
 bool GuestOk(uint32_t addr) { return addr >= 0x10000u && addr < 0xC0000000u; }
 
@@ -66,7 +73,14 @@ void Offset(uint32_t addr, float add, Field& f) {
     f.Set(addr, raw, f.Stock(raw) + add);
 }
 
+// raises the game's own value to at least floor
+void AtLeast(uint32_t addr, float floor, Field& f) {
+    float raw = GF(addr);
+    f.Set(addr, raw, std::max(f.Stock(raw), floor));
+}
+
 Field g_detail;
+Field g_grass_sort;
 Field g_obj_view;
 Field g_obj_lod;
 Field g_obj_sprite;
@@ -90,6 +104,13 @@ void ApplyEngine(uint32_t engine) {
     float texel = float(s.shadow_distance) * float(kStockShadowSide) / float(side);
     float slope = texel > 1.0f ? 2.0f * (1.0f - 1.0f / texel) : 0.0f;
     Offset(engine + kSunSlopeScale, slope * 16777216.0f, g_sun_slope);
+    // past the grass distance with room for a tile's height, stock at 1x; engine+0xB30 stays stock, split screen
+    // code reads it too
+    uint32_t renderer = R32(SYM_Renderer_pointer);
+    if (GuestOk(renderer)) {
+        float grass = GF(engine + kGrassViewDistance) * float(s.grass_distance);
+        AtLeast(renderer + kGrassSortDepth, s.grass_distance > 1 ? grass + 16.0f : 0.0f, g_grass_sort);
+    }
 }
 
 void Apply() {
@@ -110,6 +131,18 @@ namespace fcip {
 void NoteLevelRadius(float radius) { g_level_radius = radius; }
 void NoteLevelDetail(float detail) { g_level_detail = detail; }
 
+// at 1x the 3x3 ring: stock asks grass only for near ones there, so a visible one outside the near set stayed bald
+float GrassReach(int32_t cam_x, int32_t cam_y, int32_t x, int32_t y) {
+    uint32_t engine = R32(SYM_C3DEngine_pointer);
+    if (!GuestOk(engine)) return -1.0f;
+    float reach = GF(engine + kGrassViewDistance) * float(Get().grass_distance) / kSectorSize;
+    int gx = std::max(std::abs(x - cam_x) - 1, 0);
+    int gy = std::max(std::abs(y - cam_y) - 1, 0);
+    float gap = float(gx * gx + gy * gy);
+    return gap < reach * reach ? gap : -1.0f;
+}
+
+void ScaleGrassRadius(double& radius) { radius *= double(Get().grass_distance); }
 void ScaleShadowRadius(double& radius) { radius *= double(Get().shadow_distance); }
 
 }  // namespace fcip

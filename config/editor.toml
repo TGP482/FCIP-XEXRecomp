@@ -100,17 +100,23 @@ UIWidget_CanFocus = 0x82316558
 PlayMovie = 0x82390100
 RaiseStartupScreen = 0x82114FC8
 
-# CryRender and Cry3DEngine: aspect, HUD, field of view, blur, shadows, draw distance, fps counter
+# CryRender and Cry3DEngine: aspect, field of view, blur, shadows, draw distance, grass, fps counter
 Bink_DrawFrame = 0x824CDF70
 C3DEngine_RenderWorld = 0x82342C18
 CCamera_Update = 0x8236EE28
 COcean_Update = 0x82577230
 CPlayer_FeralRunBlur = 0x82177C58
 CZoom_ZoomIn = 0x82184858
+D3DDevice_CreateVertexBuffer = 0x82641C10
+D3DResource_Release = 0x82641B28
 Device_Init = 0x82373008
 Font_Draw = 0x82609D68
 Font_Load = 0x82615738
 Font_New = 0x825E0550
+Grass_Init = 0x824936B8
+Grass_Release = 0x82493C08
+Grass_Reset = 0x82493678
+Grass_SetTexture = 0x82493688
 Overlay_Flush = 0x8235B940
 PerspectiveFov = 0x8265B0F8
 Renderer_Init = 0x8247DC18
@@ -150,12 +156,31 @@ IntroMovie_return = 0
 LogoScreen_return = 0x8231393C
 UbisoftMovie_return = 0x82313608
 
-# CryRender and Cry3DEngine: the display block, the engine and object manager objects
+# CryRender and Cry3DEngine: the display block and the engine, object manager and renderer objects
 C3DEngine_pointer = 0x828C7208
 DisplayBlock = 0x82908790
 ObjManager_pointer = 0x828C7990
+Renderer_pointer = 0x828C7A34
 
 # instruction hooks, defined in src/editor/draw_distance.cpp
+
+[[hook]]  # the grass tile budget compare: r11 tiles, r29 renderer, r27 params
+at = 0x82494120
+call = "GrassTileBudget"
+
+[[hook]]  # the grass cache scan, replaced
+at = 0x8249414C
+call = "GrassTileLookup"
+on_true = 0x824942E4
+on_false = 0x82494200
+
+[[hook]]  # the grass miss path after the blade copy, before the unlock
+at = 0x824942DC
+call = "GrassTileRefilled"
+
+[[hook]]  # f28 = engine+0xB30 in the grass tile loop
+at = 0x82356BC4
+call = "GrassRadius"
 
 [[hook]]  # f8 = the sun light radius
 at = 0x823EAAD8

@@ -10,7 +10,13 @@ namespace fcip {
 void NoteLevelRadius(float radius);
 void NoteLevelDetail(float detail);
 
-// instruction hook: a register loaded with engine+0x1174 by a sun shadow radius reader
+// the grass reach from the camera's sector: the squared gap in sectors when the grass distance reaches this sector
+// from anywhere in the camera's, else -1
+float GrassReach(int32_t cam_x, int32_t cam_y, int32_t x, int32_t y);
+
+// instruction hooks: a register loaded with engine+0xB30 for the grass tile loop, with engine+0x1174 by a sun
+// shadow radius reader
+void ScaleGrassRadius(double& radius);
 void ScaleShadowRadius(double& radius);
 
 }  // namespace fcip

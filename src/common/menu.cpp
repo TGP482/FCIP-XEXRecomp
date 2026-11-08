@@ -85,7 +85,8 @@ void Flip(bool& on, int step) {
 enum RowId {
     kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivity, kInvertY, kSmoothing,
     kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kFov, kBlur, kFpsCounter, kSkipIntros, kObjectDistance,
-    kDetailDistance, kVegetationDetail, kModelDetail, kShadowResolution, kShadowDistance
+    kDetailDistance, kVegetationDetail, kModelDetail, kShadowResolution, kShadowDistance,
+    kGrassDistance
 };
 
 constexpr Row kSettingsRows[] = {
@@ -107,6 +108,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Heading, -1, "DRAW DISTANCE", nullptr},
     {Kind::Value, kObjectDistance, "OBJECT DISTANCE", "Scales how far trees, buildings, props and characters are drawn"},
     {Kind::Value, kDetailDistance, "DETAIL OBJECTS", "Scales how far small detail objects are drawn"},
+    {Kind::Value, kGrassDistance, "GRASS DISTANCE", "Scales the grass radius, rendered in full, so 8x and above are very heavy"},
     {Kind::Value, kVegetationDetail, "VEGETATION DETAIL",
      "Scales how far vegetation stays a full model before switching to its sprite"},
     {Kind::Value, kModelDetail, "MODEL DETAIL", "Scales how far models keep their higher detail levels"},
@@ -200,6 +202,7 @@ uint32_t* DistanceField(int id) {
         case kShadowDistance: return &g.shadow_distance;
         case kObjectDistance: return &g.object_distance;
         case kDetailDistance: return &g.detail_distance;
+        case kGrassDistance: return &g.grass_distance;
         case kVegetationDetail: return &g.vegetation_detail;
         case kModelDetail: return &g.model_detail;
         default: return nullptr;
