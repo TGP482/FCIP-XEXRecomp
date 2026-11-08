@@ -5,6 +5,8 @@
 #include <span>
 #include <string>
 
+struct PPCContext;
+
 namespace fcip {
 
 constexpr int kSettingsPage = 0;
@@ -17,6 +19,11 @@ void OpenMenuPage(int page);
 // GameInfo hooks
 void DrawUi(double fps);
 bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result);
+
+// default.xex's native pages, each frame on the menu thread after the menus' own input
+inline void (*g_menu_tick)(PPCContext& ctx, uint32_t mgr) = nullptr;
+// window thread: the cursor and buttons for the game's menus
+void MenuMouseMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);
 
 namespace rows {
 

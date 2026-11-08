@@ -1,7 +1,9 @@
 // default.xex: the settings entries in the User page and the pause menu's OPTIONS, the pages they open inside
 // CONTROLLER OPTIONS, and the main menu watermark
 #include <iterator>
+#include <string>
 
+#include "common/keys.h"
 #include "common/menu.h"
 #include "common/widgets.h"
 #include "core/log.h"
@@ -15,6 +17,7 @@ namespace {
 constexpr uint32_t kCrcEditProfile = 0x3C5E4151u;
 constexpr uint32_t kCrcVideo = 0xC8040339u;  // GAME OPTIONS, the template for every clone
 constexpr uint32_t kCrcControlSetup = 0x7765E2D2u;
+constexpr uint32_t kCrcResetDefault = 0x3C4AD511u;
 
 // primary vtables of the two menu classes
 constexpr uint32_t kVtProfile = 0x8205CBA8u;  // CryProfile, P_EditProfile is pages[1]
@@ -38,11 +41,19 @@ void ShowEntry(uint32_t self) {
     Write8(widget + kWidgetEnabled, Read8(widget + kWidgetEnabled) | Read8(sibling + kWidgetEnabled));
 }
 
-// the pause menu's copy of P_EditProfile has no spare slot, so it gets a button cloned from GAME OPTIONS
+// buttons cloned from GAME OPTIONS: MOUSE AND KEYBOARD on the User page takes RESET DEFAULTS' row, which moves to the
+// bottom; the pause menu's copy of P_EditProfile has no spare slot, so it gets both
 void AddEntriesFor(PPCContext& ctx, uint32_t self) {
-    if (Read32(self) != kVtInGame) return;
-    uint32_t page = ProfilePage(self, 4);
-    AddEntries(ctx, page, FindWidget(page, kCrcVideo), kCrcVideo, kCrcControlSetup, {kCrcRecompSettings});
+    uint32_t vtable = Read32(self);
+    if (vtable == kVtProfile) {
+        uint32_t page = ProfilePage(self, 1);
+        AddEntries(ctx, page, FindWidget(page, kCrcMultiplayerSetup), kCrcVideo, kCrcControlSetup, {kCrcMouseKeyboard},
+                   FindWidget(page, kCrcResetDefault));
+    } else if (vtable == kVtInGame) {
+        uint32_t page = ProfilePage(self, 4);
+        AddEntries(ctx, page, FindWidget(page, kCrcVideo), kCrcVideo, kCrcControlSetup,
+                   {kCrcRecompSettings, kCrcMouseKeyboard});
+    }
 }
 
 void SetHelp(PPCContext& ctx, uint32_t self, uint32_t help_offset, uint32_t sender) {
@@ -51,7 +62,7 @@ void SetHelp(PPCContext& ctx, uint32_t self, uint32_t help_offset, uint32_t send
 }
 
 // Native pages: CONTROLLER OPTIONS (P_Controller) hosts our rows. Its list has L_Name and L_Value columns and scrolls;
-// Left and Right step a value, A steps it.
+// Left and Right step a value, A steps it or rebinds a key.
 
 constexpr uint32_t kCrcController = 0x4CCDB8BDu;         // P_Controller
 constexpr uint32_t kCrcControllerOptions = 0xA3EDB04Fu;  // LST_ControllerOptions
@@ -92,7 +103,10 @@ struct Native {
     uint32_t page = 0;
     uint32_t widget = 0;
     uint32_t list = 0;
+    int capture = -1;  // the row waiting for a key
 };
+
+constexpr const char* kCaptureHelp = "Press the key to bind, Escape cancels";
 
 // what Customise changed on a page; the layout keeps its pages across menu instances, so each keeps its record until
 // it is put back
@@ -121,7 +135,10 @@ void SetCell(PPCContext& ctx, int row, int column, const char* text) {
 
 void RefreshValues(PPCContext& ctx) {
     for (int i = 0; i < NativeCount(); i++) {
-        if (NativeRow(i).kind == rows::Kind::Value) SetCell(ctx, i, 1, rows::Text(NativeRow(i)).c_str());
+        rows::Kind kind = NativeRow(i).kind;
+        if (kind != rows::Kind::Value && kind != rows::Kind::Bind) continue;
+        std::string value = g_native.capture == i ? "PRESS A KEY" : rows::Text(NativeRow(i));
+        SetCell(ctx, i, 1, value.c_str());
     }
 }
 
@@ -132,8 +149,9 @@ int Selected() {
 
 void NativeHelp(PPCContext& ctx) {
     int row = Selected();
-    if (row < 0 || !NativeRow(row).help) return;
-    SetCaption(ctx, Read32(g_native.obj + kControllerHelp), NativeRow(row).help);
+    if (row < 0) return;
+    const char* help = g_native.capture == row ? kCaptureHelp : NativeRow(row).help;
+    if (help) SetCaption(ctx, Read32(g_native.obj + kControllerHelp), help);
 }
 
 void NativeTitle(PPCContext& ctx) {
@@ -200,7 +218,7 @@ void Customise(PPCContext& ctx, uint32_t obj, int mode) {
         LOGE("options menu: controller page %08X not as expected, stock page kept", page);
         return;
     }
-    g_native = {mode, obj, page, widget, list};
+    g_native = {mode, obj, page, widget, list, -1};
     Saved& saved = SaveControls(page, widget, list);
     // Left and Right step values, so the list keeps the focus
     for (uint32_t i = 0; i < 4; i++) Write32(widget + kWidgetUp + i * 4, 0);
@@ -214,19 +232,55 @@ void Customise(PPCContext& ctx, uint32_t obj, int mode) {
     NativeHelp(ctx);
 }
 
+void StartCapture(PPCContext& ctx, int row) {
+    g_native.capture = row;
+    keys::BeginCapture();
+    SetCell(ctx, row, 1, "PRESS A KEY");
+    NativeHelp(ctx);
+}
+
 void NativeKey(PPCContext& ctx, uint32_t code) {
     int row = Selected();
-    if (row < 0) return;
+    if (row < 0 || g_native.capture >= 0) return;
     const rows::Row& r = NativeRow(row);
     bool accept = code == kKeyA || code == kKeyEnter;
     int step = code == kKeyLeft ? -1 : (code == kKeyRight || accept) ? 1 : 0;
     if (!step) return;
     if (r.kind == rows::Kind::Value) rows::Text(r, step);
     else if (r.kind == rows::Kind::Defaults && accept) rows::Defaults(g_native.mode);
+    else if (r.kind == rows::Kind::Bind && accept) return StartCapture(ctx, row);
     else return;
     RefreshValues(ctx);
     kernel::CallGuest(ctx, kSoundPlay, {Read32(kSoundSystem), kSoundChange});
 }
+
+void Leave() {
+    g_native.mode = -1;
+    if (g_native.capture >= 0 && keys::Capturing()) keys::Captured();
+    g_native.capture = -1;
+}
+
+// our rows are still in the list
+bool ListOk() {
+    uint32_t first = Read32(g_native.list + kListItems);
+    uint32_t last = Read32(g_native.list + kListItems + 4);
+    return Read32(g_native.list) == kVtList && last >= first && (last - first) / kListItemBytes == uint32_t(NativeCount());
+}
+
+// menu thread, each frame: a bind row's capture ends with a key, Escape, or the page going away
+void NativeTick(PPCContext& ctx, uint32_t) {
+    if (g_native.capture < 0) return;
+    int vk = keys::Captured();
+    if (!vk) return;
+    int row = g_native.capture;
+    g_native.capture = -1;
+    if (g_native.mode < 0 || !ListOk()) return;
+    if (vk > 0) rows::SetBind(NativeRow(row).id, uint8_t(vk));
+    RefreshValues(ctx);
+    NativeHelp(ctx);
+}
+
+const bool g_tick = (g_menu_tick = NativeTick, true);
 
 // swaps the sender for CONTROLLER SETUP's button so the stock press opens the controller page, which Customise then
 // takes over
@@ -343,7 +397,7 @@ PPC_FUNC(sub_821D42E8) {
     uint32_t obj = uint32_t(ctx.r[3]);
     int mode = g_pending;
     g_pending = -1;
-    g_native.mode = -1;
+    Leave();
     Restore(ctx, ControllerPage(obj));
     __imp__sub_821D42E8(ctx, base);
     if (mode >= 0) Customise(ctx, obj, mode);
@@ -377,7 +431,7 @@ PPC_FUNC(sub_821D6200) {
 // CONTROLLER OPTIONS back: the page is put back once it is closed, so nothing flickers
 PPC_FUNC(sub_821D65F0) {
     bool ours = g_native.mode >= 0;
-    g_native.mode = -1;
+    Leave();
     __imp__sub_821D65F0(ctx, base);
     if (ours) Restore(ctx, g_native.page);
 }

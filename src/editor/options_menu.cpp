@@ -1,4 +1,4 @@
-// ige.xex: the settings entry in the editor's start menu (P_StartMenu of StartMenuInterfaceHandler), under EXIT EDITOR
+// ige.xex: the settings entries in the editor's start menu (P_StartMenu of StartMenuInterfaceHandler), under EXIT EDITOR
 #include "common/menu.h"
 #include "common/widgets.h"
 #include "kernel/kernel.h"
@@ -18,7 +18,8 @@ constexpr uint32_t kHandlerPage = 0xFCu;
 void AddStartMenuEntries(PPCContext& ctx, uint32_t handler) {
     uint32_t page = Read32(handler + kHandlerPage);
     if (!page || Read32(page + kPageNameCrc) != kCrcStartMenu) return;
-    AddEntries(ctx, page, FindWidget(page, kCrcExitEditor), kCrcHintsTips, kCrcControls, {kCrcRecompSettings});
+    AddEntries(ctx, page, FindWidget(page, kCrcExitEditor), kCrcHintsTips, kCrcControls,
+               {kCrcRecompSettings, kCrcMouseKeyboard});
     SetEntryCaptions(ctx, page);
 }
 

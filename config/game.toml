@@ -80,6 +80,18 @@ CPlayer_UpdateLookBones = 0x8225CA98
 CPlayer_UpdateView = 0x8225D0C8
 CPlayer_Zoom = 0x82266208
 
+# CryUI, menu input and text
+MenuManager_UpdateInput = 0x821306F8
+UIInputStack_Top = 0x8246B608
+UIList_HitTest = 0x82470FF0
+UIList_Next = 0x824720E8
+UIList_Prev = 0x82471FD8
+UIList_Select = 0x82471970
+UIPage_KeyDown = 0x8246C980
+UIPage_KeyUp = 0x8246CA88
+UIPage_StoreFocus = 0x8246CC20
+UIWidget_CanFocus = 0x8246B950
+
 [data]
 # CryUI, the menus
 UICloneVisitor_vtable = 0x82079D90
@@ -87,6 +99,12 @@ UITransform_vtable = 0x82079188
 UIWidgetFocus_vtable = 0x82078BC4
 UIWidgetText_vtable = 0x82079880
 
-# CryGame: the game object, its cl_aimingHelper offset
+# CryGame: the game object, its cl_aimingHelper offset and no menu flag
 Game_AimingHelper = 0xA8
+Game_NoMenu = 0x379
 Game_pointer = 0x8291234C
+
+# CryUI, menu input and text
+MenuManager_vtable = 0x82054644
+UIList_vtable = 0x82078A40
+UISystem_pointer = 0x82912904

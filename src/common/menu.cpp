@@ -584,6 +584,7 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
         return true;
     }
     if (CursorMessage(hwnd, msg, lp, result)) return true;
+    MenuMouseMessage(hwnd, msg, wp, lp);
     bool taken = keys::Message(hwnd, msg, wp, lp) || (capturing && key_down);
     if (taken) *result = 0;
     return taken;
