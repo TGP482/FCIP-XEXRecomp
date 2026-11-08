@@ -1,4 +1,5 @@
 #include "app/app.h"
+#include "common/menu.h"
 
 const app::GameInfo app::kGame = {
     .title = L"Far Cry Instincts: Predator - XEX Recomp",
@@ -15,9 +16,9 @@ const app::GameInfo app::kGame = {
     .init = nullptr,
     .loaded = nullptr,
     .window = nullptr,
-    .message = nullptr,
-    .ui = nullptr,
-    .pad = nullptr,
+    .message = fcip::MenuMessage,
+    .ui = fcip::DrawUi,
+    .pad = fcip::MenuPad,
     .rumble = nullptr,
     .compiler_colours = {},
 };
