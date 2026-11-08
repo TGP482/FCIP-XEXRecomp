@@ -82,7 +82,7 @@ void Flip(bool& on, int step) {
 
 enum RowId {
     kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivity, kInvertY, kSmoothing,
-    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed
+    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kFov
 };
 
 constexpr Row kSettingsRows[] = {
@@ -91,6 +91,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kResolution, "RESOLUTION", "Every mode your monitor reports, defaulting to your desktop resolution"},
     {Kind::Value, kRenderResolution, "RENDER RESOLUTION",
      "Renders the game at 20% to 200% of the output resolution, independent of the window size"},
+    {Kind::Value, kFov, "FIELD OF VIEW", "Sets the horizontal field of view during gameplay, cutscenes keep their own"},
     {Kind::Value, kVsync, "VERTICAL SYNC", "Reduces screen tearing"},
     {Kind::Value, kMaxFps, "MAX FRAME RATE",
      "Caps the frame rate to your monitor's refresh rate or a custom value, or removes the cap"},
@@ -188,6 +189,11 @@ void StepInputRow(int id, int step, char (&text)[64]) {
             g.sensitivity = float(shown) / 50.0f;
         }
         std::snprintf(text, sizeof(text), "%.1f", float(shown) / 10.0f);
+    } else if (id == kFov) {
+        // 45 to 140 in steps of 1
+        int fov = StepRange(int(std::lround(g.fov)), 45, 140, 1, step);
+        if (step) g.fov = float(fov);
+        std::snprintf(text, sizeof(text), fov == 90 ? "%d (DEFAULT)" : "%d", fov);
     } else if (id == kWalkSpeed) {
         // 10% to 100% in steps of 5
         int percent = StepRange(int(std::lround(g.walk_speed * 100.0f)), 10, 100, 5, step);

@@ -5,6 +5,7 @@
 namespace fcip {
 
 struct Settings {
+    float fov = 90.0f;  // true horizontal degrees, 45 to 140
     float sensitivity = 1.0f;      // mouse look, the game's own pad look is 1
     bool invert_y = false;
     bool mouse_smoothing = false;  // the game's pitch lag on the body and weapon
