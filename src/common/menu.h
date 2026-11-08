@@ -11,6 +11,7 @@ namespace fcip {
 
 constexpr int kSettingsPage = 0;
 constexpr int kKeyboardPage = 1;
+constexpr int kDebugPage = 2;
 
 bool MenuOpen();
 void ToggleMenu();
@@ -22,16 +23,18 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
 
 // default.xex's native pages, each frame on the menu thread after the menus' own input
 inline void (*g_menu_tick)(PPCContext& ctx, uint32_t mgr) = nullptr;
+// default.xex's debug page: queues a story level by folder name, false before START at the title screen
+inline bool (*g_load_level)(const char* folder) = nullptr;
 // window thread: the cursor and buttons for the game's menus
 void MenuMouseMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);
 
 namespace rows {
 
-enum class Kind : uint8_t { Heading, Value, Bind, Defaults };
+enum class Kind : uint8_t { Heading, Value, Bind, Level, Defaults };
 
 struct Row {
     Kind kind;
-    int id;  // a bind's action
+    int id;  // a bind's action, a level's index
     const char* label;
     const char* help;  // the game's help bar
 };

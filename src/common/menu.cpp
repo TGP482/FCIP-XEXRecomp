@@ -84,9 +84,9 @@ void Flip(bool& on, int step) {
 
 enum RowId {
     kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivity, kInvertY, kSmoothing,
-    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kFov, kBlur, kFpsCounter, kSkipIntros, kObjectDistance,
-    kDetailDistance, kVegetationDetail, kModelDetail, kShadowResolution, kShadowDistance,
-    kGrassDistance
+    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kSkipIntros, kFov, kFpsCounter, kShadowResolution,
+    kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
+    kInvincible
 };
 
 constexpr Row kSettingsRows[] = {
@@ -116,6 +116,36 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
     {Kind::Defaults, -1, "RESTORE DEFAULTS", "Puts every setting on this page back to its default"},
 };
+
+struct Level {
+    const char* folder;
+    const char* label;
+};
+
+// the story levels, the folders the game's LOAD A MAP list scans
+constexpr Level kLevels[] = {
+    {"00_training", "00 TRAINING"}, {"01_beach", "01 BEACH"}, {"02_native", "02 NATIVE"}, {"03_river", "03 RIVER"},
+    {"04_rain_forest", "04 RAIN FOREST"}, {"05_mines", "05 MINES"}, {"06_cliffs", "06 CLIFFS"},
+    {"07_sub-aquatic_facility", "07 SUB-AQUATIC FACILITY"}, {"10_dead_marshes", "10 DEAD MARSHES"},
+    {"11_wasteland", "11 WASTELAND"}, {"13_black_forest", "13 BLACK FOREST"}, {"21_dunea", "21 DUNE A"},
+    {"22_duneb", "22 DUNE B"}, {"23_dunec", "23 DUNE C"}, {"24_shantyday", "24 SHANTY DAY"},
+    {"26_shantynight", "26 SHANTY NIGHT"}, {"28_jungle", "28 JUNGLE"}, {"29_forest", "29 FOREST"},
+    {"30_mountain", "30 MOUNTAIN"},
+};
+
+const std::vector<Row>& DebugRows() {
+    static const std::vector<Row> list = [] {
+        std::vector<Row> out = {
+            {Kind::Heading, -1, "CHEATS", nullptr},
+            {Kind::Value, kInvincible, "INVINCIBILITY", "Makes the player take no damage"},
+            {Kind::Heading, -1, "LOAD LEVEL", nullptr},
+        };
+        for (int i = 0; i < int(std::size(kLevels)); i++) out.push_back({Kind::Level, i, kLevels[i].label, nullptr});
+        out.push_back({Kind::Defaults, -1, "RESTORE DEFAULTS", "Turns invincibility off"});
+        return out;
+    }();
+    return list;
+}
 
 const std::vector<Row>& KeyboardRows() {
     static const std::vector<Row> list = [] {
@@ -189,9 +219,10 @@ bool* ToggleFlag(int id) {
         case kHoldAim: return &g.hold_aim;
         case kHoldSprint: return &g.hold_sprint;
         case kAutoHelpers: return &g.auto_helpers;
-        case kBlur: return &g.blur;
-        case kFpsCounter: return &g.fps_counter;
         case kSkipIntros: return &g.skip_intros;
+        case kFpsCounter: return &g.fps_counter;
+        case kBlur: return &g.blur;
+        case kInvincible: return &g.invincible;
         default: return nullptr;
     }
 }
@@ -296,6 +327,11 @@ std::string RowText(int id, int step, app::Settings& s = app::Get()) {
 }
 
 void RestoreDefaults(int page) {
+    if (page == kDebugPage) {
+        Get().invincible = false;
+        Changed(false);
+        return;
+    }
     if (page == kKeyboardPage) {
         const Settings def;
         Settings& g = Get();
@@ -329,6 +365,7 @@ void RestoreDefaults(int page) {
     Get().hold_sprint = keep.hold_sprint;
     Get().auto_helpers = keep.auto_helpers;
     Get().walk_speed = keep.walk_speed;
+    Get().invincible = keep.invincible;
     Changed(true);
 }
 
@@ -393,9 +430,10 @@ int OptionRow(const char* label, const char* value) {
     return step;
 }
 
-const char* const kPages[] = {"RECOMP SETTINGS", "MOUSE AND KEYBOARD"};
+const char* const kPages[] = {"RECOMP SETTINGS", "MOUSE AND KEYBOARD", "DEBUG"};
 
-int PageCount() { return int(std::size(kPages)); }
+// the debug page is default.xex's only
+int PageCount() { return g_load_level ? int(std::size(kPages)) : kDebugPage; }
 
 // the bind row waiting for a key, -1 when idle, and its box: 0 the key, 1 the alternate
 int g_capture = -1;
@@ -452,6 +490,28 @@ void BindRow(const Row& r) {
     ImGui::Dummy(ImVec2(row_w, row_h));
 }
 
+// label left, the row is the nav stop; Enter or a click loads the level and closes the panel, before START at the
+// title screen nothing happens
+void LevelRow(const Row& r) {
+    float row_w = ImGui::GetContentRegionAvail().x;
+    float row_h = ImGui::GetFrameHeight();
+    float row_x = ImGui::GetCursorPosX();
+    float row_y = ImGui::GetCursorPosY();
+    ImGui::PushID(r.label);
+    bool load = ImGui::Selectable("##row", false, 0, ImVec2(row_w, row_h));
+    if (ImGui::IsItemFocused()) {
+        ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                                  ImGui::GetColorU32(ImGuiCol_Header));
+    }
+    ImGui::PopID();
+    ImGui::SetCursorPos(ImVec2(row_x + ImGui::GetStyle().ItemInnerSpacing.x, row_y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(r.label);
+    ImGui::SetCursorPos(ImVec2(row_x, row_y));
+    ImGui::Dummy(ImVec2(row_w, row_h));
+    if (load && g_load_level(kLevels[r.id].folder)) ToggleMenu();
+}
+
 // a key or mouse button binds, Escape cancels
 void PollCapture() {
     if (g_capture < 0) return;
@@ -498,6 +558,7 @@ void DrawRows(int page) {
             continue;
         }
         if (r.kind == Kind::Bind) BindRow(r);
+        if (r.kind == Kind::Level) LevelRow(r);
         if (r.kind != Kind::Value) continue;
         bool held = g_display_held && DisplayRow(r.id);
         int step = OptionRow(r.label, RowText(r.id, 0, held ? g_display : app::Get()).c_str());
@@ -564,6 +625,7 @@ void DrawPanel() {
         const char* hint = "Up and Down select, Left and Right change, Escape closes";
         if (g_capture >= 0) hint = "Press a key or mouse button to bind, Escape cancels";
         else if (g_page == kKeyboardPage) hint = "Enter or a click rebinds, right click or Delete clears the key";
+        else if (g_page == kDebugPage) hint = "Enter or a click loads the level, from the main menu or in game";
         ImGui::TextUnformatted(hint);
         ImGui::PopStyleColor();
         float bw = em * 8;
@@ -640,6 +702,7 @@ namespace rows {
 std::span<const Row> Page(int page) {
     if (page == kSettingsPage) return kSettingsRows;
     if (page == kKeyboardPage) return KeyboardRows();
+    if (page == kDebugPage) return DebugRows();
     return {};
 }
 

@@ -132,6 +132,12 @@ UIRect_Draw = 0x823C8410
 UIWidget_Draw = 0x82479130
 UI_DrawQuad = 0x823809D8
 
+# CryGame, the debug page: the game's update, command queue, story start and loading screen minimum
+Game_Command = 0x820EA4F8
+Game_Update = 0x8220D008
+LoadingScreen_Wait = 0x82156AB0
+SaveManager_NewStory = 0x8222AE98
+
 [data]
 # CryUI, the menus
 UICloneVisitor_vtable = 0x82079D90
@@ -161,6 +167,11 @@ C3DEngine_pointer = 0x829122C8
 DisplayBlock = 0x829161A0
 ObjManager_pointer = 0x82913474
 Renderer_pointer = 0x829127E8
+
+# CryGame, the debug page: the GodMode cvar object, the save and user managers
+GodMode_cvar = 0x8291231C
+SaveManager_pointer = 0x8293A79C
+UserManager_pointer = 0x8293A808
 
 # instruction hooks, defined in src/game/draw_distance.cpp
 
