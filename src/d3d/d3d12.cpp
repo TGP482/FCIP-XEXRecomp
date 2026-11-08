@@ -482,6 +482,7 @@ private:
     void StartCapture();
     void FinishCapture(const xenos::TextureFetch& front);
     void CapStep(Target* rt);
+    void CapTextures(const State& s, const ShaderInfo& ps);
     void CapSave(ID3D12Resource* res, D3D12_RESOURCE_STATES& state, DXGI_FORMAT view, uint32_t samples, bool depth,
                  uint32_t w, uint32_t h, float mul, const std::string& name);
     void CapSave(Target& t, const std::string& name, float mul);
@@ -1470,6 +1471,12 @@ void D3D12Backend::FillDrawConstants(const State& s, const Bound& b, DrawConstan
     c.alpha_ref = s.RegF(kRbAlphaRef);
     c.vpos_scale = 1 / b.scale;
     c.vtx_fmt = Bits(vte, 8, 3);
+    // bits 0 to 5 enable the user planes, 16 turns clipping off
+    uint32_t clip = s.Reg(kPaClClipCntl);
+    for (uint32_t i = 0; i < 6; i++) {
+        bool on = Bits(clip, i, 1) && !Bits(clip, 16, 1);
+        if (on) std::memcpy(c.clip[i], s.clip_planes[i], sizeof(c.clip[i]));
+    }
 }
 
 // the window scissor in the target's pixels, within w x h
@@ -1752,6 +1759,10 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         std::fprintf(cap_, "%04u draw prim %u count %u into %ux%u rt %u ds %u vs %016llx ps %016llx\n", cap_i_++,
                      a.prim, count, bound.w, bound.h, rt, ds, static_cast<unsigned long long>(k.vs),
                      static_cast<unsigned long long>(k.ps));
+        const Rect& p = s.predicated;
+        std::fprintf(cap_, "     scissor %ld,%ld,%ld,%ld tiles %d,%d,%d,%d\n", sc.left, sc.top, sc.right, sc.bottom, p.x1,
+                     p.y1, p.x2, p.y2);
+        CapTextures(s, ps_info);
     }
 }
 
@@ -1789,6 +1800,9 @@ void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
     if (src && cap_) {
         std::fprintf(cap_, "%04u resolve %s %u to %08X format %u\n", cap_i_, src->depth ? "depth" : "colour",
                      src->surface.base, r.dst_base, r.dst_format);
+        const Rect& p = s.predicated;
+        std::fprintf(cap_, "     rect %d,%d,%d,%d at %d,%d size %ux%u tiles %d,%d,%d,%d\n", r.rect.x1, r.rect.y1,
+                     r.rect.x2, r.rect.y2, r.dst_x, r.dst_y, r.dst_pitch, r.dst_height, p.x1, p.y1, p.x2, p.y2);
         char name[48];
         std::snprintf(name, sizeof(name), "%04u_resolve_%08X", cap_i_++, r.dst_base);
         CapSave(*src, name, 1);
@@ -2178,6 +2192,18 @@ void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3
 }
 
 // Capture
+
+// F3: each pixel texture the draw reads, from a resolve or guest memory
+void D3D12Backend::CapTextures(const State& s, const ShaderInfo& ps) {
+    for (uint32_t i = 0; i < ps.textures.size(); i++) {
+        uint32_t fetch[6];
+        ReadFetch(s, ps.textures[i].fetch, fetch);
+        xenos::TextureFetch t = xenos::DecodeTextureFetch(fetch);
+        bool resolve = FindResolved(t, ps.textures[i], ShaderStage::Pixel, i) != nullptr;
+        std::fprintf(cap_, "     t%u %08X %ux%u format %u %s\n", i, t.base, t.width, t.height, uint32_t(t.format),
+                     resolve ? "resolve" : "memory");
+    }
+}
 
 void D3D12Backend::StartCapture() {
     // without XEX_CAPTURE_DIR, beside the exe
