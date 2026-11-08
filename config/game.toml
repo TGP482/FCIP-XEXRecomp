@@ -1,0 +1,64 @@
+# Recompiler input for default.xex, written by xex_symbols
+
+[xex]
+path = "assets/default.xex"
+title = 0x555307DC
+entry = 0x826444F0
+xdk = 2417
+out = "generated/game"
+partitions = 64
+library = "FCIP.dll"  # <exe>.dll, which the executable delay loads
+
+# extra entry points
+[functions]
+
+# functions the host replaces or calls by name, 0 where the image has none
+[symbols]
+# Direct3D 9, drawn by the host
+D3D_InitializeEngines         = 0x82743ED0
+D3D_InterruptHandler          = 0x827373F8
+D3D_SetDefaultRegisters       = 0x8274B820
+D3D_MakeSpace                 = 0x82738618
+D3D_SubmitIndirect            = 0x82737A30
+D3DDevice_CreatePixelShader   = 0x82732CA8
+D3DDevice_CreateVertexShader  = 0x82732D98
+D3DDevice_DrawIndexedVertices = 0x827392F8
+D3DDevice_DrawVertices        = 0x827390B8
+D3DDevice_DrawVerticesUP      = 0x82739030
+D3DDevice_Resolve             = 0x8273F6E8
+D3DDevice_Swap                = 0x8273E938
+D3DDevice_BeginTiling         = 0x8273D320
+D3DDevice_EndTiling           = 0x8273D758
+D3DDevice_SetPredication      = 0x8273D1E8
+D3DDevice_SetViewport         = 0x8273BCA8
+D3DQuery_GetData              = 0x82741238
+D3DQuery_Issue                = 0x82741090
+
+# XAudio, mixed by the host
+XAudioCreateSourceVoice              = 0x8275D138
+XAudioCreateSubmixVoice              = 0x8275D198
+XAudioInitialize                     = 0x8275CDC8
+XAudioRegisterEffects                = 0x8275D020
+XAudioRegisterRenderCallback         = 0x8275CF20
+XAudioShutDown                       = 0x8275CEA0
+XAudioSourceVoice_FlushPackets       = 0x8275C9D0
+XAudioSourceVoice_GetPacketPosition  = 0x8275CB38
+XAudioSourceVoice_GetStreamPosition  = 0x8275CC40
+XAudioSourceVoice_SetPacketLoopCount = 0x8275CBE8
+XAudioSourceVoice_SetPacketPosition  = 0x8275CB90
+XAudioSourceVoice_SetPitch           = 0x8275CD50
+XAudioSourceVoice_Start              = 0x8275CA28
+XAudioSourceVoice_SubmitPacket       = 0x8275C970
+XAudioUnregisterEffects              = 0x8275D0A8
+XAudioUnregisterRenderCallback       = 0x8275CFA0
+XAudioVoice_GetVoiceState            = 0x8275C918
+XAudioVoice_GetVolume                = 0x8275CC98
+XAudioVoice_Release                  = 0x8275C730
+XAudioVoice_SetEffectParam           = 0x8275C7F8
+XAudioVoice_SetEffectState           = 0x8275C798
+XAudioVoice_SetVoiceOutput           = 0x8275C868
+XAudioVoice_SetVoiceOutputVolume     = 0x8275C8C0
+XAudioVoice_SetVolume                = 0x8275CCD8
+XAudioVoice_Stop                     = 0x8275CA78
+
+[data]

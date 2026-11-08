@@ -1,0 +1,36 @@
+# build
+/out/
+/build/
+*.zip
+*.pdb
+*.exe
+*.dll
+*.lib
+*.exp
+*.ilk
+*.obj
+*.o
+*.pch
+
+# recompiled code, derived from the game, in any folder
+generated/
+
+# user's own game files
+/assets/
+
+# runtime files
+settings.toml
+/logs/
+/hdd/
+/CrashDumps/
+/captures/
+/textures/
+*.log
+
+# editors
+.vs/
+.vscode/
+.idea/
+
+# Local temporary folder
+.local
