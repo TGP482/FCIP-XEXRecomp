@@ -34,6 +34,9 @@ D3DDevice_SetViewport         = 0x8273BCA8
 D3DQuery_GetData              = 0x82741238
 D3DQuery_Issue                = 0x82741090
 
+# D3DX, its surface copy also run on the host
+D3DXLoadSurfaceFromSurface    = 0x8264F9D8
+
 # XAudio, mixed by the host
 XAudioCreateSourceVoice              = 0x8275D138
 XAudioCreateSubmixVoice              = 0x8275D198
