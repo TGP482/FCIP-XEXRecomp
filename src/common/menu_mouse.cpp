@@ -169,9 +169,9 @@ bool ToVirtual(float u, float v, int& x, int& y) {
     int vw = ReadS16(ui + kUiVirtualW);
     int vh = ReadS16(ui + kUiVirtualH);
     if (!GuestOk(ui) || vw <= 0 || vh <= 0) return false;
-    // pages are drawn narrowed about the centre
+    // pages are drawn narrowed and shortened about the centre
     x = int(((u - 0.5f) / fcip::Narrow2D() + 0.5f) * float(vw));
-    y = int(v * float(vh));
+    y = int(((v - 0.5f) / fcip::Short2D() + 0.5f) * float(vh));
     return true;
 }
 
