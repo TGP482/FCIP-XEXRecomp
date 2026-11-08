@@ -96,11 +96,13 @@ UIText_Draw = 0x8247D1A8
 UIText_Measure = 0x8247DA98
 UIWidget_CanFocus = 0x8246B950
 
-# CryRender and Cry3DEngine: aspect, HUD and field of view
+# CryRender and Cry3DEngine: aspect, HUD, field of view and blur
 Bink_DrawFrame = 0x8234DDB8
 C3DEngine_RenderWorld = 0x825EDB98
 CCamera_Update = 0x825C37D8
 COcean_Update = 0x8250B808
+CPlayer_FeralRunBlur = 0x82272678
+CZoom_ZoomIn = 0x8227DAB0
 Device_Init = 0x823AF430
 PerspectiveFov = 0x8264D520
 Renderer_Init = 0x8236EA88

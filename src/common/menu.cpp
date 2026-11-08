@@ -82,7 +82,7 @@ void Flip(bool& on, int step) {
 
 enum RowId {
     kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivity, kInvertY, kSmoothing,
-    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kFov
+    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kFov, kBlur
 };
 
 constexpr Row kSettingsRows[] = {
@@ -97,6 +97,7 @@ constexpr Row kSettingsRows[] = {
      "Caps the frame rate to your monitor's refresh rate or a custom value, or removes the cap"},
     {Kind::Heading, -1, "GRAPHICS", nullptr},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
+    {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
     {Kind::Defaults, -1, "RESTORE DEFAULTS", "Puts every setting on this page back to its default"},
 };
 
@@ -172,6 +173,7 @@ bool* ToggleFlag(int id) {
         case kHoldAim: return &g.hold_aim;
         case kHoldSprint: return &g.hold_sprint;
         case kAutoHelpers: return &g.auto_helpers;
+        case kBlur: return &g.blur;
         default: return nullptr;
     }
 }

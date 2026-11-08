@@ -67,6 +67,7 @@ constexpr uint32_t kPlayerZoom = 0x884;  // zoomed u8 +4, leaving u8 +6
 constexpr uint32_t kZoomOn = 0x04;
 constexpr uint32_t kZoomLeaving = 0x06;
 constexpr uint32_t kPlayerAkimbo = 0x8E0;  // u8, SECONDARY_FIRE fires the second gun
+constexpr uint32_t kPlayerBlurLock = 0x994;  // u8 set stops every blur write (script SetBlur sets it too)
 // press trackers read an action: press time float +4 (0 idle), consumed u8 +0xC
 constexpr uint32_t kPlayerStanceTracker = 0xBB8;  // MOVEMODE
 constexpr uint32_t kPlayerUseTracker = 0xBC0;     // RELOAD_USE
@@ -450,7 +451,12 @@ PPC_FUNC(GUEST(CPlayer_Zoom)) {
     } else if (Local(player, cmd) && fcip::Get().hold_aim && K::KbmActive() && !K::PadRecent()) {
         HoldToAim(player, cmd);
     }
+    // zoom steps set the scope blur; the lock keeps it off
+    bool lock = !fcip::Get().blur && GuestOk(player);
+    uint8_t saved = lock ? R8(player + kPlayerBlurLock) : 0;
+    if (lock) W8(player + kPlayerBlurLock, 1);
     GUEST_ORIG(CPlayer_Zoom)(ctx, base);
+    if (lock) W8(player + kPlayerBlurLock, saved);
 }
 
 // (player, cmd, u8 can_fire): SECONDARY_FIRE fires the second gun in akimbo and throws otherwise, so it only rides
