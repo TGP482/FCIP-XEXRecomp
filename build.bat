@@ -51,11 +51,12 @@ if not exist out\build\release\sdk_dir.txt echo       out\build\release\sdk_dir.
 set /p SDK=<out\build\release\sdk_dir.txt
 if not exist config mkdir config
 "%OUT%\xex_symbols.exe" assets\%GAME_XEX% "%SDK%\xdk" --library %GAME_EXE%.dll --out config\game.toml || goto :fail
+"%OUT%\xex_symbols.exe" assets\ige.xex "%SDK%\xdk" --library FCIPEditor.dll --name editor --out config\editor.toml || goto :fail
 
 rem game
 :game
 echo [3/3] Game code
-echo       first build recompiles %GAME_XEX%, expect 30 to 90 minutes ...
+echo       first build recompiles %GAME_XEX% and ige.xex, expect 30 to 90 minutes ...
 cmake --build out\build\release || goto :fail
 
 echo.

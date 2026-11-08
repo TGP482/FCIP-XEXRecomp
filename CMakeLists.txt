@@ -24,11 +24,17 @@ include(${SDK}/cmake/XexRecomp.cmake)
 list(FILTER XEX_RUNTIME_SOURCES EXCLUDE REGEX "/(xdk/d3d9|xdk/xaudio|gpu/d3d12)\\.cpp$")
 
 file(GLOB XEX_HOST_SOURCES CONFIGURE_DEPENDS src/*/*.cpp)
-list(FILTER XEX_HOST_SOURCES EXCLUDE REGEX "/src/game/")
+list(FILTER XEX_HOST_SOURCES EXCLUDE REGEX "/src/(game|editor)/")
 
-# partitions as xex_symbols wrote them into config/game.toml
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS config/game.toml)
-file(STRINGS config/game.toml GAME_PARTITIONS REGEX "^partitions *=")
-string(REGEX MATCH "[0-9]+" GAME_PARTITIONS "${GAME_PARTITIONS}")
+# partitions as xex_symbols wrote them into each config
+foreach(image game editor)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS config/${image}.toml)
+    file(STRINGS config/${image}.toml parts REGEX "^partitions *=")
+    string(REGEX MATCH "[0-9]+" PARTITIONS_${image} "${parts}")
+endforeach()
 
-add_xex_image(FCIP default.xex game.toml ${GAME_PARTITIONS} game)
+add_xex_image(FCIP default.xex game.toml ${PARTITIONS_game} game)
+# the map editor, which the game launches
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/assets/ige.xex)
+    add_xex_image(FCIPEditor ige.xex editor.toml ${PARTITIONS_editor} editor)
+endif()
