@@ -2,6 +2,7 @@
 // multiplier rescales from stock instead of compounding
 #include "common/draw_distance.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 
@@ -15,10 +16,15 @@ namespace {
 
 // C3DEngine
 constexpr uint32_t kDetailViewDistance = 0x4C0;
+constexpr uint32_t kSunSlopeScale = 0x4E8;
+constexpr uint32_t kShadowSectorRadius = 0x1170;
+constexpr uint32_t kShadowRadius = 0x1174;
+constexpr uint32_t kShadowRadiusSpeed = 0x11F4;
 // CObjManager
 constexpr uint32_t kObjLodRatio = 0xF4;
 constexpr uint32_t kObjViewDistRatio = 0xF8;
 constexpr uint32_t kObjSpriteSwitchRatio = 0xFC;
+constexpr uint32_t kStockShadowSide = 1344;
 
 bool GuestOk(uint32_t addr) { return addr >= 0x10000u && addr < 0xC0000000u; }
 
@@ -54,10 +60,18 @@ void Scale(uint32_t addr, float mult, Field& f) {
     if (raw > 0.0f) f.Set(addr, raw, f.Stock(raw) * mult);
 }
 
+// adds to the game's own value, which may be 0
+void Offset(uint32_t addr, float add, Field& f) {
+    float raw = GF(addr);
+    f.Set(addr, raw, f.Stock(raw) + add);
+}
+
 Field g_detail;
 Field g_obj_view;
 Field g_obj_lod;
 Field g_obj_sprite;
+Field g_sun_slope;
+std::atomic<float> g_level_radius{0.0f};
 std::atomic<float> g_level_detail{0.0f};
 
 void ApplyEngine(uint32_t engine) {
@@ -65,6 +79,17 @@ void ApplyEngine(uint32_t engine) {
     // checkpoint loads restore an engine snapshot: the level's values stand
     if (float d = g_level_detail; d > 0.0f) g_detail = {d, GF(engine + kDetailViewDistance), true};
     Scale(engine + kDetailViewDistance, float(s.detail_distance), g_detail);
+    if (float r = g_level_radius; r > 0.0f && GF(engine + kShadowRadius) != r) WF(engine + kShadowRadius, r);
+    // the radius stays stock, saves snapshot it; the radius readers scale it. The walk would take a minute at 12x, so
+    // the radius lands the same frame; finite, the speed is multiplied by a frame time that is 0 while paused.
+    WF(engine + kShadowRadiusSpeed, 1.0e6f);
+    W8(engine + kShadowSectorRadius, s.shadow_distance == 1);
+    // the sun texel size over stock: the slope bias is the value over 2^24, 0 at the stock texel, nearing 2 texels,
+    // the reach of the 4 tap compare
+    uint32_t side = std::min<uint32_t>(s.shadow_resolution, 8192);
+    float texel = float(s.shadow_distance) * float(kStockShadowSide) / float(side);
+    float slope = texel > 1.0f ? 2.0f * (1.0f - 1.0f / texel) : 0.0f;
+    Offset(engine + kSunSlopeScale, slope * 16777216.0f, g_sun_slope);
 }
 
 void Apply() {
@@ -82,7 +107,10 @@ void Apply() {
 
 namespace fcip {
 
+void NoteLevelRadius(float radius) { g_level_radius = radius; }
 void NoteLevelDetail(float detail) { g_level_detail = detail; }
+
+void ScaleShadowRadius(double& radius) { radius *= double(Get().shadow_distance); }
 
 }  // namespace fcip
 

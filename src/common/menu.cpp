@@ -38,6 +38,7 @@ std::atomic<bool> g_open{false};
 constexpr uint32_t kAnisoValues[] = {0, 2, 4, 8, 16};
 const char* const kAnisoNames[] = {"GAME DEFAULT", "2x", "4x", "8x", "16x"};
 constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, 360, app::kFpsCapRefresh, 0};
+constexpr uint32_t kShadowSizes[] = {1024, 1344, 2048, 3072, 4096, 6144, 8192};
 constexpr uint32_t kDistances[] = {1, 2, 4, 6, 8, 12, 16, 32};
 
 int StepIndex(int index, int step, int count) {
@@ -84,7 +85,7 @@ void Flip(bool& on, int step) {
 enum RowId {
     kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivity, kInvertY, kSmoothing,
     kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kFov, kBlur, kFpsCounter, kSkipIntros, kObjectDistance,
-    kDetailDistance, kVegetationDetail, kModelDetail
+    kDetailDistance, kVegetationDetail, kModelDetail, kShadowResolution, kShadowDistance
 };
 
 constexpr Row kSettingsRows[] = {
@@ -100,6 +101,8 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kFpsCounter, "FPS COUNTER", "Displays the frame rate on screen"},
     {Kind::Heading, -1, "GRAPHICS", nullptr},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
+    {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024 to 8192, 1344 is stock"},
+    {Kind::Value, kShadowDistance, "SHADOW DISTANCE", "Scales the area around the player that casts sun shadows"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
     {Kind::Heading, -1, "DRAW DISTANCE", nullptr},
     {Kind::Value, kObjectDistance, "OBJECT DISTANCE", "Scales how far trees, buildings, props and characters are drawn"},
@@ -194,6 +197,7 @@ bool* ToggleFlag(int id) {
 uint32_t* DistanceField(int id) {
     Settings& g = Get();
     switch (id) {
+        case kShadowDistance: return &g.shadow_distance;
         case kObjectDistance: return &g.object_distance;
         case kDetailDistance: return &g.detail_distance;
         case kVegetationDetail: return &g.vegetation_detail;
@@ -218,6 +222,9 @@ void StepInputRow(int id, int step, char (&text)[64]) {
     } else if (uint32_t* scale = DistanceField(id)) {
         uint32_t v = kDistances[StepTable(kDistances, *scale, step)];
         std::snprintf(text, sizeof(text), v == 1 ? "DEFAULT" : "%ux", v);
+    } else if (id == kShadowResolution) {
+        uint32_t size = kShadowSizes[StepTable(kShadowSizes, g.shadow_resolution, step)];
+        std::snprintf(text, sizeof(text), size == 1344 ? "%u (DEFAULT)" : "%u", size);
     } else if (id == kFov) {
         // 45 to 140 in steps of 1
         int fov = StepRange(int(std::lround(g.fov)), 45, 140, 1, step);

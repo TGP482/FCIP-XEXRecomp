@@ -8,7 +8,9 @@ struct Settings {
     float fov = 90.0f;  // true horizontal degrees, 45 to 140
     bool fps_counter = false;
     bool blur = true;   // the game's blur while scoped and during feral run
-    uint32_t object_distance = 1;  // multipliers on the level's own values, 1 is stock
+    uint32_t shadow_resolution = 1344;  // sun shadow map side, 1344 is stock
+    uint32_t shadow_distance = 1;       // multipliers on the level's own values, 1 is stock
+    uint32_t object_distance = 1;
     uint32_t detail_distance = 1;
     uint32_t vegetation_detail = 1;  // sprite switch distance
     uint32_t model_detail = 1;       // mesh LOD distance

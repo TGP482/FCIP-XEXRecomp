@@ -100,7 +100,7 @@ UIWidget_CanFocus = 0x8246B950
 PlayMovie = 0x8233FFA0
 RaiseStartupScreen = 0x821558C8
 
-# CryRender and Cry3DEngine: aspect, HUD, field of view, blur, draw distance, fps counter
+# CryRender and Cry3DEngine: aspect, HUD, field of view, blur, shadows, draw distance, fps counter
 Bink_DrawFrame = 0x8234DDB8
 C3DEngine_RenderWorld = 0x825EDB98
 CCamera_Update = 0x825C37D8
@@ -115,6 +115,13 @@ Overlay_Flush = 0x82369480
 PerspectiveFov = 0x8264D520
 Renderer_Init = 0x8236EA88
 ShadowMaps_Update = 0x825EF248
+Shadow_Extent = 0x8236A680
+Shadow_Pass = 0x82367D68
+Shadow_Size = 0x82370A80
+Shadow_Snap = 0x825D2220
+Shadow_Surface = 0x8236A448
+Shadow_Texture = 0x823B1208
+Shadow_Viewport = 0x8236A0E8
 UIRect_Draw = 0x823C8410
 UIWidget_Draw = 0x82479130
 UI_DrawQuad = 0x823809D8
@@ -147,3 +154,18 @@ UbisoftMovie_return = 0x82315F58
 C3DEngine_pointer = 0x829122C8
 DisplayBlock = 0x829161A0
 ObjManager_pointer = 0x82913474
+
+# instruction hooks, defined in src/game/draw_distance.cpp
+
+[[hook]]  # f0 = the sun shadow radius walk target
+at = 0x825D3ED8
+call = "ShadowRadiusTarget"
+
+[[hook]]  # f8 = the sun light radius
+at = 0x825C5DD4
+call = "ShadowRadiusLight"
+
+[[hook]]  # f1 = the radius tested against the distance
+at = 0x825FAFA8
+call = "ShadowRadiusRange"
+
