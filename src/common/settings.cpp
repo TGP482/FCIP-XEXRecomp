@@ -17,6 +17,7 @@ void LoadSettings(const void* table) {
     auto& t = *static_cast<const toml::table*>(table);
     Settings& s = Get();
     s.fov = std::clamp(t["fov"].value_or(s.fov), 45.0f, 140.0f);
+    s.fps_counter = t["fps_counter"].value_or(s.fps_counter);
     s.blur = t["aim_and_sprint_blur"].value_or(s.blur);
     s.sensitivity = std::clamp(t["mouse_sensitivity"].value_or(s.sensitivity), 0.02f, 4.0f);
     s.invert_y = t["invert_mouse_y"].value_or(s.invert_y);
@@ -32,6 +33,7 @@ void SaveSettings(void* table) {
     auto& t = *static_cast<toml::table*>(table);
     const Settings& s = Get();
     t.insert_or_assign("fov", double(s.fov));
+    t.insert_or_assign("fps_counter", s.fps_counter);
     t.insert_or_assign("aim_and_sprint_blur", s.blur);
     t.insert_or_assign("mouse_sensitivity", double(s.sensitivity));
     t.insert_or_assign("invert_mouse_y", s.invert_y);

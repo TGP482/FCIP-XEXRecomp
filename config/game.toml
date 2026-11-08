@@ -96,7 +96,7 @@ UIText_Draw = 0x8247D1A8
 UIText_Measure = 0x8247DA98
 UIWidget_CanFocus = 0x8246B950
 
-# CryRender and Cry3DEngine: aspect, HUD, field of view and blur
+# CryRender and Cry3DEngine: aspect, HUD, field of view, blur, fps counter
 Bink_DrawFrame = 0x8234DDB8
 C3DEngine_RenderWorld = 0x825EDB98
 CCamera_Update = 0x825C37D8
@@ -104,6 +104,10 @@ COcean_Update = 0x8250B808
 CPlayer_FeralRunBlur = 0x82272678
 CZoom_ZoomIn = 0x8227DAB0
 Device_Init = 0x823AF430
+Font_Draw = 0x823C9520
+Font_Load = 0x82482AC0
+Font_New = 0x823C7850
+Overlay_Flush = 0x82369480
 PerspectiveFov = 0x8264D520
 Renderer_Init = 0x8236EA88
 ShadowMaps_Update = 0x825EF248
@@ -129,5 +133,6 @@ UIGlyph_table = 0x82053C70
 UIList_vtable = 0x82078A40
 UISystem_pointer = 0x82912904
 
-# CryRender and Cry3DEngine: the display block
+# CryRender and Cry3DEngine: the display block and the engine
+C3DEngine_pointer = 0x829122C8
 DisplayBlock = 0x829161A0

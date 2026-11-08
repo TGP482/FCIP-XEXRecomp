@@ -6,6 +6,7 @@ namespace fcip {
 
 struct Settings {
     float fov = 90.0f;  // true horizontal degrees, 45 to 140
+    bool fps_counter = false;
     bool blur = true;   // the game's blur while scoped and during feral run
     float sensitivity = 1.0f;      // mouse look, the game's own pad look is 1
     bool invert_y = false;
