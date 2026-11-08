@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "app/app.h"
+#include "common/aspect.h"
 #include "backends/imgui_impl_dx12.h"
 #include "backends/imgui_impl_win32.h"
 #include "core/diag.h"
@@ -1878,12 +1879,12 @@ void D3D12Backend::ResizeSwap() {
     swap_h_ = h;
 }
 
-// the frame over the window at the console's aspect, bars around it
+// the frame over the window at the output's aspect, 4:3 at the narrowest, bars around it
 void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, UINT mapping,
                               uint32_t w, uint32_t h) {
     ID3D12PipelineState* pso = EnsureResolvePipeline(kSwapFormat, false);
     if (!pso) return;
-    float aspect = app::Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f;
+    float aspect = fcip::DisplayAspect();
     float vw = std::min(float(swap_w_), swap_h_ * aspect);
     float vh = vw / aspect;
     uint32_t views = AllocViews(kPsTextures);

@@ -96,6 +96,15 @@ UIText_Draw = 0x8247D1A8
 UIText_Measure = 0x8247DA98
 UIWidget_CanFocus = 0x8246B950
 
+# CryRender and Cry3DEngine: aspect and HUD
+Bink_DrawFrame = 0x8234DDB8
+C3DEngine_RenderWorld = 0x825EDB98
+Device_Init = 0x823AF430
+Renderer_Init = 0x8236EA88
+UIRect_Draw = 0x823C8410
+UIWidget_Draw = 0x82479130
+UI_DrawQuad = 0x823809D8
+
 [data]
 # CryUI, the menus
 UICloneVisitor_vtable = 0x82079D90
@@ -113,3 +122,6 @@ MenuManager_vtable = 0x82054644
 UIGlyph_table = 0x82053C70
 UIList_vtable = 0x82078A40
 UISystem_pointer = 0x82912904
+
+# CryRender and Cry3DEngine: the display block
+DisplayBlock = 0x829161A0

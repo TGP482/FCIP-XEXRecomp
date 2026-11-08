@@ -317,8 +317,6 @@ namespace fcip {
 
 uint32_t LocalPlayer() { return g_local_player; }
 
-float FrameAspect() { return app::Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f; }
-
 bool MouseLookActive() {
     if (MenuOpen() || GetForegroundWindow() != static_cast<HWND>(app::Window())) return false;
     uint64_t stamp = g_gameplay_ms;

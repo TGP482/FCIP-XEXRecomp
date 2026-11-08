@@ -15,6 +15,7 @@
 #include <mutex>
 
 #include "app/app.h"
+#include "common/aspect.h"
 #include "common/input.h"
 #include "common/keys.h"
 #include "common/menu.h"
@@ -100,7 +101,7 @@ void SetPos(HWND hwnd, intptr_t lp) {
     float w = float(r.right);
     float h = float(r.bottom);
     if (w <= 0.0f || h <= 0.0f) return;
-    float a = fcip::FrameAspect();
+    float a = fcip::DisplayAspect();
     float fw = std::min(w, h * a);
     float fh = fw / a;
     float u = (float(GET_X_LPARAM(lp)) - (w - fw) * 0.5f) / fw;
@@ -168,7 +169,8 @@ bool ToVirtual(float u, float v, int& x, int& y) {
     int vw = ReadS16(ui + kUiVirtualW);
     int vh = ReadS16(ui + kUiVirtualH);
     if (!GuestOk(ui) || vw <= 0 || vh <= 0) return false;
-    x = int(u * float(vw));
+    // pages are drawn narrowed about the centre
+    x = int(((u - 0.5f) / fcip::Narrow2D() + 0.5f) * float(vw));
     y = int(v * float(vh));
     return true;
 }

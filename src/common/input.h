@@ -19,7 +19,5 @@ void PressStart();
 
 bool MouseLookActive();
 uint32_t LocalPlayer();  // the CPlayer ProcessView last ran for
-// the frame's look as the window shows it: 16:9 on a widescreen output, else 4:3
-float FrameAspect();
 
 }  // namespace fcip
