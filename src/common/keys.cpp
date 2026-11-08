@@ -1,0 +1,322 @@
+#include "common/keys.h"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <mutex>
+
+#include <toml++/toml.hpp>
+
+namespace fcip::keys {
+
+namespace {
+
+struct ActionInfo {
+    const char* label;
+    const char* key;  // settings file name
+    uint8_t first;
+    uint8_t second;
+};
+
+constexpr ActionInfo kActions[kActionCount] = {
+    {"MOVE FORWARD", "move_forward", 'W', 0},
+    {"MOVE BACK", "move_back", 'S', 0},
+    {"STRAFE LEFT", "strafe_left", 'A', 0},
+    {"STRAFE RIGHT", "strafe_right", 'D', 0},
+    {"WALK", "walk", VK_MENU, 0},
+    {"JUMP", "jump", VK_SPACE, 0},
+    {"CROUCH", "crouch", 'C', 0},
+    {"FIRE", "fire", VK_LBUTTON, 0},
+    {"AIM", "aim", VK_RBUTTON, 0},
+    {"MELEE", "melee", 'V', 0},
+    {"RELOAD", "reload", 'R', 0},
+    {"INTERACT", "interact", 'F', 0},
+    {"FERAL RUN", "feral_run", VK_SHIFT, 0},
+    {"FERAL VISION", "feral_vision", 'X', 0},
+    {"THROW", "throw", 'G', 0},
+    {"GRENADES / ROCKS", "grenades", 'Q', 0},
+    {"WEAPONS / TRAPS", "weapons", 'E', 0},
+    {"BINOCULARS", "binoculars", '1', 0},
+    {"PISTOL", "pistol", '2', 0},
+    {"RIFLE", "rifle", '3', 0},
+    {"HEAVY WEAPON", "heavy_weapon", '4', 0},
+    {"OBJECTIVES", "objectives", VK_TAB, 0},
+    {"PAUSE MENU", "pause_menu", VK_ESCAPE, 0},
+    {"SETTINGS PANEL", "settings_panel", VK_F10, 0},
+    {"LOOK UP", "look_up", VK_UP, 0},
+    {"LOOK DOWN", "look_down", VK_DOWN, 0},
+    {"LOOK LEFT", "look_left", VK_LEFT, 0},
+    {"LOOK RIGHT", "look_right", VK_RIGHT, 0},
+};
+
+struct Name {
+    uint8_t vk;
+    const char* name;
+};
+
+constexpr Name kNames[] = {
+    {VK_LBUTTON, "LMB"}, {VK_RBUTTON, "RMB"}, {VK_MBUTTON, "MMB"}, {VK_XBUTTON1, "MB4"}, {VK_XBUTTON2, "MB5"},
+    {VK_BACK, "BACKSPACE"}, {VK_TAB, "TAB"}, {VK_RETURN, "ENTER"}, {VK_SHIFT, "SHIFT"}, {VK_CONTROL, "CTRL"},
+    {VK_MENU, "ALT"}, {VK_PAUSE, "PAUSE"}, {VK_CAPITAL, "CAPS LOCK"}, {VK_ESCAPE, "ESCAPE"}, {VK_SPACE, "SPACE"},
+    {VK_PRIOR, "PAGE UP"}, {VK_NEXT, "PAGE DOWN"}, {VK_END, "END"}, {VK_HOME, "HOME"}, {VK_LEFT, "LEFT"},
+    {VK_UP, "UP"}, {VK_RIGHT, "RIGHT"}, {VK_DOWN, "DOWN"}, {VK_INSERT, "INSERT"}, {VK_DELETE, "DELETE"},
+    {VK_MULTIPLY, "NUM *"}, {VK_ADD, "NUM +"}, {VK_SUBTRACT, "NUM -"}, {VK_DECIMAL, "NUM ."}, {VK_DIVIDE, "NUM /"},
+    {VK_OEM_1, ";"}, {VK_OEM_PLUS, "="}, {VK_OEM_COMMA, ","}, {VK_OEM_MINUS, "-"}, {VK_OEM_PERIOD, "."},
+    {VK_OEM_2, "/"}, {VK_OEM_3, "`"}, {VK_OEM_4, "["}, {VK_OEM_5, "\\"}, {VK_OEM_6, "]"}, {VK_OEM_7, "'"},
+};
+
+std::mutex g_bind_lock;
+uint8_t g_binds[kActionCount][2];
+
+// window thread writes, guest threads read
+std::atomic<bool> g_down[256];
+std::atomic<int64_t> g_mouse_x{0};
+std::atomic<int64_t> g_mouse_y{0};
+std::atomic<int> g_wheel{0};
+std::atomic<uint64_t> g_wheel_ms{0};
+std::atomic<uint64_t> g_pad_ms{0};
+std::atomic<uint64_t> g_kbm_ms{0};
+
+// 0 idle, 1 waiting for a key, 2 key taken, 3 cancelled
+std::atomic<int> g_capture{0};
+std::atomic<uint8_t> g_captured{0};
+
+// pad poll thread: a new key waits one poll, so a pad press reported a pump late still taints it; tainted keys are
+// ignored until released
+bool g_prev[256];
+bool g_fresh[256];
+bool g_tainted[256];
+
+constexpr uint64_t kPadHoldMs = 150;  // covers a key up from Steam's pad mapping landing after the pad let go
+
+uint64_t NowMs() {
+    auto since = std::chrono::steady_clock::now().time_since_epoch();
+    return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(since).count());
+}
+
+uint8_t ParseName(const std::string& name) {
+    if (name.size() == 1 && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= '0' && name[0] <= '9')))
+        return uint8_t(name[0]);
+    for (const Name& n : kNames)
+        if (name == n.name) return n.vk;
+    if (name.size() > 1 && name[0] == 'F') {
+        int f = std::atoi(name.c_str() + 1);
+        if (f >= 1 && f <= 24) return uint8_t(VK_F1 + f - 1);
+    }
+    if (name.rfind("NUM ", 0) == 0 && name.size() == 5 && name[4] >= '0' && name[4] <= '9')
+        return uint8_t(VK_NUMPAD0 + name[4] - '0');
+    return 0;
+}
+
+void Set(uint8_t vk, bool down) {
+    if (!down || g_capture != 1) {
+        g_down[vk] = down;
+        return;
+    }
+    // a capture takes the press, the game never sees it
+    g_captured = vk;
+    g_capture = vk == VK_ESCAPE ? 3 : 2;
+}
+
+uint8_t MouseKey(uint32_t msg, uintptr_t wp) {
+    switch (msg) {
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP: return VK_LBUTTON;
+        case WM_RBUTTONDOWN:
+        case WM_RBUTTONUP: return VK_RBUTTON;
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONUP: return VK_MBUTTON;
+        case WM_XBUTTONDOWN:
+        case WM_XBUTTONUP: return HIWORD(wp) == XBUTTON1 ? VK_XBUTTON1 : VK_XBUTTON2;
+        default: return 0;
+    }
+}
+
+bool IsDown(uint32_t msg) {
+    return msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN;
+}
+
+void RawMouse(intptr_t lp) {
+    RAWINPUT raw;
+    UINT size = sizeof(raw);
+    if (GetRawInputData(HRAWINPUT(lp), RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) == UINT(-1)) return;
+    if (raw.header.dwType != RIM_TYPEMOUSE || (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) return;
+    g_mouse_x += raw.data.mouse.lLastX;
+    g_mouse_y += raw.data.mouse.lLastY;
+}
+
+bool Usable(uint8_t vk, bool fresh) { return vk && g_prev[vk] && (fresh || !g_fresh[vk]) && !g_tainted[vk]; }
+
+}  // namespace
+
+const char* Label(int action) { return kActions[action].label; }
+
+uint8_t Key(int action, int slot) {
+    std::lock_guard lock(g_bind_lock);
+    return g_binds[action][slot];
+}
+
+void Bind(int action, uint8_t vk, int slot) {
+    std::lock_guard lock(g_bind_lock);
+    g_binds[action][slot] = vk;
+}
+
+void ResetBinds() {
+    std::lock_guard lock(g_bind_lock);
+    for (int i = 0; i < kActionCount; i++) {
+        g_binds[i][0] = kActions[i].first;
+        g_binds[i][1] = kActions[i].second;
+    }
+}
+
+// the defaults stand until a settings file holds binds
+const bool g_defaults = (ResetBinds(), true);
+
+std::string KeyName(uint8_t vk) {
+    if (!vk) return {};
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return std::string(1, char(vk));
+    for (const Name& n : kNames)
+        if (n.vk == vk) return n.name;
+    char text[16];
+    if (vk >= VK_F1 && vk <= VK_F24) std::snprintf(text, sizeof(text), "F%d", vk - VK_F1 + 1);
+    else if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) std::snprintf(text, sizeof(text), "NUM %d", vk - VK_NUMPAD0);
+    else std::snprintf(text, sizeof(text), "KEY %02X", vk);
+    return text;
+}
+
+bool Held(int action, bool fresh) { return Usable(Key(action, 0), fresh) || Usable(Key(action, 1), fresh); }
+
+bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp) {
+    switch (msg) {
+        case WM_KEYDOWN:
+        case WM_SYSKEYDOWN:
+            if (wp < 256) Set(uint8_t(wp), true);
+            // Alt and F10 open the system menu otherwise
+            return msg == WM_SYSKEYDOWN && wp != VK_F4;
+        case WM_KEYUP:
+        case WM_SYSKEYUP:
+            if (wp < 256) Set(uint8_t(wp), false);
+            return msg == WM_SYSKEYUP;
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_RBUTTONDOWN:
+        case WM_RBUTTONUP:
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONUP:
+        case WM_XBUTTONDOWN:
+        case WM_XBUTTONUP:
+            Set(MouseKey(msg, wp), IsDown(msg));
+            return false;
+        case WM_MOUSEWHEEL:
+            g_wheel += GET_WHEEL_DELTA_WPARAM(wp);
+            g_wheel_ms = NowMs();
+            return false;
+        case WM_INPUT:
+            RawMouse(lp);
+            return false;
+        case WM_KILLFOCUS:
+            for (auto& d : g_down) d = false;
+            return false;
+    }
+    return false;
+}
+
+void WindowUp(void* hwnd) {
+    RAWINPUTDEVICE mouse{0x01, 0x02, 0, static_cast<HWND>(hwnd)};  // generic desktop, mouse
+    RegisterRawInputDevices(&mouse, 1, sizeof(mouse));
+}
+
+void BeginCapture() {
+    g_captured = 0;
+    g_capture = 1;
+}
+
+bool Capturing() { return g_capture == 1; }
+
+int Captured() {
+    int state = g_capture;
+    if (state < 2) return 0;
+    g_capture = 0;
+    return state == 3 ? -1 : g_captured.load();
+}
+
+bool PadRecent() {
+    uint64_t pad = g_pad_ms;
+    return pad && NowMs() - pad < kPadHoldMs;
+}
+
+bool KbmActive() { return g_kbm_ms > g_pad_ms; }
+
+void NoteKbm() {
+    if (!PadRecent()) g_kbm_ms = NowMs();
+}
+
+// edges are judged against the pad: a key that goes down while it is in use is its echo
+void TrackKeys(bool pad_moved, bool menu_open) {
+    uint64_t now = NowMs();
+    if (pad_moved) g_pad_ms = now;
+    bool pad_recent = PadRecent();
+    for (int i = 0; i < 256; i++) {
+        bool down = g_down[i];
+        if (g_fresh[i]) {
+            g_fresh[i] = false;
+            g_tainted[i] = g_tainted[i] || pad_recent;
+            if (!g_tainted[i]) g_kbm_ms = now;
+        }
+        if (down && !g_prev[i]) {
+            g_fresh[i] = true;
+            g_tainted[i] = pad_recent || menu_open;
+        }
+        if (!down) g_fresh[i] = g_tainted[i] = false;
+        g_prev[i] = down;
+    }
+}
+
+void TakeMouse(double& dx, double& dy) {
+    dx = double(g_mouse_x.exchange(0));
+    dy = double(g_mouse_y.exchange(0));
+}
+
+int TakeWheel() {
+    int delta = g_wheel.exchange(0);
+    int steps = delta / WHEEL_DELTA;
+    // fine grained wheels add up to a detent first
+    g_wheel += delta - steps * WHEEL_DELTA;
+    return steps;
+}
+
+bool WheelFresh() { return NowMs() - g_wheel_ms < 250; }
+
+void Load(const void* table) {
+    ResetBinds();
+    auto& t = *static_cast<const toml::table*>(table);
+    const toml::table* binds = t["keys"].as_table();
+    if (!binds) return;
+    for (int i = 0; i < kActionCount; i++) {
+        std::optional<std::string> v = (*binds)[kActions[i].key].value<std::string>();
+        if (!v) continue;
+        size_t comma = v->find(',');
+        Bind(i, ParseName(v->substr(0, comma)), 0);
+        Bind(i, comma == std::string::npos ? 0 : ParseName(v->substr(comma + 1)), 1);
+    }
+}
+
+void Save(void* table) {
+    toml::table binds;
+    for (int i = 0; i < kActionCount; i++) {
+        std::string v = KeyName(Key(i, 0));
+        if (Key(i, 1)) v += "," + KeyName(Key(i, 1));
+        binds.insert(kActions[i].key, v);
+    }
+    static_cast<toml::table*>(table)->insert_or_assign("keys", std::move(binds));
+}
+
+}  // namespace fcip::keys

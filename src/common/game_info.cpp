@@ -1,5 +1,8 @@
 #include "app/app.h"
+#include "common/input.h"
+#include "common/keys.h"
 #include "common/menu.h"
+#include "common/settings.h"
 
 const app::GameInfo app::kGame = {
     .title = L"Far Cry Instincts: Predator - XEX Recomp",
@@ -11,14 +14,14 @@ const app::GameInfo app::kGame = {
     .missing = L"Put the game in the assets folder: its disc image (.iso), or default.xex with its folders beside it.",
     .images = {{"default.xex", "FCIP"}, {"ige.xex", "FCIPEditor"}},
     .options = {},
-    .load = nullptr,
-    .save = nullptr,
+    .load = fcip::LoadSettings,
+    .save = fcip::SaveSettings,
     .init = nullptr,
     .loaded = nullptr,
-    .window = nullptr,
+    .window = fcip::keys::WindowUp,
     .message = fcip::MenuMessage,
     .ui = fcip::DrawUi,
-    .pad = fcip::MenuPad,
-    .rumble = nullptr,
+    .pad = fcip::GamePad,
+    .rumble = fcip::GameRumble,
     .compiler_colours = {},
 };

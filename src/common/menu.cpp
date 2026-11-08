@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <iterator>
 #include <mutex>
@@ -19,7 +20,10 @@
 #include <imgui.h>
 
 #include "app/app.h"
+#include "common/input.h"
+#include "common/keys.h"
 #include "common/panel_colors.h"
+#include "common/settings.h"
 #include "core/input.h"
 
 namespace fcip {
@@ -76,7 +80,10 @@ void Flip(bool& on, int step) {
     if (step) on = StepIndex(on, step, 2) != 0;
 }
 
-enum RowId { kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso };
+enum RowId {
+    kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivity, kInvertY, kSmoothing,
+    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed
+};
 
 constexpr Row kSettingsRows[] = {
     {Kind::Heading, -1, "DISPLAY", nullptr},
@@ -91,6 +98,27 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Defaults, -1, "RESTORE DEFAULTS", "Puts every setting on this page back to its default"},
 };
+
+const std::vector<Row>& KeyboardRows() {
+    static const std::vector<Row> list = [] {
+        std::vector<Row> out = {
+            {Kind::Heading, -1, "MOUSE", nullptr},
+            {Kind::Value, kSensitivity, "SENSITIVITY", "Adjusts mouse look sensitivity"},
+            {Kind::Value, kInvertY, "INVERT Y AXIS", "Inverts the vertical mouse look axis"},
+            {Kind::Value, kSmoothing, "MOUSE SMOOTHING", "The game's weapon lag behind the view and one frame of camera delay"},
+            {Kind::Value, kHoldAim, "HOLD TO AIM", "Aim only while the aim key is held instead of toggling"},
+            {Kind::Value, kHoldSprint, "HOLD TO SPRINT", "Feral run only while the feral run key is held instead of toggling"},
+            {Kind::Value, kAutoHelpers, "AUTO DISABLE HELPERS",
+             "Turns the aiming helper off while the keyboard or mouse is in use"},
+            {Kind::Value, kWalkSpeed, "WALK SPEED", "Movement speed while the walk key is held"},
+            {Kind::Heading, -1, "KEYBOARD", nullptr},
+        };
+        for (int i = 0; i < keys::kActionCount; i++) out.push_back({Kind::Bind, i, keys::Label(i), "Accept rebinds the key"});
+        out.push_back({Kind::Defaults, -1, "RESTORE DEFAULTS", "Puts the mouse settings and every key back to its default"});
+        return out;
+    }();
+    return list;
+}
 
 bool DisplayRow(int id) { return id == kDisplayMode || id == kResolution; }
 
@@ -135,6 +163,39 @@ app::Mode StepResolution(app::Settings& s, int step) {
     return m;
 }
 
+bool* ToggleFlag(int id) {
+    Settings& g = Get();
+    switch (id) {
+        case kInvertY: return &g.invert_y;
+        case kSmoothing: return &g.mouse_smoothing;
+        case kHoldAim: return &g.hold_aim;
+        case kHoldSprint: return &g.hold_sprint;
+        case kAutoHelpers: return &g.auto_helpers;
+        default: return nullptr;
+    }
+}
+
+void StepInputRow(int id, int step, char (&text)[64]) {
+    Settings& g = Get();
+    if (bool* on = ToggleFlag(id)) {
+        Flip(*on, step);
+        std::snprintf(text, sizeof(text), "%s", OnOff(*on));
+    } else if (id == kSensitivity) {
+        // 0.1 to 20.0 in steps of 0.1, shown as five times the stored value so the game's own reads 5.0
+        int shown = std::clamp(int(std::lround(g.sensitivity * 50.0f)), 1, 200);
+        if (step) {
+            shown = StepRange(shown, 1, 200, 1, step);
+            g.sensitivity = float(shown) / 50.0f;
+        }
+        std::snprintf(text, sizeof(text), "%.1f", float(shown) / 10.0f);
+    } else if (id == kWalkSpeed) {
+        // 10% to 100% in steps of 5
+        int percent = StepRange(int(std::lround(g.walk_speed * 100.0f)), 10, 100, 5, step);
+        if (step) g.walk_speed = float(percent) / 100.0f;
+        std::snprintf(text, sizeof(text), "%d%%", percent);
+    }
+}
+
 void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
     switch (id) {
         case kDisplayMode: {
@@ -170,6 +231,9 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
         case kAniso:
             std::snprintf(text, sizeof(text), "%s", kAnisoNames[StepTable(kAnisoValues, s.aniso, step)]);
             break;
+        default:
+            StepInputRow(id, step, text);
+            break;
     }
 }
 
@@ -187,7 +251,20 @@ std::string RowText(int id, int step, app::Settings& s = app::Get()) {
 }
 
 void RestoreDefaults(int page) {
-    if (page != kSettingsPage) return;
+    if (page == kKeyboardPage) {
+        const Settings def;
+        Settings& g = Get();
+        g.sensitivity = def.sensitivity;
+        g.invert_y = def.invert_y;
+        g.mouse_smoothing = def.mouse_smoothing;
+        g.hold_aim = def.hold_aim;
+        g.hold_sprint = def.hold_sprint;
+        g.auto_helpers = def.auto_helpers;
+        g.walk_speed = def.walk_speed;
+        keys::ResetBinds();
+        Changed(false);
+        return;
+    }
     const app::Settings def;
     app::Settings& s = app::Get();
     s.display_mode = def.display_mode;
@@ -197,7 +274,23 @@ void RestoreDefaults(int page) {
     s.vsync = def.vsync;
     s.fps_cap = def.fps_cap;
     s.aniso = def.aniso;
+    // the mouse settings belong to the other page
+    const Settings keep = Get();
+    Get() = Settings{};
+    Get().sensitivity = keep.sensitivity;
+    Get().invert_y = keep.invert_y;
+    Get().mouse_smoothing = keep.mouse_smoothing;
+    Get().hold_aim = keep.hold_aim;
+    Get().hold_sprint = keep.hold_sprint;
+    Get().auto_helpers = keep.auto_helpers;
+    Get().walk_speed = keep.walk_speed;
     Changed(true);
+}
+
+std::string BindText(int action) {
+    std::string text = keys::KeyName(keys::Key(action, 0));
+    if (uint8_t alt = keys::Key(action, 1)) text += (text.empty() ? "" : "/") + keys::KeyName(alt);
+    return text.empty() ? "UNBOUND" : text;
 }
 
 // Panel
@@ -255,7 +348,76 @@ int OptionRow(const char* label, const char* value) {
     return step;
 }
 
-const char* const kPages[] = {"RECOMP SETTINGS"};
+const char* const kPages[] = {"RECOMP SETTINGS", "MOUSE AND KEYBOARD"};
+
+int PageCount() { return int(std::size(kPages)); }
+
+// the bind row waiting for a key, -1 when idle, and its box: 0 the key, 1 the alternate
+int g_capture = -1;
+int g_capture_slot = 0;
+
+constexpr float kKeyBoxEms = 10.0f;  // a key box's width, two to a row
+
+// label left, a box per key right, ending where the other rows' values do; Enter or a click on a box starts its
+// capture, a right click or Delete on it clears it
+void BindRow(const Row& r) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    float em = ImGui::GetFontSize();
+    float row_w = ImGui::GetContentRegionAvail().x;
+    float row_h = ImGui::GetFrameHeight();
+    float row_x = ImGui::GetCursorPosX();
+    float row_y = ImGui::GetCursorPosY();
+    float value_end = row_x + row_w - row_h - style.ItemSpacing.x;
+    float box_w = em * kKeyBoxEms;
+    ImGui::PushID(r.label);
+    ImGui::SetCursorPos(ImVec2(row_x + style.ItemInnerSpacing.x, row_y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(r.label);
+    for (int slot = 0; slot < 2; slot++) {
+        float x = value_end - float(2 - slot) * box_w - float(1 - slot) * style.ItemSpacing.x;
+        ImGui::SetCursorPos(ImVec2(x, row_y));
+        ImGui::PushID(slot);
+        bool capturing = g_capture == r.id && g_capture_slot == slot;
+        if (ImGui::InvisibleButton("##key", ImVec2(box_w, row_h)) && g_capture < 0) {
+            g_capture = r.id;
+            g_capture_slot = slot;
+            keys::BeginCapture();
+        }
+        bool clear = ImGui::IsItemClicked(ImGuiMouseButton_Right) ||
+                     (ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Delete, false));
+        if (clear && g_capture < 0) {
+            keys::Bind(r.id, 0, slot);
+            Changed(false);
+        }
+        bool lit = capturing || ImGui::IsItemFocused() || ImGui::IsItemHovered();
+        ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                                  ImGui::GetColorU32(lit ? ImGuiCol_Header : ImGuiCol_FrameBg));
+        std::string value = capturing ? "PRESS A KEY" : keys::KeyName(keys::Key(r.id, slot));
+        if (!capturing && slot == 0 && value.empty()) value = "UNBOUND";
+        float pad = (box_w - ImGui::CalcTextSize(value.c_str()).x) * 0.5f;
+        ImGui::SetCursorPos(ImVec2(x + std::max(pad, 0.0f), row_y));
+        ImGui::AlignTextToFramePadding();
+        if (capturing) ImGui::PushStyleColor(ImGuiCol_Text, kHeading);
+        ImGui::TextUnformatted(value.c_str());
+        if (capturing) ImGui::PopStyleColor();
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+    ImGui::SetCursorPos(ImVec2(row_x, row_y));
+    ImGui::Dummy(ImVec2(row_w, row_h));
+}
+
+// a key or mouse button binds, Escape cancels
+void PollCapture() {
+    if (g_capture < 0) return;
+    int vk = keys::Captured();
+    if (!vk) return;
+    if (vk > 0) {
+        keys::Bind(g_capture, uint8_t(vk), g_capture_slot);
+        Changed(false);
+    }
+    g_capture = -1;
+}
 std::atomic<int> g_page{kSettingsPage};
 std::atomic<bool> g_page_set{true};  // the tab bar picks g_page on its next frame
 
@@ -290,6 +452,7 @@ void DrawRows(int page) {
             Section(r.label);
             continue;
         }
+        if (r.kind == Kind::Bind) BindRow(r);
         if (r.kind != Kind::Value) continue;
         bool held = g_display_held && DisplayRow(r.id);
         int step = OptionRow(r.label, RowText(r.id, 0, held ? g_display : app::Get()).c_str());
@@ -300,10 +463,10 @@ void DrawRows(int page) {
 
 // one tab a page, as wide as they share the line; LB / RB step them as the game's menus do
 void DrawTabs() {
-    constexpr int kCount = int(std::size(kPages));
+    int count = PageCount();
     int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) - ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false);
     if (step) {
-        g_page = StepIndex(g_page, step, kCount);
+        g_page = StepIndex(g_page, step, count);
         g_page_set = true;
     }
     // a page set here or from the game's menus shows from the next frame, the tab drawn this one still reads as open
@@ -314,9 +477,9 @@ void DrawTabs() {
     ImGui::PushStyleColor(ImGuiCol_TabSelectedOverline, kHeading);
     ImGui::PushStyleVar(ImGuiStyleVar_TabRounding, 0.0f);
     if (ImGui::BeginTabBar("##pages")) {
-        float gaps = ImGui::GetStyle().ItemInnerSpacing.x * float(kCount - 1);
-        float w = (ImGui::GetContentRegionAvail().x - gaps) / float(kCount);
-        for (int i = 0; i < kCount; i++) {
+        float gaps = ImGui::GetStyle().ItemInnerSpacing.x * float(count - 1);
+        float w = (ImGui::GetContentRegionAvail().x - gaps) / float(count);
+        for (int i = 0; i < count; i++) {
             ImGui::SetNextItemWidth(w);
             if (ImGui::BeginTabItem(kPages[i], nullptr, set && i == g_page ? ImGuiTabItemFlags_SetSelected : 0)) {
                 if (!set) g_page = i;
@@ -353,14 +516,17 @@ void DrawPanel() {
         ImGui::EndChild();
         ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-        ImGui::TextUnformatted("Up and Down select, Left and Right change, Escape closes");
+        const char* hint = "Up and Down select, Left and Right change, Escape closes";
+        if (g_capture >= 0) hint = "Press a key or mouse button to bind, Escape cancels";
+        else if (g_page == kKeyboardPage) hint = "Enter or a click rebinds, right click or Delete clears the key";
+        ImGui::TextUnformatted(hint);
         ImGui::PopStyleColor();
         float bw = em * 8;
         float buttons_pad = ImGui::GetContentRegionAvail().x - bw * 3 - ImGui::GetStyle().ItemSpacing.x * 2;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(buttons_pad, 0.0f));
         if (ImGui::Button("Back", ImVec2(bw, 0))) ToggleMenu();
         ImGui::SameLine();
-        if (ImGui::Button("Defaults", ImVec2(bw, 0))) {
+        if (ImGui::Button("Defaults", ImVec2(bw, 0)) && g_capture < 0) {
             g_display_held = false;
             RestoreDefaults(g_page);
         }
@@ -382,11 +548,12 @@ void ToggleMenu() {
     std::lock_guard lock(app::UiLock());
     g_open = !g_open;
     g_display_held = false;
+    g_capture = -1;
 }
 
 void OpenMenuPage(int page) {
     std::lock_guard lock(app::UiLock());
-    g_page = std::clamp(page, 0, int(std::size(kPages)) - 1);
+    g_page = std::clamp(page, 0, PageCount() - 1);
     g_page_set = true;
     g_display_held = false;
     g_open = true;
@@ -398,33 +565,49 @@ void DrawUi(double) {
     else io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     io.KeyRepeatRate = 0.1f;  // held arrows step ten times a second, ImGui's twenty is too fast for settings
     io.FontGlobalScale = std::max(1.0f, io.DisplaySize.y / 720.0f);
-    if (MenuOpen()) DrawPanel();
+    // the key being captured must not also move the selection
+    if (g_capture >= 0) io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+    else io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    if (!MenuOpen()) return;
+    PollCapture();
+    DrawPanel();
 }
 
-// F10 opens and closes the panel, Escape closes it; the game sees neither while it is open
-bool MenuMessage(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
-    bool key = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-    if (!key || (wp != VK_F10 && !(wp == VK_ESCAPE && MenuOpen()))) return false;
-    ToggleMenu();
-    *result = 0;
-    return true;
-}
-
-void MenuPad(int, input::Pad& pad) {
-    if (MenuOpen()) pad = {.connected = pad.connected};
+// the settings panel key opens and closes the panel, Escape closes it; a capture takes every key
+bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
+    bool key_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+    bool capturing = keys::Capturing();
+    bool panel_key = wp && (wp == keys::Key(keys::kSettings, 0) || wp == keys::Key(keys::kSettings, 1));
+    if (key_down && !capturing && (panel_key || (wp == VK_ESCAPE && MenuOpen()))) {
+        ToggleMenu();
+        *result = 0;
+        return true;
+    }
+    if (CursorMessage(hwnd, msg, lp, result)) return true;
+    bool taken = keys::Message(hwnd, msg, wp, lp) || (capturing && key_down);
+    if (taken) *result = 0;
+    return taken;
 }
 
 namespace rows {
 
 std::span<const Row> Page(int page) {
     if (page == kSettingsPage) return kSettingsRows;
+    if (page == kKeyboardPage) return KeyboardRows();
     return {};
 }
 
 std::string Text(const Row& row, int step) {
     std::lock_guard lock(app::UiLock());
+    if (row.kind == Kind::Bind) return BindText(row.id);
     if (row.kind != Kind::Value) return {};
     return RowText(row.id, step);
+}
+
+void SetBind(int action, uint8_t vk) {
+    std::lock_guard lock(app::UiLock());
+    keys::Bind(action, vk, 0);
+    Changed(false);
 }
 
 void Defaults(int page) {

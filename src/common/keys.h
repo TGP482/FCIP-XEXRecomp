@@ -1,0 +1,53 @@
+// keyboard and mouse: key state from the window, the binds, and keyboard and mouse against the pad
+#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+namespace fcip::keys {
+
+// the game's actions on its classic pad layout (input script and controller help), in panel order
+enum Action : int {
+    kMoveForward, kMoveBack, kStrafeLeft, kStrafeRight, kWalk, kJump, kCrouch, kFire, kAim, kMelee, kReload,
+    kInteract, kFeralRun, kFeralVision, kThrow, kGrenades, kWeapons, kBinoculars, kPistol, kRifle, kHeavy,
+    kObjectives, kPause, kSettings, kLookUp, kLookDown, kLookLeft, kLookRight, kActionCount
+};
+
+const char* Label(int action);
+// a key and its alternate, 0 for none
+uint8_t Key(int action, int slot);
+void Bind(int action, uint8_t vk, int slot);  // 0 clears
+void ResetBinds();
+std::string KeyName(uint8_t vk);  // as the panel and the prompts show it, "" for none
+
+// guest threads: the key is held and was not started while the pad was in use or the panel was open; a key
+// pressed since the last poll counts only when fresh is set
+bool Held(int action, bool fresh = false);
+
+// window thread: every message after the panel's; true takes it
+bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);
+void WindowUp(void* hwnd);  // raw mouse
+
+// the next key or mouse button pressed goes to Captured() instead of the game; Escape cancels
+void BeginCapture();
+bool Capturing();
+// once: the key, -1 cancelled, 0 still waiting
+int Captured();
+
+// the pad was off neutral in the last 150 ms; keyboard or mouse was used after the pad
+bool PadRecent();
+bool KbmActive();
+void NoteKbm();
+
+// once per pad poll on port 0: tracks the keys against the pad
+void TrackKeys(bool pad_moved, bool menu_open);
+// raw mouse motion and wheel detents since the last call
+void TakeMouse(double& dx, double& dy);
+int TakeWheel();
+bool WheelFresh();  // a notch in the last 250 ms
+
+// settings file
+void Load(const void* table);
+void Save(void* table);
+
+}  // namespace fcip::keys

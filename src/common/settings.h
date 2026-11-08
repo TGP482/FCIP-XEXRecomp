@@ -1,0 +1,23 @@
+// the game's own settings, beside the runtime's in the settings file
+#pragma once
+#include <cstdint>
+
+namespace fcip {
+
+struct Settings {
+    float sensitivity = 1.0f;      // mouse look, the game's own pad look is 1
+    bool invert_y = false;
+    bool mouse_smoothing = false;  // the game's pitch lag on the body and weapon
+    bool hold_aim = true;          // aim while the key is held, not a toggle
+    bool hold_sprint = true;       // feral run while its key is held, not a toggle
+    float walk_speed = 0.5f;       // of running
+    bool auto_helpers = true;      // the aiming helper off while the keyboard or mouse is in use
+};
+
+Settings& Get();
+
+// GameInfo load and save: these settings and the binds
+void LoadSettings(const void* table);
+void SaveSettings(void* table);
+
+}  // namespace fcip

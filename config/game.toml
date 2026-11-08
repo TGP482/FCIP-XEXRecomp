@@ -67,9 +67,26 @@ UIElement_SetCaption = 0x8216A6E8
 UIWidget_AddListener = 0x82478A90
 UIWidget_Clone = 0x82496AE8
 
+# CryGame, the player and input
+CAimHelper_AutoAim = 0x8228B3B8
+CAimHelper_Update = 0x8228BC78
+CPlayer_Feral = 0x82268100
+CPlayer_Fire = 0x822671A0
+CPlayer_ProcessMovements = 0x8225FB70
+CPlayer_ProcessView = 0x8226F5E8
+CPlayer_ReloadUse = 0x82266578
+CPlayer_SelectWeaponSlot = 0x82267C48
+CPlayer_UpdateLookBones = 0x8225CA98
+CPlayer_UpdateView = 0x8225D0C8
+CPlayer_Zoom = 0x82266208
+
 [data]
 # CryUI, the menus
 UICloneVisitor_vtable = 0x82079D90
 UITransform_vtable = 0x82079188
 UIWidgetFocus_vtable = 0x82078BC4
 UIWidgetText_vtable = 0x82079880
+
+# CryGame: the game object, its cl_aimingHelper offset
+Game_AimingHelper = 0xA8
+Game_pointer = 0x8291234C
