@@ -33,7 +33,17 @@ Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
 ### Minimum
 - **OS**
   - Windows 10 64-bit
-- **GPU** with support for Direct3D 12
+- **CPU** with support for SSE4.2 and POPCNT
+  - Intel Nehalem (Intel Core 1st Generation)
+  - AMD Bulldozer (AMD FX series)
+- **GPU** with support for Direct3D 12 and Shader Model 6.0
+  - NVIDIA GeForce GT 630 (Kepler)
+  - AMD Radeon HD 7750
+  - Intel HD Graphics 510 (Skylake)
+- **Memory**
+  - 4 GB
+- **Storage**
+  - 6 GB for the game files, the compiled game code, saves and shader cache
 
 ## Building
 
