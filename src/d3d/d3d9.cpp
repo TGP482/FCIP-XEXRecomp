@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "app/app.h"
+#include "d3d/readback.h"
 #include "gpu/backend.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
@@ -476,6 +477,7 @@ void ResolveTo(uint32_t dev, const ResolveCall& c) {
     }
     r.clear_z = c.z;
     r.clear_stencil = c.stencil;
+    gpu::NoteResolve(r.dst_base);
     Backend()->Resolve(s, r);
 }
 
@@ -496,6 +498,25 @@ void ResolveTo(uint32_t dev, const ResolveCall& c) {
 [[maybe_unused]] void SurfaceFetch(uint32_t surface, uint32_t out[6]) {
     for (uint32_t i = 0; i < 6; i++) out[i] = R32(surface + XDK_Texture_FetchConstant + i * 4);
     out[1] = mem::PhysicalFromVirtual(out[1] & 0xFFFFF000) | (out[1] & 0xFFF);
+}
+
+// the CPU reads src's memory next, and a D3DX copy writes dst's: a resolve at src goes there first, once the GPU
+// finished it, as the console's lock waits on the resolve
+[[maybe_unused]] void ReadOnCpu(uint32_t src, uint32_t dst) {
+    gpu::CopyArgs c;
+    SurfaceFetch(src, c.src);
+    if (dst) SurfaceFetch(dst, c.dst);
+    // a lock from the copy made at the resolve, else the render thread writes it in turn
+    if (!dst && gpu::ApplyReadBack(c.src)) return;
+    bool resolve = gpu::IsResolve(c.src);
+    if (!resolve && !dst) return;
+    uint64_t n = 0;
+    {
+        std::lock_guard lock(g_lock);
+        n = gpu::QueueCopy(c.dst);
+        Backend()->Copy(c);
+    }
+    if (resolve) gpu::WaitCopy(n);
 }
 
 }  // namespace
@@ -607,18 +628,26 @@ HLE_FUNC(D3DDevice_Resolve) {
     return 0;
 }
 
+#ifdef SUB_D3DTexture_LockRect
+PPC_EXTERN_FUNC(GUEST_ORIG(D3DTexture_LockRect));
+
+// (texture, level, locked rect, rect, flags)
+PPC_FUNC(GUEST(D3DTexture_LockRect)) {
+    uint32_t tex = uint32_t(ctx.r[3]);
+    if (tex && !ctx.r[4]) ReadOnCpu(tex, 0);
+    GUEST_ORIG(D3DTexture_LockRect)(ctx, base);
+}
+#endif
+
 #ifdef SUB_D3DXLoadSurfaceFromSurface
-// (dst surface, palette, dst rect, src surface, palette, src rect, filter, colour key): D3DX copies guest memory,
-// which holds no resolve, so the renderer copies a resolved source too
-HLE_AFTER(D3DXLoadSurfaceFromSurface) {
-    if (int32_t(ctx.r[3]) < 0 || !a[0] || !a[3]) return;
-    gpu::CopyArgs c;
-    SurfaceFetch(a[0], c.dst);
-    SurfaceFetch(a[3], c.src);
-    if (a[2]) c.dst_rect = ReadRect(a[2]);
-    if (a[5]) c.src_rect = ReadRect(a[5]);
-    std::lock_guard lock(g_lock);
-    Backend()->Copy(c);
+PPC_EXTERN_FUNC(GUEST_ORIG(D3DXLoadSurfaceFromSurface));
+
+// (dst surface, palette, dst rect, src surface, palette, src rect, filter, colour key): D3DX copies on the CPU
+PPC_FUNC(GUEST(D3DXLoadSurfaceFromSurface)) {
+    uint32_t dst = uint32_t(ctx.r[3]);
+    uint32_t src = uint32_t(ctx.r[6]);
+    if (dst && src) ReadOnCpu(src, dst);
+    GUEST_ORIG(D3DXLoadSurfaceFromSurface)(ctx, base);
 }
 #endif
 

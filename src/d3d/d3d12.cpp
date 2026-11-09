@@ -14,7 +14,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <condition_variable>
 #include <map>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -22,6 +24,7 @@
 
 #include "app/app.h"
 #include "common/aspect.h"
+#include "d3d/readback.h"
 #include "backends/imgui_impl_dx12.h"
 #include "backends/imgui_impl_win32.h"
 #include "core/diag.h"
@@ -202,8 +205,36 @@ struct Resolved {
     uint32_t width = 0;  // title texels
     uint32_t height = 0;
     uint32_t view = 0;  // RTV slot
-    int32_t copied = -1;  // the guest format a D3DX copy wrote, which block compressed fetches may read
 };
+
+// a resolve the CPU reads: a copy at title size each time the title resolves there
+struct ReadBack {
+    ComPtr<ID3D12Resource> buffer[kFrames];
+    uint64_t seq[kFrames] = {};    // which resolve to the address each holds
+    uint64_t fence[kFrames] = {};  // the submission it lands in
+    uint32_t next = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    uint32_t width = 0;  // the resolve's title texels
+    uint32_t height = 0;
+    uint32_t copy_width = 0;  // with the blocks it wrote past them
+    uint32_t copy_height = 0;
+    uint32_t row_pitch = 0;
+};
+
+// the title's CPU reads of resolves, which the render thread answers in command order
+struct CpuReads {
+    std::mutex lock;
+    std::condition_variable ran;
+    std::unordered_map<uint32_t, uint64_t> issued;  // resolves the title issued, by address
+    std::unordered_map<uint32_t, uint64_t> done;    // those the render thread ran
+    std::unordered_map<uint32_t, ReadBack> read;    // addresses the CPU reads
+    ID3D12Fence* fence = nullptr;
+    uint64_t queued = 0;  // Copy calls
+    uint64_t run = 0;     // those the render thread ran
+};
+CpuReads g_cpu;
+
+constexpr int32_t kResolveBlock = 8;  // the library rounds a resolve's right and bottom edges up to this
 
 // everything a pipeline depends on beyond the root signature
 struct PipelineKey {
@@ -403,6 +434,7 @@ private:
     Frame& CurrentFrame() { return frames_[frame_ % kFrames]; }
     void Begin();
     void Submit(bool wait);
+    void Kick();
     void WaitFence(uint64_t value);
     Alloc Upload(uint64_t size, uint64_t align);
     D3D12_GPU_VIRTUAL_ADDRESS UploadConstants(const void* data, uint32_t size);
@@ -469,8 +501,15 @@ private:
     void RenderUi();
     void CopyResolve(Target& src, Resolved& dst, const ResolveArgs& r);
     Resolved& EnsureResolved(uint64_t key, DXGI_FORMAT format, uint32_t w, uint32_t h);
+    void MakeResolved(Resolved& dst, DXGI_FORMAT format, uint32_t w, uint32_t h, float scale);
+    void ReleaseResolved(Resolved& r);
     void DropResolved(uint32_t base);
-    void CopyResolved(Resolved& from, Resolved& to, const Rect& src, const Rect& dst);
+    void KeepBlocks(Target& src, Resolved& dst, const ResolveArgs& r);
+    Resolved* CpuSource(uint32_t base);
+    bool MakeCpuTexels(Resolved& from);
+    bool CopyCpuTexels(ComPtr<ID3D12Resource>& buffer, D3D12_PLACED_SUBRESOURCE_FOOTPRINT& fp);
+    void RecordReadBack(ReadBack& rb, uint32_t base, uint64_t seq);
+    void WriteResolved(const uint32_t fetch[6]);
 
     // passes
     ID3D12PipelineState* EnsurePassPipeline(const std::string& hlsl, const char* entry, DXGI_FORMAT rtv, float blend);
@@ -516,6 +555,9 @@ private:
     std::unordered_map<uint64_t, Target> targets_;
     std::unordered_map<uint64_t, Texture> textures_;
     std::unordered_map<uint64_t, Resolved> resolved_;  // by ResolvedKey
+    std::unordered_map<uint32_t, uint64_t> latest_;     // the ResolvedKey of the last resolve to each address
+    std::unordered_map<uint32_t, Resolved> blocks_;     // by address: a resolve with the whole blocks it writes past
+    Resolved cpu_texels_;                               // a resolve at title size, for the CPU
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> pass_pipelines_;
     std::vector<std::unique_ptr<Shader>> shaders_;
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> pipelines_;
@@ -705,6 +747,7 @@ void D3D12Backend::CreateFrames() {
         f.upload->Map(0, nullptr, reinterpret_cast<void**>(&f.map));
     }
     dev_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_));
+    g_cpu.fence = fence_.Get();
     event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     dev_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, frames_[0].alloc.Get(), nullptr, IID_PPV_ARGS(&cl_));
 
@@ -763,6 +806,17 @@ void D3D12Backend::Submit(bool wait) {
     f.used = 0;
     f.views = 0;
     cl_->Reset(f.alloc.Get(), nullptr);
+    Begin();
+}
+
+// what is recorded so far goes to the GPU, recording goes on in the same frame
+void D3D12Backend::Kick() {
+    cl_->Close();
+    ID3D12CommandList* lists[] = {cl_.Get()};
+    queue_->ExecuteCommandLists(1, lists);
+    queue_->Signal(fence_.Get(), ++fence_value_);
+    CurrentFrame().fence = fence_value_;
+    cl_->Reset(CurrentFrame().alloc.Get(), nullptr);
     Begin();
 }
 
@@ -1220,8 +1274,7 @@ void D3D12Backend::UploadTexture(Texture& tex, const xenos::TextureFetch& t) {
             Alloc a = Upload(total, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
             g_perf.tex_bytes += total;
             uint32_t planes = volume ? fp.Footprint.Depth : 1;
-            // per level: a 4 KB window block's bytes sit one page below its physical address
-            const uint8_t* memory = Guest(levels[l].address) - levels[l].address;
+            const uint8_t* memory = Guest(0);
             for (uint32_t z = 0; z < planes; z++) {
                 uint32_t pitch = 0;
                 xenos::LoadLevel(memory, t, levels[l], volume ? z : face, rows, pitch);
@@ -1251,7 +1304,7 @@ Resolved* D3D12Backend::FindResolved(const xenos::TextureFetch& t, const Texture
     auto resolved = resolved_.find(ResolvedKey(t.base, key));
     if (resolved == resolved_.end()) return nullptr;
     // a block compressed fetch never reads a resolve: the address was reused since
-    bool blocks = xenos::Info(t.format).block > 1 && resolved->second.copied != int32_t(t.format);
+    bool blocks = xenos::Info(t.format).block > 1;
     return b.dimension <= 1 && !blocks ? &resolved->second : nullptr;
 }
 
@@ -1810,13 +1863,24 @@ void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
     if (src && fi.block == 1 && fi.convert != xenos::Convert::Unsupported) {
         uint32_t w = std::max(r.dst_pitch, 1u);
         uint32_t h = std::max(r.dst_height, 1u);
-        Resolved& dst = EnsureResolved(ResolvedKey(r.dst_base, src->key), fi.host, w, h);
-        dst.copied = -1;
-        if (dst.res) CopyResolve(*src, dst, r);
+        uint64_t key = ResolvedKey(r.dst_base, src->key);
+        Resolved& dst = EnsureResolved(key, fi.host, w, h);
+        if (dst.res) {
+            CopyResolve(*src, dst, r);
+            KeepBlocks(*src, dst, r);
+        }
+        latest_[r.dst_base] = key;
     } else if (src) {
         static bool logged = false;
         if (!std::exchange(logged, true)) LOGR("D3D12: resolve to format %u left out", r.dst_format);
     }
+    {
+        std::lock_guard lock(g_cpu.lock);
+        uint64_t seq = ++g_cpu.done[r.dst_base];
+        auto read = g_cpu.read.find(r.dst_base);
+        if (read != g_cpu.read.end()) RecordReadBack(read->second, r.dst_base, seq);
+    }
+    g_cpu.ran.notify_all();
     if (src && r.clear) {
         ClearTarget(*src, r.clear, r.clear_color, r.clear_z, uint8_t(r.clear_stencil), nullptr, 0);
         ClearSpan(*src, r.clear, r.clear_color, r.clear_z, uint8_t(r.clear_stencil));
@@ -1826,7 +1890,13 @@ void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
 // the host texture read in place of guest memory, made again when the format or size changes
 Resolved& D3D12Backend::EnsureResolved(uint64_t key, DXGI_FORMAT format, uint32_t w, uint32_t h) {
     Resolved& dst = resolved_[key];
-    if (dst.res && dst.format == format && dst.width == w && dst.height == h) return dst;
+    MakeResolved(dst, format, w, h, scale_);
+    return dst;
+}
+
+// w x h title texels at scale host texels each
+void D3D12Backend::MakeResolved(Resolved& dst, DXGI_FORMAT format, uint32_t w, uint32_t h, float scale) {
+    if (dst.res && dst.format == format && dst.width == w && dst.height == h) return;
     if (dst.res) {
         Release(dst.res);
     } else if (!free_rtv_.empty()) {
@@ -1836,74 +1906,203 @@ Resolved& D3D12Backend::EnsureResolved(uint64_t key, DXGI_FORMAT format, uint32_
     dst.format = format;
     dst.width = w;
     dst.height = h;
-    uint32_t hw = uint32_t(std::ceil(w * scale_));
-    uint32_t hh = uint32_t(std::ceil(h * scale_));
+    uint32_t hw = uint32_t(std::ceil(w * scale));
+    uint32_t hh = uint32_t(std::ceil(h * scale));
     D3D12_RESOURCE_DESC d = TextureDesc(format, hw, hh);
     d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     dst.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, dst.state, nullptr, IID_PPV_ARGS(&dst.res));
     dev_->CreateRenderTargetView(dst.res.Get(), nullptr, Rtv(dst.view));
-    return dst;
+}
+
+void D3D12Backend::ReleaseResolved(Resolved& r) {
+    if (!r.res) return;
+    Release(r.res);
+    free_rtv_.push_back(r.view);
 }
 
 // guest memory at base is read again
 void D3D12Backend::DropResolved(uint32_t base) {
     std::erase_if(resolved_, [&](auto& entry) {
-        Resolved& r = entry.second;
         if (uint32_t(entry.first) != base) return false;
-        if (r.res) {
-            Release(r.res);
-            free_rtv_.push_back(r.view);
-        }
+        ReleaseResolved(entry.second);
         return true;
     });
+    if (auto it = blocks_.find(base); it != blocks_.end()) {
+        ReleaseResolved(it->second);
+        blocks_.erase(it);
+    }
+    latest_.erase(base);
 }
 
-// D3DX copies through guest memory: a resolve's copy is made here and kept like the resolve, any other copy leaves
-// the destination to guest memory
+// a rect not a multiple of 8 also writes the EDRAM past it into memory the CPU may read, which the texture lacks: kept
+// beside it from then on, as RAM keeps it
+void D3D12Backend::KeepBlocks(Target& src, Resolved& dst, const ResolveArgs& r) {
+    ResolveArgs whole = r;
+    whole.rect.x2 = (r.rect.x2 + kResolveBlock - 1) / kResolveBlock * kResolveBlock;
+    whole.rect.y2 = (r.rect.y2 + kResolveBlock - 1) / kResolveBlock * kResolveBlock;
+    uint32_t width = std::max(dst.width, uint32_t(r.dst_x + whole.rect.x2 - whole.rect.x1));
+    uint32_t height = std::max(dst.height, uint32_t(r.dst_y + whole.rect.y2 - whole.rect.y1));
+    auto kept = blocks_.find(r.dst_base);
+    bool past = width > dst.width || height > dst.height;
+    if (!past && kept == blocks_.end()) return;
+    Resolved& block = blocks_[r.dst_base];
+    width = std::max(width, block.width);
+    height = std::max(height, block.height);
+    MakeResolved(block, dst.format, width, height, scale_);
+    if (!block.res) return;
+    // the texture over what earlier resolves left past it, then this resolve's blocks
+    Transition(dst.res.Get(), dst.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Transition(block.res.Get(), block.state, D3D12_RESOURCE_STATE_COPY_DEST);
+    D3D12_TEXTURE_COPY_LOCATION texture{dst.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {}};
+    D3D12_TEXTURE_COPY_LOCATION into{block.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {}};
+    cl_->CopyTextureRegion(&into, 0, 0, 0, &texture, nullptr);
+    if (past) CopyResolve(src, block, whole);
+}
+
+// the title's CPU reads src next, and a D3DX copy writes dst's top level: a resolve at src goes to guest memory first,
+// and dst is read from guest memory again
 void D3D12Backend::Copy(const CopyArgs& c) {
-    xenos::TextureFetch src = xenos::DecodeTextureFetch(c.src);
+    WriteResolved(c.src);
     xenos::TextureFetch dst = xenos::DecodeTextureFetch(c.dst);
-    if (dst.mip_min || src.base == dst.base) return;
-    std::vector<uint64_t> keys;  // the source's resolves, one per target key
-    for (auto& [key, r] : resolved_) {
-        if (uint32_t(key) == src.base && !src.mip_min && r.res) keys.push_back(key >> 32);
-    }
-    const xenos::FormatInfo& fi = xenos::Info(dst.format);
-    if (keys.empty() || fi.convert == xenos::Convert::Unsupported) {
+    std::unique_lock lock(g_cpu.lock);
+    if (dst.base && !dst.mip_min) {
         DropResolved(dst.base);
-        return;
+        // resolves there count again from here, as QueueCopy counts them
+        g_cpu.done.erase(dst.base);
+        if (auto read = g_cpu.read.find(dst.base); read != g_cpu.read.end()) {
+            for (ComPtr<ID3D12Resource>& buffer : read->second.buffer) {
+                if (buffer) Release(std::move(buffer));
+            }
+            g_cpu.read.erase(read);
+        }
     }
-    // a block compressed destination is held uncompressed
-    DXGI_FORMAT host = fi.block > 1 ? DXGI_FORMAT_R8G8B8A8_UNORM : fi.host;
-    Rect from = c.src_rect;
-    if (from.x2 <= from.x1 || from.y2 <= from.y1) from = {0, 0, int32_t(src.width), int32_t(src.height)};
-    Rect to = c.dst_rect;
-    if (to.x2 <= to.x1 || to.y2 <= to.y1) to = {0, 0, int32_t(dst.width), int32_t(dst.height)};
-    for (uint64_t key : keys) {
-        Resolved& out = EnsureResolved(ResolvedKey(dst.base, key), host, dst.width, dst.height);
-        out.copied = int32_t(dst.format);
-        if (out.res) CopyResolved(resolved_[ResolvedKey(src.base, key)], out, from, to);
+    g_cpu.run++;
+    lock.unlock();
+    g_cpu.ran.notify_all();
+}
+
+// title texels in host order into guest memory as the texture lays them out, as far as its level's memory reaches
+void WriteTexels(const uint8_t* p, uint32_t row_pitch, uint32_t w, uint32_t h, const xenos::TextureFetch& t) {
+    uint32_t bytes = xenos::Info(t.format).bytes;
+    uint32_t log2 = uint32_t(std::countr_zero(bytes));
+    xenos::Level l = xenos::Levels(t)[0];
+    uint8_t* memory = const_cast<uint8_t*>(Guest(l.address));
+    w = std::min(w, l.pitch_blocks);
+    h = std::min(h, l.rows_blocks);
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            uint8_t texel[16];
+            std::memcpy(texel, p + size_t(y) * row_pitch + size_t(x) * bytes, bytes);
+            xenos::SwapEndian(texel, bytes, t.endian);
+            uint32_t index = t.tiled ? xenos::TiledOffset2D(x, y, l.pitch_blocks, log2) : y * l.pitch_blocks + x;
+            std::memcpy(memory + (size_t(index) << log2), texel, bytes);
+        }
     }
 }
 
-// from's rect over to's, filtered as D3DX's linear and box filters do
-void D3D12Backend::CopyResolved(Resolved& from, Resolved& to, const Rect& src, const Rect& dst) {
+// what RAM holds at base after its last resolve: the texture, or the texture with the blocks resolves wrote past it
+Resolved* D3D12Backend::CpuSource(uint32_t base) {
+    if (auto block = blocks_.find(base); block != blocks_.end()) return &block->second;
+    auto latest = latest_.find(base);
+    if (latest == latest_.end()) return nullptr;
+    auto kept = resolved_.find(latest->second);
+    return kept != resolved_.end() && kept->second.res ? &kept->second : nullptr;
+}
+
+// from at title size in cpu_texels_, each title texel the box of host texels it covers
+bool D3D12Backend::MakeCpuTexels(Resolved& from) {
+    MakeResolved(cpu_texels_, from.format, from.width, from.height, 1);
+    if (!cpu_texels_.res || !from.res) return false;
+    D3D12_RESOURCE_DESC host = from.res->GetDesc();
     Transition(from.res.Get(), from.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-    Transition(to.res.Get(), to.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = Rtv(to.view);
+    Transition(cpu_texels_.res.Get(), cpu_texels_.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = Rtv(cpu_texels_.view);
     cl_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-    float dw = (dst.x2 - dst.x1) * scale_;
-    float dh = (dst.y2 - dst.y1) * scale_;
-    D3D12_VIEWPORT vp{dst.x1 * scale_, dst.y1 * scale_, dw, dh, 0, 1};
-    D3D12_RECT sc{0, 0, LONG(std::ceil(to.width * scale_)), LONG(std::ceil(to.height * scale_))};
+    D3D12_VIEWPORT vp{0, 0, float(from.width), float(from.height), 0, 1};
+    D3D12_RECT sc{0, 0, LONG(from.width), LONG(from.height)};
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &sc);
-    float w = float(from.width);
-    float h = float(from.height);
-    float uv[4] = {src.x1 / w, src.y1 / h, (src.x2 - src.x1) / w, (src.y2 - src.y1) / h};
-    Blit(from.res.Get(), from.format, uv, false, true, 1, 1, to.format);
+    float uv[4] = {0, 0, from.width * scale_ / host.Width, from.height * scale_ / host.Height};
+    Blit(from.res.Get(), from.format, uv, false, true, uint32_t(std::ceil(scale_)), 1, from.format);
+    return true;
+}
+
+// cpu_texels_ into a readback buffer, made or grown as needed
+bool D3D12Backend::CopyCpuTexels(ComPtr<ID3D12Resource>& buffer, D3D12_PLACED_SUBRESOURCE_FOOTPRINT& fp) {
+    D3D12_RESOURCE_DESC rd = cpu_texels_.res->GetDesc();
+    UINT rows;
+    UINT64 row_size;
+    UINT64 bytes;
+    dev_->GetCopyableFootprints(&rd, 0, 1, 0, &fp, &rows, &row_size, &bytes);
+    if (buffer && buffer->GetDesc().Width < bytes) Release(std::move(buffer));
+    if (!buffer) {
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
+        D3D12_RESOURCE_DESC bd = BufferDesc(bytes);
+        HRESULT hr = dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                   nullptr, IID_PPV_ARGS(&buffer));
+        if (FAILED(hr)) return false;
+    }
+    Transition(cpu_texels_.res.Get(), cpu_texels_.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION to{buffer.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {}};
+    to.PlacedFootprint = fp;
+    D3D12_TEXTURE_COPY_LOCATION texels{cpu_texels_.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {}};
+    cl_->CopyTextureRegion(&to, 0, 0, 0, &texels, nullptr);
+    return true;
+}
+
+// a resolve to an address the CPU reads: copied for the next lock there, unless the GPU is a whole ring behind
+void D3D12Backend::RecordReadBack(ReadBack& rb, uint32_t base, uint64_t seq) {
+    Resolved* from = CpuSource(base);
+    auto latest = latest_.find(base);
+    if (!from || latest == latest_.end() || !MakeCpuTexels(*from)) return;
+    uint32_t slot = rb.next;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
+    if (rb.fence[slot] > fence_->GetCompletedValue() || !CopyCpuTexels(rb.buffer[slot], fp)) return;
+    // the lock waits on this submission, not on the frame's
+    Kick();
+    const Resolved& resolve = resolved_[latest->second];
+    rb.seq[slot] = seq;
+    rb.fence[slot] = fence_value_;
+    rb.next = (slot + 1) % kFrames;
+    rb.format = resolve.format;
+    rb.width = resolve.width;
+    rb.height = resolve.height;
+    rb.copy_width = from->width;
+    rb.copy_height = from->height;
+    rb.row_pitch = fp.Footprint.RowPitch;
+}
+
+// the host keeps these formats as the guest's bytes
+bool CpuReadable(const xenos::TextureFetch& t) {
+    const xenos::FormatInfo& fi = xenos::Info(t.format);
+    if (fi.block == 1 && fi.convert == xenos::Convert::None) return true;
+    static bool logged = false;
+    if (!std::exchange(logged, true)) LOGR("D3D12: CPU read of a format %u resolve left out", uint32_t(t.format));
+    return false;
+}
+
+// the last resolve to a texture the CPU reads: written to guest memory now, after the GPU finished it
+void D3D12Backend::WriteResolved(const uint32_t fetch[6]) {
+    xenos::TextureFetch t = xenos::DecodeTextureFetch(fetch);
+    auto latest = latest_.find(t.base);
+    if (t.mip_min || latest == latest_.end() || !CpuReadable(t)) return;
+    // a texture of another size or format at the address replaced the resolve
+    const Resolved& resolve = resolved_[latest->second];
+    bool same = resolve.format == HostTextureFormat(t) && resolve.width == t.width && resolve.height == t.height;
+    Resolved* from = CpuSource(t.base);
+    ComPtr<ID3D12Resource> buffer;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
+    if (!same || !from || !MakeCpuTexels(*from) || !CopyCpuTexels(buffer, fp)) return;
+    Submit(true);
+    uint8_t* p = nullptr;
+    if (SUCCEEDED(buffer->Map(0, nullptr, reinterpret_cast<void**>(&p)))) {
+        WriteTexels(p, fp.Footprint.RowPitch, from->width, from->height, t);
+        D3D12_RANGE none{0, 0};
+        buffer->Unmap(0, &none);
+    }
+    Release(std::move(buffer));
 }
 
 void D3D12Backend::CopyResolve(Target& src, Resolved& dst, const ResolveArgs& r) {
@@ -2355,5 +2554,55 @@ bool D3D12Backend::QueryResult(uint32_t q, uint32_t& samples) {
 }  // namespace
 
 std::unique_ptr<Backend> CreateBackend() { return std::make_unique<D3D12Backend>(); }
+
+void NoteResolve(uint32_t base) {
+    std::lock_guard lock(g_cpu.lock);
+    g_cpu.issued[base]++;
+}
+
+bool IsResolve(const uint32_t fetch[6]) {
+    uint32_t base = xenos::DecodeTextureFetch(fetch).base;
+    std::lock_guard lock(g_cpu.lock);
+    return g_cpu.issued.contains(base);
+}
+
+// as the console's lock: waits for the GPU to finish the last resolve there, then the CPU sees it in guest memory
+bool ApplyReadBack(const uint32_t fetch[6]) {
+    xenos::TextureFetch t = xenos::DecodeTextureFetch(fetch);
+    std::unique_lock lock(g_cpu.lock);
+    auto issued = g_cpu.issued.find(t.base);
+    if (issued == g_cpu.issued.end() || t.mip_min || !CpuReadable(t)) return true;
+    uint64_t want = issued->second;
+    // copied at every resolve from now on
+    g_cpu.read.try_emplace(t.base);
+    g_cpu.ran.wait(lock, [&] { return g_cpu.done[t.base] >= want; });
+    auto read = g_cpu.read.find(t.base);
+    if (read == g_cpu.read.end()) return true;
+    ReadBack& rb = read->second;
+    auto slot = std::find(std::begin(rb.seq), std::end(rb.seq), want) - std::begin(rb.seq);
+    if (slot == kFrames) return false;
+    // a texture of another size or format at the address replaced the resolve
+    bool same = rb.format == HostTextureFormat(t) && rb.width == t.width && rb.height == t.height;
+    if (!same) return true;
+    g_cpu.fence->SetEventOnCompletion(rb.fence[slot], nullptr);
+    uint8_t* p = nullptr;
+    if (FAILED(rb.buffer[slot]->Map(0, nullptr, reinterpret_cast<void**>(&p)))) return true;
+    WriteTexels(p, rb.row_pitch, rb.copy_width, rb.copy_height, t);
+    D3D12_RANGE none{0, 0};
+    rb.buffer[slot]->Unmap(0, &none);
+    return true;
+}
+
+uint64_t QueueCopy(const uint32_t dst[6]) {
+    xenos::TextureFetch t = xenos::DecodeTextureFetch(dst);
+    std::lock_guard lock(g_cpu.lock);
+    if (t.base && !t.mip_min) g_cpu.issued.erase(t.base);
+    return ++g_cpu.queued;
+}
+
+void WaitCopy(uint64_t n) {
+    std::unique_lock lock(g_cpu.lock);
+    g_cpu.ran.wait(lock, [&] { return g_cpu.run >= n; });
+}
 
 }  // namespace gpu
