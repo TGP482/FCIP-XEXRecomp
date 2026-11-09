@@ -2539,8 +2539,8 @@ bool D3D12Backend::QueryResult(uint32_t q, uint32_t& samples) {
     q %= kQueryCount;
     const Query& query = queries_[q];
     if (query.open || !query.fence) return false;
-    // the title waits on a result of the frame still being recorded: hand that much to the GPU
-    if (query.fence > fence_value_) Submit(true);
+    // a result of the frame still being recorded: the GPU gets that much, the title polls again as on the console
+    if (query.fence > fence_value_) Kick();
     if (fence_->GetCompletedValue() < query.fence) return false;
     D3D12_RANGE range{q * 8ull, q * 8ull + 8};
     uint64_t* p = nullptr;
