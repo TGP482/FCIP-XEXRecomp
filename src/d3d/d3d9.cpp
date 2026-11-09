@@ -455,7 +455,6 @@ void ResolveTo(uint32_t dev, const ResolveCall& c) {
     gpu::ResolveArgs r;
     r.source = c.flags & 7;
     uint32_t f = c.tex + XDK_Texture_FetchConstant;
-    uint32_t d0 = R32(f);
     uint32_t d1 = R32(f + 4);
     uint32_t d2 = R32(f + 8);
     // the texture header holds a CPU address, draws fetch the GPU address SetTexture makes of it
@@ -465,8 +464,8 @@ void ResolveTo(uint32_t dev, const ResolveCall& c) {
     r.swap = (R32(f + 12) >> 1 & 7) != 0;
     uint32_t width = (d2 & 0x1FFF) + 1;
     r.dst_height = (d2 >> 13 & 0x1FFF) + 1;
-    uint32_t pitch = (d0 >> 22 & 0x1FF) * 32;
-    r.dst_pitch = pitch ? pitch : width;
+    // as wide as the texture's fetches read it: the pitch only pads its rows in memory
+    r.dst_pitch = width;
     r.rect = c.rect ? *c.rect : gpu::Rect{0, 0, int32_t(width), int32_t(r.dst_height)};
     r.dst_x = c.dst_x;
     r.dst_y = c.dst_y;
