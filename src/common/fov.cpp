@@ -1,5 +1,6 @@
 // The field of view: the camera takes the user's true horizontal angle, zoom kept in tan space against the stock 90,
-// and above 16:9 the view keeps its 16:9 height and widens. Cutscenes keep their own angle.
+// and above 16:9 the view keeps its 16:9 height and widens. The weapon and arms get their own projection from the
+// camera's second angle, scaled the same way by the viewmodel setting. Cutscenes keep their own angles.
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -16,6 +17,7 @@ namespace {
 // CCamera: m_fov horizontal radians at +0x3C, m_aspect at +0x1B4; Update builds the projection with fovY = m_fov /
 // m_aspect, so stock 90 shows about 80 horizontal at 16:9
 constexpr uint32_t kCameraFov = 0x3C;
+constexpr uint32_t kCameraViewmodelFov = 0x40;  // vertical radians, the near projection at +0x2BC
 constexpr uint32_t kCameraAspect = 0x1B4;
 constexpr uint32_t kPlayerCutscene = 0xBA3;  // set by BeginCutScene, cleared by EndCutScene
 constexpr double kWide = 16.0 / 9.0;
@@ -32,12 +34,12 @@ void WF(uint32_t addr, float value) {
     W32(addr, raw);
 }
 
-// the game's angle with the user's true horizontal angle applied; false in cutscenes
-bool UserFov(double fov, double& out) {
+// the game's angle with the user's angle in degrees applied; false in cutscenes
+bool UserFov(double fov, double setting, double& out) {
     uint32_t player = fcip::LocalPlayer();
     if (player >= 0x10000u && player < 0xC0000000u && R8(player + kPlayerCutscene)) return false;
     if (!(fov > 0.0 && fov < 3.14)) return false;
-    double user = fcip::Get().fov * (3.14159265358979 / 180.0);
+    double user = setting * (3.14159265358979 / 180.0);
     out = 2.0 * std::atan(std::tan(fov * 0.5) * std::tan(user * 0.5));
     return true;
 }
@@ -65,7 +67,7 @@ PPC_FUNC(GUEST(CCamera_Update)) {
     bool screen = std::fabs(aspect - fcip::DisplayAspect()) < 0.01f * aspect;
     double wide = screen ? std::max(1.0, aspect / kWide) : 1.0;
     double h = 0.0;
-    bool user = valid && UserFov(fov, h);
+    bool user = valid && UserFov(fov, fcip::Get().fov, h);
     if (!user && !(valid && wide > 1.0 && fov < 3.14f)) {
         GUEST_ORIG(CCamera_Update)(ctx, base);
         return;
@@ -73,13 +75,18 @@ PPC_FUNC(GUEST(CCamera_Update)) {
     if (!user) h = 2.0 * std::atan(std::tan(fov * 0.5 / kWide) * kWide);
     h = 2.0 * std::atan(std::tan(h * 0.5) * wide);
     double v = 2.0 * std::atan(std::tan(h * 0.5) / aspect);
+    float viewmodel = GF(cam + kCameraViewmodelFov);
+    double vm = 0.0;
+    bool user_vm = user && UserFov(viewmodel, fcip::Get().viewmodel_fov, vm);
     WF(cam + kCameraFov, float(h));
     WF(cam + kCameraAspect, float(h / v));
+    if (user_vm) WF(cam + kCameraViewmodelFov, float(vm));
     g_real_aspect = aspect;
     GUEST_ORIG(CCamera_Update)(ctx, base);
     g_real_aspect = 0.0;
     WF(cam + kCameraFov, fov);
     WF(cam + kCameraAspect, aspect);
+    WF(cam + kCameraViewmodelFov, viewmodel);
 }
 
 // D3DXMatrixPerspectiveFov(out, fovY f1, aspect f2, near f3, far f4)
@@ -93,7 +100,7 @@ PPC_FUNC(GUEST(COcean_Update)) {
     double h = 0.0;
     double wide = std::max(1.0, fcip::DisplayAspect() / kWide);
     double fov = ctx.f[3];
-    if (UserFov(fov, h)) ctx.f[3] = 2.0 * std::atan(std::tan(h * 0.5) * kOceanMargin * wide);
+    if (UserFov(fov, fcip::Get().fov, h)) ctx.f[3] = 2.0 * std::atan(std::tan(h * 0.5) * kOceanMargin * wide);
     else if (fov > 0.0 && fov < 3.14) ctx.f[3] = 2.0 * std::atan(std::tan(fov * 0.5) * wide);
     GUEST_ORIG(COcean_Update)(ctx, base);
 }

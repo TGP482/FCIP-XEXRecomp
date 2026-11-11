@@ -19,6 +19,7 @@ void LoadSettings(const void* table) {
     auto& t = *static_cast<const toml::table*>(table);
     Settings& s = Get();
     s.fov = std::clamp(t["fov"].value_or(s.fov), 45.0f, 140.0f);
+    s.viewmodel_fov = std::clamp(t["viewmodel_fov"].value_or(s.viewmodel_fov), 45.0f, 140.0f);
     s.fps_counter = t["fps_counter"].value_or(s.fps_counter);
     s.shadow_resolution = std::clamp(t["shadow_resolution"].value_or(s.shadow_resolution), 512u, 8192u);
     for (auto [key, value] : {std::pair{"shadow_distance", &s.shadow_distance}, {"object_distance", &s.object_distance},
@@ -52,6 +53,7 @@ void SaveSettings(void* table) {
     auto& t = *static_cast<toml::table*>(table);
     const Settings& s = Get();
     t.insert_or_assign("fov", double(s.fov));
+    t.insert_or_assign("viewmodel_fov", double(s.viewmodel_fov));
     t.insert_or_assign("fps_counter", s.fps_counter);
     t.insert_or_assign("shadow_resolution", int64_t(s.shadow_resolution));
     t.insert_or_assign("shadow_distance", int64_t(s.shadow_distance));

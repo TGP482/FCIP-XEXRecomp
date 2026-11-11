@@ -8,6 +8,7 @@ namespace fcip {
 
 struct Settings {
     float fov = 90.0f;  // true horizontal degrees, 45 to 140
+    float viewmodel_fov = 90.0f;  // the weapon and arms on the same measure, 90 keeps the game's
     bool fps_counter = false;
     uint32_t shadow_resolution = 1344;  // sun shadow map side, 1344 is stock
     uint32_t shadow_distance = 1;       // multipliers on the level's own values, 1 is stock

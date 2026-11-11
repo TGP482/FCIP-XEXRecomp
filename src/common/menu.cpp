@@ -87,7 +87,7 @@ void Flip(bool& on, int step) {
 enum RowId {
     kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivityX, kSensitivityY,
     kAimSensitivityX, kAimSensitivityY, kInvertX, kInvertY, kSmoothing,
-    kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kFpsCounter, kShadowResolution,
+    kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kViewmodelFov, kFpsCounter, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
     kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
     kGyroButton, kGyroButtonMode, kGyroCalibrate
@@ -100,6 +100,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kRenderResolution, "RENDER RESOLUTION",
      "Renders the game at 20% to 200% of the output resolution, independent of the window size"},
     {Kind::Value, kFov, "FIELD OF VIEW", "Sets the horizontal field of view during gameplay, cutscenes keep their own"},
+    {Kind::Value, kViewmodelFov, "VIEWMODEL FIELD OF VIEW", "Sets the field of view of the weapon and arms"},
     {Kind::Value, kVsync, "VERTICAL SYNC", "Reduces screen tearing"},
     {Kind::Value, kMaxFps, "MAX FRAME RATE",
      "Caps the frame rate to your monitor's refresh rate or a custom value, or removes the cap"},
@@ -323,10 +324,11 @@ void StepInputRow(int id, int step, char (&text)[64]) {
     } else if (id == kShadowResolution) {
         uint32_t size = kShadowSizes[StepTable(kShadowSizes, g.shadow_resolution, step)];
         std::snprintf(text, sizeof(text), size == 1344 ? "%u (DEFAULT)" : "%u", size);
-    } else if (id == kFov) {
+    } else if (id == kFov || id == kViewmodelFov) {
         // 45 to 140 in steps of 1
-        int fov = StepRange(int(std::lround(g.fov)), 45, 140, 1, step);
-        if (step) g.fov = float(fov);
+        float& setting = id == kFov ? g.fov : g.viewmodel_fov;
+        int fov = StepRange(int(std::lround(setting)), 45, 140, 1, step);
+        if (step) setting = float(fov);
         std::snprintf(text, sizeof(text), fov == 90 ? "%d (DEFAULT)" : "%d", fov);
     }
 }
