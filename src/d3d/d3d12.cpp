@@ -7,6 +7,7 @@
 #include <dxgi1_6.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -400,6 +401,10 @@ struct ViewKeyHash {
     size_t operator()(const ViewKey& k) const { return size_t(Hash64(&k, sizeof(k))); }
 };
 
+struct FetchHash {
+    size_t operator()(const std::array<uint32_t, 6>& f) const { return size_t(Hash64(f.data(), sizeof(f))); }
+};
+
 class D3D12Backend final : public Backend, public Context {
 public:
     ~D3D12Backend() override;
@@ -484,6 +489,7 @@ private:
     void FillTextureView(const TextureBinding& b, const uint32_t fetch[6], D3D12_CPU_DESCRIPTOR_HANDLE at,
                          ShaderStage stage, uint32_t slot);
     Texture* EnsureTexture(const xenos::TextureFetch& t);
+    Texture* FrameTexture(const uint32_t fetch[6], const xenos::TextureFetch& t);
     void UploadTexture(Texture& tex, const xenos::TextureFetch& t);
     D3D12_SAMPLER_DESC SamplerDesc(const TextureBinding& b, const uint32_t fetch[6]) const;
     D3D12_GPU_DESCRIPTOR_HANDLE EnsureSamplers(const std::vector<D3D12_SAMPLER_DESC>& descs);
@@ -574,6 +580,7 @@ private:
 
     std::unordered_map<uint64_t, Target> targets_;
     std::unordered_map<uint64_t, Texture> textures_;
+    std::unordered_map<std::array<uint32_t, 6>, Texture*, FetchHash> frame_textures_;  // by fetch constant, this frame
     std::unordered_map<uint64_t, Resolved> resolved_;  // by ResolvedKey
     std::unordered_map<uint32_t, uint64_t> latest_;     // the ResolvedKey of the last resolve to each address
     std::unordered_map<uint32_t, Resolved> blocks_;     // by address: a resolve with the whole blocks it writes past
@@ -1251,6 +1258,24 @@ ID3D12PipelineState* D3D12Backend::EnsureResolvePipeline(DXGI_FORMAT rtv, bool m
 
 // Textures
 
+// change detection over large spans: four lanes run side by side instead of one multiply chain
+uint64_t SpanHash(const void* data, size_t n, uint64_t seed) {
+    constexpr uint64_t kMul = 0x9E3779B97F4A7C15ull;
+    constexpr size_t kLanes = 4;
+    auto* p = static_cast<const uint8_t*>(data);
+    uint64_t h[kLanes] = {seed, seed + 1, seed + 2, seed + 3};
+    size_t i = 0;
+    for (; i + kLanes * 8 <= n; i += kLanes * 8) {
+        for (size_t k = 0; k < kLanes; k++) {
+            uint64_t v;
+            std::memcpy(&v, p + i + k * 8, 8);
+            h[k] = (h[k] ^ v) * kMul;
+            h[k] ^= h[k] >> 29;
+        }
+    }
+    return Hash64(h, sizeof(h), Hash64(p + i, n - i, n));
+}
+
 // the guest bytes a texture covers, levels and faces included
 uint64_t GuestHash(const xenos::TextureFetch& t, const std::vector<xenos::Level>& levels) {
     const xenos::FormatInfo& fi = xenos::Info(t.format);
@@ -1258,7 +1283,7 @@ uint64_t GuestHash(const xenos::TextureFetch& t, const std::vector<xenos::Level>
     for (const xenos::Level& l : levels) {
         uint64_t bytes = uint64_t(l.pitch_blocks) * l.rows_blocks * fi.bytes;
         uint64_t total = l.face_stride ? uint64_t(l.face_stride) * (t.depth - 1) + bytes : bytes;
-        h = Hash64(Guest(l.address), size_t(std::min<uint64_t>(total, UINT32_MAX - l.address)), h);
+        h = SpanHash(Guest(l.address), size_t(std::min<uint64_t>(total, UINT32_MAX - l.address)), h);
     }
     return h;
 }
@@ -1306,6 +1331,15 @@ Texture* D3D12Backend::EnsureTexture(const xenos::TextureFetch& t) {
         }
     }
     return &tex;
+}
+
+// EnsureTexture once per fetch constant and frame
+Texture* D3D12Backend::FrameTexture(const uint32_t fetch[6], const xenos::TextureFetch& t) {
+    std::array<uint32_t, 6> key;
+    std::copy(fetch, fetch + 6, key.begin());
+    auto [it, added] = frame_textures_.try_emplace(key, nullptr);
+    if (added) it->second = EnsureTexture(t);
+    return it->second;
 }
 
 // a level's slice into plane z of an upload footprint
@@ -1403,7 +1437,7 @@ void D3D12Backend::FillTextureView(const TextureBinding& b, const uint32_t fetch
         dev_->CreateShaderResourceView(r.res.Get(), &v, at);
         return;
     }
-    Texture* tex = EnsureTexture(t);
+    Texture* tex = FrameTexture(fetch, t);
     v.Format = tex ? tex->format : DXGI_FORMAT_R8G8B8A8_UNORM;
     switch (b.dimension) {
         case 2:
@@ -2304,6 +2338,7 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     g_perf.upload_bytes += CurrentFrame().used;
     presents_++;
     frame_++;
+    frame_textures_.clear();
     Frame& next = CurrentFrame();
     WaitFence(next.fence);
     next.alloc->Reset();
