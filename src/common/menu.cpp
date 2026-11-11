@@ -20,6 +20,7 @@
 #include <imgui.h>
 
 #include "app/app.h"
+#include "common/gyro.h"
 #include "common/input.h"
 #include "common/keys.h"
 #include "common/panel_colors.h"
@@ -88,7 +89,8 @@ enum RowId {
     kAimSensitivityX, kAimSensitivityY, kInvertX, kInvertY, kSmoothing,
     kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kFpsCounter, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
-    kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat
+    kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
+    kGyroButton, kGyroButtonMode, kGyroCalibrate
 };
 
 constexpr Row kSettingsRows[] = {
@@ -116,6 +118,13 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kModelDetail, "MODEL DETAIL", "Scales how far models keep their higher detail levels"},
     {Kind::Heading, -1, "GENERAL", nullptr},
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
+    {Kind::Heading, -1, "GYRO", nullptr},
+    {Kind::Value, kGyroAiming, "GYRO AIMING", "Turns the view with the controller's gyro, beside the right stick"},
+    {Kind::Value, kGyroSensitivity, "GYRO SENSITIVITY", "Degrees the view turns for each degree the controller turns"},
+    {Kind::Value, kGyroAxis, "GYRO AXIS", "Turns with the controller's yaw, its roll, or about the real world's up"},
+    {Kind::Value, kGyroButton, "GYRO BUTTON", "A button the game leaves free that switches the gyro"},
+    {Kind::Value, kGyroButtonMode, "GYRO BUTTON MODE", "Whether the gyro button turns the gyro off, on or flips it"},
+    {Kind::Value, kGyroCalibrate, "CALIBRATE GYRO", "Lay the controller still while its drift is measured"},
     {Kind::Heading, -1, "TEXTURES", nullptr},
     {Kind::Value, kTextureReplacement, "TEXTURE REPLACEMENT",
      "Replaces the game's textures with the images in the textures\\replacement folder beside the exe"},
@@ -237,6 +246,7 @@ bool* ToggleFlag(int id) {
         case kAutoHelpers: return &g.auto_helpers;
         case kSkipIntros: return &g.skip_intros;
         case kFpsCounter: return &g.fps_counter;
+        case kGyroAiming: return &g.gyro.enabled;
         case kBlur: return &g.blur;
         case kInvincible: return &g.invincible;
         default: return nullptr;
@@ -264,6 +274,33 @@ uint32_t* DistanceField(int id) {
         case kVegetationDetail: return &g.vegetation_detail;
         case kModelDetail: return &g.model_detail;
         default: return nullptr;
+    }
+}
+
+// one of names, stepped first
+template <size_t N>
+void StepName(uint32_t& value, const char* const (&names)[N], int step, char (&text)[64]) {
+    value = uint32_t(StepIndex(int(std::min<size_t>(value, N - 1)), step, int(N)));
+    std::snprintf(text, sizeof(text), "%s", names[value]);
+}
+
+void StepGyroRow(int id, int step, char (&text)[64]) {
+    gyro::Settings& g = Get().gyro;
+    switch (id) {
+        case kGyroSensitivity: {
+            // 0.1 to 5.0 in steps of 0.1
+            int tenths = StepRange(int(std::lround(g.sensitivity * 10.0f)), 1, 50, 1, step);
+            if (step) g.sensitivity = float(tenths) / 10.0f;
+            std::snprintf(text, sizeof(text), "%.1f", float(tenths) / 10.0f);
+            break;
+        }
+        case kGyroAxis: StepName(g.axis, gyro::kAxisNames, step, text); break;
+        case kGyroButton: StepName(g.button, gyro::kButtonNames, step, text); break;
+        case kGyroButtonMode: StepName(g.button_mode, gyro::kButtonModeNames, step, text); break;
+        case kGyroCalibrate:
+            if (step) gyro::StartCalibration();
+            std::snprintf(text, sizeof(text), "%s", gyro::Calibrating() ? "KEEP STILL" : "START");
+            break;
     }
 }
 
@@ -340,6 +377,13 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
         case kDumpFormat:
             if (step) s.texture_dump_format = uint32_t(StepIndex(int(s.texture_dump_format), step, 2));
             std::snprintf(text, sizeof(text), "%s", kDumpFormatNames[std::min(s.texture_dump_format, 1u)]);
+            break;
+        case kGyroSensitivity:
+        case kGyroAxis:
+        case kGyroButton:
+        case kGyroButtonMode:
+        case kGyroCalibrate:
+            StepGyroRow(id, step, text);
             break;
         default:
             StepInputRow(id, step, text);

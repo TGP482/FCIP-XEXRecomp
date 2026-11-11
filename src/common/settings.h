@@ -2,6 +2,8 @@
 #pragma once
 #include <cstdint>
 
+#include "common/gyro.h"
+
 namespace fcip {
 
 struct Settings {
@@ -27,6 +29,7 @@ struct Settings {
     bool hold_sprint = true;       // feral run while its key is held, not a toggle
     bool auto_helpers = true;      // the aiming helper off while the keyboard or mouse is in use
     bool skip_intros = true;       // the logo, the branding plate and the intro movie
+    gyro::Settings gyro;           // the controller's gyro turns the view, beside the right stick
     bool invincible = false;
 };
 

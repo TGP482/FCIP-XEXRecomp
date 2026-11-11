@@ -19,6 +19,7 @@
 #include <cstring>
 
 #include "app/app.h"
+#include "common/gyro.h"
 #include "common/keys.h"
 #include "common/menu.h"
 #include "common/settings.h"
@@ -233,6 +234,15 @@ void MouseLook(uint32_t cmd) {
     float pitch = std::clamp(float((s.invert_y ? -dy : dy) * ky), -kMaxDeltaDegrees, kMaxDeltaDegrees);
     WF(cmd + kCmdYaw, GF(cmd + kCmdYaw) + yaw);
     WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) + pitch);
+}
+
+// the controller's gyro turns the view beside the right stick
+void GyroLook(uint32_t cmd) {
+    gyro::Turn turn = gyro::Take(fcip::Get().gyro);
+    if (!cmd || fcip::MenuOpen() || (turn.yaw == 0.0f && turn.pitch == 0.0f)) return;
+    // the gyro turns left positive, the command right positive
+    WF(cmd + kCmdYaw, GF(cmd + kCmdYaw) - turn.yaw);
+    WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) + turn.pitch);
 }
 
 bool StandingCrouchPress(uint32_t player) {
@@ -550,8 +560,8 @@ PPC_FUNC(GUEST(CAimHelper_AutoAim)) {
     if (off) W8(player + kPlayerAutoAim, saved);
 }
 
-// (helper, cmd): mouse look adds this frame's delta to the look the pad produced; the aiming helper is off for the
-// call while the keyboard or mouse is in use
+// (helper, cmd): mouse look and the gyro add this frame's turn to the look the pad produced; the aiming helper is off
+// for the call while the keyboard or mouse is in use
 PPC_FUNC(GUEST(CAimHelper_Update)) {
     uint32_t cmd = uint32_t(ctx.r[4]);
     g_local_cmd = cmd;
@@ -559,6 +569,7 @@ PPC_FUNC(GUEST(CAimHelper_Update)) {
     GUEST_ORIG(CAimHelper_Update)(ctx, base);
     if (helper.slot) W32(helper.slot, helper.saved);
     MouseLook(cmd);
+    GyroLook(cmd);
 }
 
 // (this), local player only: with smoothing off on the mouse, a second pass sees no pitch change, so the lag stays

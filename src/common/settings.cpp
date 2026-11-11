@@ -1,6 +1,7 @@
 #include "common/settings.h"
 
 #include <algorithm>
+#include <iterator>
 #include <utility>
 
 #include <toml++/toml.hpp>
@@ -38,6 +39,11 @@ void LoadSettings(const void* table) {
     s.hold_sprint = t["hold_to_sprint"].value_or(s.hold_sprint);
     s.auto_helpers = t["auto_disable_helpers"].value_or(s.auto_helpers);
     s.skip_intros = t["skip_intros"].value_or(s.skip_intros);
+    s.gyro.enabled = t["gyro_aiming"].value_or(s.gyro.enabled);
+    s.gyro.sensitivity = std::clamp(t["gyro_sensitivity"].value_or(s.gyro.sensitivity), 0.1f, 5.0f);
+    s.gyro.axis = std::min(t["gyro_axis"].value_or(s.gyro.axis), uint32_t(gyro::kWorld));
+    s.gyro.button = std::min(t["gyro_button"].value_or(s.gyro.button), uint32_t(std::size(gyro::kButtonNames) - 1));
+    s.gyro.button_mode = std::min(t["gyro_button_mode"].value_or(s.gyro.button_mode), uint32_t(gyro::kToggle));
     s.invincible = t["invincibility"].value_or(s.invincible);
     keys::Load(table);
 }
@@ -67,6 +73,11 @@ void SaveSettings(void* table) {
     t.insert_or_assign("hold_to_sprint", s.hold_sprint);
     t.insert_or_assign("auto_disable_helpers", s.auto_helpers);
     t.insert_or_assign("skip_intros", s.skip_intros);
+    t.insert_or_assign("gyro_aiming", s.gyro.enabled);
+    t.insert_or_assign("gyro_sensitivity", double(s.gyro.sensitivity));
+    t.insert_or_assign("gyro_axis", int64_t(s.gyro.axis));
+    t.insert_or_assign("gyro_button", int64_t(s.gyro.button));
+    t.insert_or_assign("gyro_button_mode", int64_t(s.gyro.button_mode));
     t.insert_or_assign("invincibility", s.invincible);
     keys::Save(table);
 }
