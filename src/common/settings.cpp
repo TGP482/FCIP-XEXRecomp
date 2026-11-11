@@ -21,6 +21,7 @@ void LoadSettings(const void* table) {
     s.fov = std::clamp(t["fov"].value_or(s.fov), 45.0f, 140.0f);
     s.viewmodel_fov = std::clamp(t["viewmodel_fov"].value_or(s.viewmodel_fov), 45.0f, 140.0f);
     s.fps_counter = t["fps_counter"].value_or(s.fps_counter);
+    s.hdr_output = t["hdr_output"].value_or(s.hdr_output);
     s.shadow_resolution = std::clamp(t["shadow_resolution"].value_or(s.shadow_resolution), 512u, 8192u);
     for (auto [key, value] : {std::pair{"shadow_distance", &s.shadow_distance}, {"object_distance", &s.object_distance},
                               {"detail_distance", &s.detail_distance}, {"grass_distance", &s.grass_distance},
@@ -55,6 +56,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("fov", double(s.fov));
     t.insert_or_assign("viewmodel_fov", double(s.viewmodel_fov));
     t.insert_or_assign("fps_counter", s.fps_counter);
+    t.insert_or_assign("hdr_output", s.hdr_output);
     t.insert_or_assign("shadow_resolution", int64_t(s.shadow_resolution));
     t.insert_or_assign("shadow_distance", int64_t(s.shadow_distance));
     t.insert_or_assign("object_distance", int64_t(s.object_distance));

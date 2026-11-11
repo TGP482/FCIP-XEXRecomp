@@ -87,7 +87,7 @@ void Flip(bool& on, int step) {
 enum RowId {
     kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivityX, kSensitivityY,
     kAimSensitivityX, kAimSensitivityY, kInvertX, kInvertY, kSmoothing,
-    kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kViewmodelFov, kFpsCounter, kShadowResolution,
+    kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kViewmodelFov, kFpsCounter, kHdrOutput, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
     kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
     kGyroButton, kGyroButtonMode, kGyroCalibrate
@@ -102,6 +102,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kFov, "FIELD OF VIEW", "Sets the horizontal field of view during gameplay, cutscenes keep their own"},
     {Kind::Value, kViewmodelFov, "VIEWMODEL FIELD OF VIEW", "Sets the field of view of the weapon and arms"},
     {Kind::Value, kVsync, "VERTICAL SYNC", "Reduces screen tearing"},
+    {Kind::Value, kHdrOutput, "HDR OUTPUT", "Outputs HDR10 on a display with HDR turned on in Windows"},
     {Kind::Value, kMaxFps, "MAX FRAME RATE",
      "Caps the frame rate to your monitor's refresh rate or a custom value, or removes the cap"},
     {Kind::Value, kFpsCounter, "FPS COUNTER", "Displays the frame rate on screen"},
@@ -247,6 +248,7 @@ bool* ToggleFlag(int id) {
         case kAutoHelpers: return &g.auto_helpers;
         case kSkipIntros: return &g.skip_intros;
         case kFpsCounter: return &g.fps_counter;
+        case kHdrOutput: return &g.hdr_output;
         case kGyroAiming: return &g.gyro.enabled;
         case kBlur: return &g.blur;
         case kInvincible: return &g.invincible;
