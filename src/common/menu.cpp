@@ -37,6 +37,7 @@ std::atomic<bool> g_open{false};
 
 constexpr uint32_t kAnisoValues[] = {0, 2, 4, 8, 16};
 const char* const kAnisoNames[] = {"GAME DEFAULT", "2x", "4x", "8x", "16x"};
+const char* const kDumpFormatNames[] = {"PNG", "DDS"};
 constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, 360, app::kFpsCapRefresh, 0};
 constexpr uint32_t kShadowSizes[] = {1024, 1344, 2048, 3072, 4096, 6144, 8192};
 constexpr uint32_t kDistances[] = {1, 2, 4, 6, 8, 12, 16, 32};
@@ -86,7 +87,7 @@ enum RowId {
     kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivity, kInvertY, kSmoothing,
     kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kFpsCounter, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
-    kInvincible
+    kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat
 };
 
 constexpr Row kSettingsRows[] = {
@@ -114,6 +115,12 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kModelDetail, "MODEL DETAIL", "Scales how far models keep their higher detail levels"},
     {Kind::Heading, -1, "GENERAL", nullptr},
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
+    {Kind::Heading, -1, "TEXTURES", nullptr},
+    {Kind::Value, kTextureReplacement, "TEXTURE REPLACEMENT",
+     "Replaces the game's textures with the images in the textures\\replacement folder beside the exe"},
+    {Kind::Value, kTextureDumping, "TEXTURE DUMPING",
+     "Saves every texture the game uses into the textures\\dumps folder beside the exe as you play"},
+    {Kind::Value, kDumpFormat, "DUMP FORMAT", "PNG, or DDS which keeps the original compression and mipmaps"},
     {Kind::Defaults, -1, "RESTORE DEFAULTS", "Puts every setting on this page back to its default"},
 };
 
@@ -301,6 +308,18 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
         case kAniso:
             std::snprintf(text, sizeof(text), "%s", kAnisoNames[StepTable(kAnisoValues, s.aniso, step)]);
             break;
+        case kTextureReplacement:
+            Flip(s.custom_textures, step);
+            std::snprintf(text, sizeof(text), "%s", OnOff(s.custom_textures));
+            break;
+        case kTextureDumping:
+            Flip(s.dump_textures, step);
+            std::snprintf(text, sizeof(text), "%s", OnOff(s.dump_textures));
+            break;
+        case kDumpFormat:
+            if (step) s.texture_dump_format = uint32_t(StepIndex(int(s.texture_dump_format), step, 2));
+            std::snprintf(text, sizeof(text), "%s", kDumpFormatNames[std::min(s.texture_dump_format, 1u)]);
+            break;
         default:
             StepInputRow(id, step, text);
             break;
@@ -348,6 +367,9 @@ void RestoreDefaults(int page) {
     s.vsync = def.vsync;
     s.fps_cap = def.fps_cap;
     s.aniso = def.aniso;
+    s.custom_textures = def.custom_textures;
+    s.dump_textures = def.dump_textures;
+    s.texture_dump_format = def.texture_dump_format;
     // the mouse settings belong to the other page
     const Settings keep = Get();
     Get() = Settings{};

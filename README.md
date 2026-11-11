@@ -20,6 +20,11 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 
 ### Graphics
 
+### Textures
+- **Texture Replacement** - Replaces the game's textures with the `.dds` or `.png` images in the `textures\replacement` folder beside the exe.
+- **Texture Dumping** - Saves every texture the game uses into the `textures\dumps` folder beside the exe as you play.
+- **Dump Format** - Choose between PNG or DDS, which keeps the original compression and mipmaps.
+
 ### Controller
 Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
 
