@@ -86,7 +86,7 @@ constexpr uint32_t kEntityAngles = 0x374;
 constexpr uint32_t kEntityCamera = 0x11C;
 constexpr uint32_t kCameraAngles = 0x14;
 
-// cl_aimingHelper: an ICVar the game object holds, its value through an int pointer at +0x10
+// cl_aimingHelper and cl_display_hud: ICVars the game object holds, their value through an int pointer at +0x10
 constexpr uint32_t kCVarValuePtr = 0x10;
 
 // the guest stops calling CAimHelper::Update in menus and on loading screens
@@ -187,6 +187,21 @@ HelperOverride SuppressAimingHelper() {
     if (!saved) return {};
     W32(slot, 0);
     return {slot, saved};
+}
+
+// cl_display_hud flips on each press of the toggle key; the editor has no offset for it
+void ToggleHud() {
+#if HAS_Game_DisplayHud
+    static bool was_held = false;
+    bool held = Held(K::kToggleHud, true);
+    bool pressed = held && !was_held;
+    was_held = held;
+    if (!pressed) return;
+    uint32_t game = R32(SYM_Game_pointer);
+    uint32_t cvar = game ? R32(game + SYM_Game_DisplayHud) : 0;
+    uint32_t slot = cvar ? R32(cvar + kCVarValuePtr) : 0;
+    if (slot) W32(slot, R32(slot) ? 0 : 1);
+#endif
 }
 
 // smoothing off and looking with the mouse
@@ -340,6 +355,7 @@ void GamePad(int port, input::Pad& pad) {
         pad = {.connected = true};
         return;
     }
+    ToggleHud();
     input::Pad kb = Keyboard(pad);
     // keyboard and mouse ride on port 0, a controller or not
     pad.connected = true;

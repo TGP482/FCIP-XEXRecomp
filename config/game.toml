@@ -155,8 +155,9 @@ UITransform_vtable = 0x82079188
 UIWidgetFocus_vtable = 0x82078BC4
 UIWidgetText_vtable = 0x82079880
 
-# CryGame: the game object, its cl_aimingHelper offset and no menu flag
+# CryGame: the game object, its cl_display_hud and cl_aimingHelper offsets and no menu flag
 Game_AimingHelper = 0xA8
+Game_DisplayHud = 0x9C
 Game_NoMenu = 0x379
 Game_pointer = 0x8291234C
 
