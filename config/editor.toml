@@ -20,6 +20,7 @@ D3D_InterruptHandler          = 0x8264C8D0
 D3D_SetDefaultRegisters       = 0x826592C0
 D3D_MakeSpace                 = 0x8264DA48
 D3D_SubmitIndirect            = 0x8264CE60
+D3D_WaitForGpu                = 0x826582E8
 D3DDevice_CreatePixelShader   = 0x8264A380
 D3DDevice_CreateVertexShader  = 0x8264A470
 D3DDevice_DrawIndexedVertices = 0x82646E38
