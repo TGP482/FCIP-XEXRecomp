@@ -30,6 +30,7 @@ D3DDevice_Resolve             = 0x826407D8
 D3DDevice_Swap                = 0x826462F0
 D3DDevice_BeginTiling         = 0x8263F860
 D3DDevice_EndTiling           = 0x8263FC98
+D3DDevice_ClearF              = 0x826458A0
 D3DDevice_SetPredication      = 0x8263F728
 D3DDevice_SetViewport         = 0x82644800
 D3DQuery_GetData              = 0x8264ECD8
