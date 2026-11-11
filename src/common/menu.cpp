@@ -384,8 +384,8 @@ void RestoreDefaults(int page) {
 }
 
 std::string BindText(int action) {
-    std::string text = keys::KeyName(keys::Key(action, 0));
-    if (uint8_t alt = keys::Key(action, 1)) text += (text.empty() ? "" : "/") + keys::KeyName(alt);
+    std::string text = keys::KeyLabel(keys::Key(action, 0));
+    if (uint8_t alt = keys::Key(action, 1)) text += (text.empty() ? "" : "/") + keys::KeyLabel(alt);
     return text.empty() ? "UNBOUND" : text;
 }
 
@@ -489,7 +489,7 @@ void BindRow(const Row& r) {
         bool lit = capturing || ImGui::IsItemFocused() || ImGui::IsItemHovered();
         ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
                                                   ImGui::GetColorU32(lit ? ImGuiCol_Header : ImGuiCol_FrameBg));
-        std::string value = capturing ? "PRESS A KEY" : keys::KeyName(keys::Key(r.id, slot));
+        std::string value = capturing ? "PRESS A KEY" : keys::KeyLabel(keys::Key(r.id, slot));
         if (!capturing && slot == 0 && value.empty()) value = "UNBOUND";
         float pad = (box_w - ImGui::CalcTextSize(value.c_str()).x) * 0.5f;
         ImGui::SetCursorPos(ImVec2(x + std::max(pad, 0.0f), row_y));
@@ -698,7 +698,8 @@ void DrawUi(double) {
 bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
     bool key_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
     bool capturing = keys::Capturing();
-    bool panel_key = wp && (wp == keys::Key(keys::kSettings, 0) || wp == keys::Key(keys::kSettings, 1));
+    uint8_t key = keys::PositionKey(wp);
+    bool panel_key = key && (key == keys::Key(keys::kSettings, 0) || key == keys::Key(keys::kSettings, 1));
     if (key_down && !capturing && (panel_key || (wp == VK_ESCAPE && MenuOpen()))) {
         ToggleMenu();
         *result = 0;

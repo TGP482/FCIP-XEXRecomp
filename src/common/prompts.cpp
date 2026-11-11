@@ -57,10 +57,10 @@ bool IsMouse(uint8_t vk) { return vk == 0x01 || vk == 0x02 || vk == 0x04 || vk =
 std::string KeyText(const Bind& bind, bool& mouse) {
     if (bind.first < 0) return {};
     uint8_t vk = K::Key(bind.first, 0);
-    std::string key = K::KeyName(vk);
+    std::string key = K::KeyLabel(vk);
     mouse = IsMouse(vk);
     if (bind.second >= 0) {
-        std::string other = K::KeyName(K::Key(bind.second, 0));
+        std::string other = K::KeyLabel(K::Key(bind.second, 0));
         if (key.empty() || other.empty()) return {};
         key += "/" + other;
     }

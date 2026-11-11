@@ -18,7 +18,10 @@ const char* Label(int action);
 uint8_t Key(int action, int slot);
 void Bind(int action, uint8_t vk, int slot);  // 0 clears
 void ResetBinds();
-std::string KeyName(uint8_t vk);  // as the panel and the prompts show it, "" for none
+// Binds name the US layout key at a position: a key goes by where it sits, whatever the layout prints on it
+std::string KeyName(uint8_t vk);   // as the settings file names it, "" for none
+std::string KeyLabel(uint8_t vk);  // as the player's keyboard prints it, for the panel and the prompts
+uint8_t PositionKey(uintptr_t vk);  // a key the window was sent, as the key binds name at its position
 
 // guest threads: the key is held and was not started while the pad was in use or the panel was open; a key
 // pressed since the last poll counts only when fresh is set

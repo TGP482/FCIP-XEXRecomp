@@ -15,6 +15,8 @@
 
 #include <toml++/toml.hpp>
 
+#include "app/app.h"
+
 namespace fcip::keys {
 
 namespace {
@@ -72,6 +74,32 @@ constexpr Name kNames[] = {
     {VK_OEM_1, ";"}, {VK_OEM_PLUS, "="}, {VK_OEM_COMMA, ","}, {VK_OEM_MINUS, "-"}, {VK_OEM_PERIOD, "."},
     {VK_OEM_2, "/"}, {VK_OEM_3, "`"}, {VK_OEM_4, "["}, {VK_OEM_5, "\\"}, {VK_OEM_6, "]"}, {VK_OEM_7, "'"},
 };
+
+// US layout scan codes of the keys that move with the layout
+struct Position {
+    uint8_t vk;
+    UINT scan;
+};
+constexpr Position kPositions[] = {
+    {'1', 0x02}, {'2', 0x03}, {'3', 0x04}, {'4', 0x05}, {'5', 0x06}, {'6', 0x07}, {'7', 0x08}, {'8', 0x09},
+    {'9', 0x0A}, {'0', 0x0B}, {VK_OEM_MINUS, 0x0C}, {VK_OEM_PLUS, 0x0D},
+    {'Q', 0x10}, {'W', 0x11}, {'E', 0x12}, {'R', 0x13}, {'T', 0x14}, {'Y', 0x15}, {'U', 0x16}, {'I', 0x17},
+    {'O', 0x18}, {'P', 0x19}, {VK_OEM_4, 0x1A}, {VK_OEM_6, 0x1B},
+    {'A', 0x1E}, {'S', 0x1F}, {'D', 0x20}, {'F', 0x21}, {'G', 0x22}, {'H', 0x23}, {'J', 0x24}, {'K', 0x25},
+    {'L', 0x26}, {VK_OEM_1, 0x27}, {VK_OEM_7, 0x28}, {VK_OEM_3, 0x29}, {VK_OEM_5, 0x2B},
+    {'Z', 0x2C}, {'X', 0x2D}, {'C', 0x2E}, {'V', 0x2F}, {'B', 0x30}, {'N', 0x31}, {'M', 0x32},
+    {VK_OEM_COMMA, 0x33}, {VK_OEM_PERIOD, 0x34}, {VK_OEM_2, 0x35},
+};
+
+UINT ScanOf(uint8_t vk) {
+    for (const Position& p : kPositions) {
+        if (p.vk == vk) return p.scan;
+    }
+    return 0;
+}
+
+// the layout the player types with, switched per window thread
+HKL Layout() { return GetKeyboardLayout(GetWindowThreadProcessId(static_cast<HWND>(app::Window()), nullptr)); }
 
 std::mutex g_bind_lock;
 uint8_t g_binds[kActionCount][2];
@@ -192,18 +220,38 @@ std::string KeyName(uint8_t vk) {
     return text;
 }
 
+std::string KeyLabel(uint8_t vk) {
+    UINT scan = ScanOf(vk);
+    UINT live = scan ? MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, Layout()) : 0;
+    if (!live || live == vk) return KeyName(vk);
+    if ((live >= 'A' && live <= 'Z') || (live >= '0' && live <= '9')) return std::string(1, char(live));
+    // the top bit flags a dead key
+    UINT c = MapVirtualKeyExW(live, MAPVK_VK_TO_CHAR, Layout()) & 0x7FFF;
+    if (c > ' ' && c < 0x7F) return std::string(1, char(c));
+    return KeyName(vk);
+}
+
+uint8_t PositionKey(uintptr_t vk) {
+    if (vk >= 256) return 0;
+    UINT scan = MapVirtualKeyExW(UINT(vk), MAPVK_VK_TO_VSC, Layout());
+    for (const Position& p : kPositions) {
+        if (p.scan == scan) return p.vk;
+    }
+    return uint8_t(vk);
+}
+
 bool Held(int action, bool fresh) { return Usable(Key(action, 0), fresh) || Usable(Key(action, 1), fresh); }
 
 bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp) {
     switch (msg) {
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:
-            if (wp < 256) Set(uint8_t(wp), true);
+            if (wp < 256) Set(PositionKey(wp), true);
             // Alt and F10 open the system menu otherwise
             return msg == WM_SYSKEYDOWN && wp != VK_F4;
         case WM_KEYUP:
         case WM_SYSKEYUP:
-            if (wp < 256) Set(uint8_t(wp), false);
+            if (wp < 256) Set(PositionKey(wp), false);
             return msg == WM_SYSKEYUP;
         case WM_LBUTTONDOWN:
         case WM_LBUTTONUP:
