@@ -112,6 +112,7 @@ std::atomic<int> g_wheel{0};
 std::atomic<uint64_t> g_wheel_ms{0};
 std::atomic<uint64_t> g_pad_ms{0};
 std::atomic<uint64_t> g_kbm_ms{0};
+std::atomic<uint64_t> g_delete_ms{0};
 
 // 0 idle, 1 waiting for a key, 2 key taken, 3 cancelled
 std::atomic<int> g_capture{0};
@@ -247,6 +248,8 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp) {
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:
             if (wp < 256) Set(PositionKey(wp), true);
+            // bit 30: a held key's repeat
+            if (wp == VK_DELETE && !(lp & (1 << 30))) g_delete_ms = NowMs();
             // Alt and F10 open the system menu otherwise
             return msg == WM_SYSKEYDOWN && wp != VK_F4;
         case WM_KEYUP:
@@ -280,6 +283,11 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp) {
 void WindowUp(void* hwnd) {
     RAWINPUTDEVICE mouse{0x01, 0x02, 0, static_cast<HWND>(hwnd)};  // generic desktop, mouse
     RegisterRawInputDevices(&mouse, 1, sizeof(mouse));
+}
+
+bool TakeDelete() {
+    uint64_t pressed = g_delete_ms.exchange(0);
+    return pressed && NowMs() - pressed < 250;
 }
 
 void BeginCapture() {

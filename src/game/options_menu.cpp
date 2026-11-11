@@ -298,9 +298,22 @@ bool ListOk() {
     return Read32(g_native.list) == kVtList && last >= first && (last - first) / kListItemBytes == uint32_t(NativeCount());
 }
 
+// Delete on a bind row unbinds it
+void NativeUnbind(PPCContext& ctx) {
+    int row = Selected();
+    if (g_native.mode < 0 || !ListOk() || row < 0 || NativeRow(row).kind != rows::Kind::Bind) return;
+    rows::ClearBind(NativeRow(row).id);
+    RefreshValues(ctx);
+    kernel::CallGuest(ctx, kSoundPlay, {Read32(kSoundSystem), kSoundChange});
+}
+
 // menu thread, each frame: a bind row's capture ends with a key, Escape, or the page going away
 void NativeTick(PPCContext& ctx, uint32_t) {
-    if (g_native.capture < 0) return;
+    bool unbind = keys::TakeDelete();
+    if (g_native.capture < 0) {
+        if (unbind) NativeUnbind(ctx);
+        return;
+    }
     int vk = keys::Captured();
     if (!vk) return;
     int row = g_native.capture;

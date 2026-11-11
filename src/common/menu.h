@@ -45,6 +45,7 @@ std::span<const Row> Page(int page);
 std::string Text(const Row& row, int step = 0);
 void Defaults(int page);
 void SetBind(int action, uint8_t vk);  // the action's key, its alternate kept
+void ClearBind(int action);            // both keys
 
 }  // namespace rows
 

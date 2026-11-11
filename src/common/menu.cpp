@@ -167,7 +167,9 @@ const std::vector<Row>& KeyboardRows() {
              "Turns the aiming helper off while the keyboard or mouse is in use"},
             {Kind::Heading, -1, "KEYBOARD", nullptr},
         };
-        for (int i = 0; i < keys::kActionCount; i++) out.push_back({Kind::Bind, i, keys::Label(i), "Accept rebinds the key"});
+        for (int i = 0; i < keys::kActionCount; i++) {
+            out.push_back({Kind::Bind, i, keys::Label(i), "Accept rebinds the key, Delete unbinds it"});
+        }
         out.push_back({Kind::Defaults, -1, "RESTORE DEFAULTS", "Puts the mouse settings and every key back to its default"});
         return out;
     }();
@@ -731,6 +733,13 @@ std::string Text(const Row& row, int step) {
 void SetBind(int action, uint8_t vk) {
     std::lock_guard lock(app::UiLock());
     keys::Bind(action, vk, 0);
+    Changed(false);
+}
+
+void ClearBind(int action) {
+    std::lock_guard lock(app::UiLock());
+    keys::Bind(action, 0, 0);
+    keys::Bind(action, 0, 1);
     Changed(false);
 }
 

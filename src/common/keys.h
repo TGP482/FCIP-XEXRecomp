@@ -31,6 +31,9 @@ bool Held(int action, bool fresh = false);
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);
 void WindowUp(void* hwnd);  // raw mouse
 
+// Delete went down in the last 250 ms, once per press
+bool TakeDelete();
+
 // the next key or mouse button pressed goes to Captured() instead of the game; Escape cancels
 void BeginCapture();
 bool Capturing();
