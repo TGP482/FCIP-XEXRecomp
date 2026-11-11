@@ -373,8 +373,15 @@ bool CursorMessage(void* hwnd, uint32_t msg, intptr_t lp, intptr_t* result) {
         locked = false;
         ClipCursor(nullptr);
     }
-    if (msg != WM_SETCURSOR || !locked || LOWORD(lp) != HTCLIENT) return false;
-    SetCursor(nullptr);
+    if (msg != WM_SETCURSOR || LOWORD(lp) != HTCLIENT) return false;
+    // hidden while the mouse looks, the panel keeps the arrow
+    HCURSOR cursor = nullptr;
+    if (!locked) {
+        if (MenuOpen()) return false;
+        cursor = static_cast<HCURSOR>(MenuCursor());
+        if (!cursor) return false;
+    }
+    SetCursor(cursor);
     *result = TRUE;
     return true;
 }

@@ -26,6 +26,7 @@ Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
 ### General
 
 ### Miscellaneous
+- **Custom Menu Cursor** - Place a `cursor.png` (or `cursor.dds`) beside the exe to replace the Windows arrow in the game's menus.
 - **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.
 
 ## System Requirements
