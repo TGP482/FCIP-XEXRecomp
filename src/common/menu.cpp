@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstdio>
 #include <iterator>
+#include <map>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -23,6 +25,7 @@
 #include "common/gyro.h"
 #include "common/input.h"
 #include "common/keys.h"
+#include "common/monitor.h"
 #include "common/panel_colors.h"
 #include "common/settings.h"
 #include "core/input.h"
@@ -35,6 +38,8 @@ using rows::Kind;
 using rows::Row;
 
 std::atomic<bool> g_open{false};
+
+constexpr uint32_t kHostApplyDisplay = WM_APP + 1;  // main.cpp's kApplyDisplay
 
 constexpr uint32_t kAnisoValues[] = {0, 2, 4, 8, 16};
 const char* const kAnisoNames[] = {"GAME DEFAULT", "2x", "4x", "8x", "16x"};
@@ -85,7 +90,7 @@ void Flip(bool& on, int step) {
 }
 
 enum RowId {
-    kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivityX, kSensitivityY,
+    kMonitor, kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivityX, kSensitivityY,
     kAimSensitivityX, kAimSensitivityY, kInvertX, kInvertY, kSmoothing,
     kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kViewmodelFov, kFpsCounter, kHdrOutput, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
@@ -95,6 +100,7 @@ enum RowId {
 
 constexpr Row kSettingsRows[] = {
     {Kind::Heading, -1, "DISPLAY", nullptr},
+    {Kind::Value, kMonitor, "MONITOR", "Picks the monitor the game shows on, by Windows number and desktop resolution"},
     {Kind::Value, kDisplayMode, "DISPLAY MODE", "Switch between fullscreen, borderless and windowed"},
     {Kind::Value, kResolution, "RESOLUTION", "Every mode your monitor reports, defaulting to your desktop resolution"},
     {Kind::Value, kRenderResolution, "RENDER RESOLUTION",
@@ -194,35 +200,59 @@ const std::vector<Row>& KeyboardRows() {
     return list;
 }
 
-bool DisplayRow(int id) { return id == kDisplayMode || id == kResolution; }
+bool DisplayRow(int id) { return id == kMonitor || id == kDisplayMode || id == kResolution; }
 
-// the window's monitor's modes smallest first, so Left steps down
-const std::vector<app::Mode>& Modes() {
-    static const std::vector<app::Mode> modes = [] {
-        std::vector<app::Mode> out;
-        MONITORINFOEXW mi{};
-        mi.cbSize = sizeof(mi);
-        GetMonitorInfoW(MonitorFromWindow(static_cast<HWND>(app::Window()), MONITOR_DEFAULTTOPRIMARY), &mi);
-        DEVMODEW dm{};
-        dm.dmSize = sizeof(dm);
-        for (DWORD i = 0; EnumDisplaySettingsW(mi.szDevice, i, &dm); i++) {
-            if (dm.dmBitsPerPel < 32 || dm.dmPelsWidth < 640) continue;
-            app::Mode m{dm.dmPelsWidth, dm.dmPelsHeight};
-            auto same = [&](const app::Mode& o) { return o.width == m.width && o.height == m.height; };
-            if (std::none_of(out.begin(), out.end(), same)) out.push_back(m);
-        }
-        std::sort(out.begin(), out.end(), [](const app::Mode& a, const app::Mode& b) {
-            return a.width != b.width ? a.width < b.width : a.height < b.height;
-        });
-        return out;
-    }();
-    return modes;
+std::string g_display_monitor;  // the held monitor, beside the held display settings
+
+// the monitor setting beside s: the held one beside the held display settings
+std::string& MonitorSetting(const app::Settings& s) {
+    if (&s == &app::Get()) return Get().monitor;
+    return g_display_monitor;
 }
 
-// the mode shown, stepped first; the desktop's own mode is kept as 0, which follows the desktop
+// the setting's monitor in the list, the primary's index when it is not connected
+int MonitorIndex(const std::vector<Display>& list, const std::string& monitor) {
+    int primary = 0;
+    for (size_t i = 0; i < list.size(); i++) {
+        if (list[i].device == monitor) return int(i);
+        if (list[i].primary) primary = int(i);
+    }
+    return primary;
+}
+
+// the monitor's modes smallest first, so Left steps down; the primary's for empty
+std::vector<app::Mode> Modes(const std::string& monitor) {
+    std::vector<app::Mode> out;
+    std::wstring device(monitor.begin(), monitor.end());
+    const wchar_t* name = device.empty() ? nullptr : device.c_str();
+    DEVMODEW dm{};
+    dm.dmSize = sizeof(dm);
+    for (DWORD i = 0; EnumDisplaySettingsW(name, i, &dm); i++) {
+        if (dm.dmBitsPerPel < 32 || dm.dmPelsWidth < 640) continue;
+        app::Mode m{dm.dmPelsWidth, dm.dmPelsHeight};
+        auto same = [&](const app::Mode& o) { return o.width == m.width && o.height == m.height; };
+        if (std::none_of(out.begin(), out.end(), same)) out.push_back(m);
+    }
+    std::sort(out.begin(), out.end(), [](const app::Mode& a, const app::Mode& b) {
+        return a.width != b.width ? a.width < b.width : a.height < b.height;
+    });
+    return out;
+}
+
+// the mode shown on the setting's monitor, stepped first; its desktop mode is kept as 0, which follows the desktop
 app::Mode StepResolution(app::Settings& s, int step) {
-    const std::vector<app::Mode>& modes = Modes();
+    static std::map<std::string, std::vector<app::Mode>> cache;
+    std::vector<Display> monitors = Displays();
+    std::string device;  // the primary when the setting's monitor is not connected
     app::Mode desktop = app::Desktop();
+    if (!monitors.empty()) {
+        const Display& d = monitors[size_t(MonitorIndex(monitors, MonitorSetting(s)))];
+        device = d.device;
+        desktop = d.desktop;
+    }
+    auto [it, fresh] = cache.try_emplace(device);
+    if (fresh) it->second = Modes(device);
+    const std::vector<app::Mode>& modes = it->second;
     app::Mode m = s.width && s.height ? app::Mode{s.width, s.height} : desktop;
     int i = 0;
     for (size_t k = 0; k < modes.size(); k++) {
@@ -235,6 +265,25 @@ app::Mode StepResolution(app::Settings& s, int step) {
         s.height = native ? 0 : m.height;
     }
     return m;
+}
+
+// the monitor shown, stepped first; another monitor starts on its own desktop mode
+void StepMonitor(int step, app::Settings& s, char (&text)[64]) {
+    std::vector<Display> list = Displays();
+    if (list.empty()) {
+        std::snprintf(text, sizeof(text), "PRIMARY");
+        return;
+    }
+    int current = MonitorIndex(list, MonitorSetting(s));
+    int i = StepIndex(current, step, int(list.size()));
+    const Display& d = list[size_t(i)];
+    if (step && i != current) {
+        MonitorSetting(s) = d.device;
+        s.width = 0;
+        s.height = 0;
+    }
+    const char* format = d.primary ? "%d: %ux%u (PRIMARY)" : "%d: %ux%u";
+    std::snprintf(text, sizeof(text), format, d.number, d.desktop.width, d.desktop.height);
 }
 
 bool* ToggleFlag(int id) {
@@ -337,6 +386,9 @@ void StepInputRow(int id, int step, char (&text)[64]) {
 
 void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
     switch (id) {
+        case kMonitor:
+            StepMonitor(step, s, text);
+            break;
         case kDisplayMode: {
             static const char* const kModes[] = {"FULLSCREEN", "BORDERLESS", "WINDOWED"};
             int count = int(std::size(kModes));
@@ -611,24 +663,26 @@ void PollCapture() {
 std::atomic<int> g_page{kSettingsPage};
 std::atomic<bool> g_page_set{true};  // the tab bar picks g_page on its next frame
 
-// on F10 the display mode and resolution wait for Apply, as Windows' display settings do; closing drops them
+// on F10 the monitor, display mode and resolution wait for Apply, as Windows' display settings do; closing drops them
 bool g_display_held = false;
 app::Settings g_display;
 
 void HoldDisplay(int id, int step) {
     const app::Settings& s = app::Get();
     if (!g_display_held) {
+        g_display_monitor = Get().monitor;
         g_display.display_mode = s.display_mode;
         g_display.width = s.width;
         g_display.height = s.height;
     }
     RowText(id, step, g_display);
-    g_display_held = g_display.display_mode != s.display_mode || g_display.width != s.width ||
-                     g_display.height != s.height;
+    g_display_held = g_display_monitor != Get().monitor || g_display.display_mode != s.display_mode ||
+                     g_display.width != s.width || g_display.height != s.height;
 }
 
 void Apply() {
     app::Settings& s = app::Get();
+    Get().monitor = g_display_monitor;
     s.display_mode = g_display.display_mode;
     s.width = g_display.width;
     s.height = g_display.height;
@@ -767,6 +821,16 @@ void DrawUi(double) {
 
 // the settings panel key opens and closes the panel, Escape closes it; a capture takes every key
 bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
+    // onto the MONITOR setting's monitor first, the host then sizes the window on the monitor it is on
+    if (msg == WM_CREATE) {
+        UpdateSplashMonitor();
+        UpdateWindowMonitor(hwnd);
+        return false;
+    }
+    if (msg == kHostApplyDisplay) {
+        UpdateWindowMonitor(hwnd);
+        return false;
+    }
     bool key_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
     bool capturing = keys::Capturing();
     uint8_t key = keys::PositionKey(wp);

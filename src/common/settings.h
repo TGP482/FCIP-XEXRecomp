@@ -1,12 +1,14 @@
 // the game's own settings, beside the runtime's in the settings file
 #pragma once
 #include <cstdint>
+#include <string>
 
 #include "common/gyro.h"
 
 namespace fcip {
 
 struct Settings {
+    std::string monitor;  // its device name, \\.\DISPLAY2; empty the primary
     float fov = 90.0f;  // true horizontal degrees, 45 to 140
     float viewmodel_fov = 90.0f;  // the weapon and arms on the same measure, 90 keeps the game's
     bool fps_counter = false;

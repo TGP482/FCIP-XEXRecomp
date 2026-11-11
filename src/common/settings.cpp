@@ -18,6 +18,7 @@ Settings& Get() {
 void LoadSettings(const void* table) {
     auto& t = *static_cast<const toml::table*>(table);
     Settings& s = Get();
+    s.monitor = t["monitor"].value_or(s.monitor);
     s.fov = std::clamp(t["fov"].value_or(s.fov), 45.0f, 140.0f);
     s.viewmodel_fov = std::clamp(t["viewmodel_fov"].value_or(s.viewmodel_fov), 45.0f, 140.0f);
     s.fps_counter = t["fps_counter"].value_or(s.fps_counter);
@@ -53,6 +54,7 @@ void LoadSettings(const void* table) {
 void SaveSettings(void* table) {
     auto& t = *static_cast<toml::table*>(table);
     const Settings& s = Get();
+    t.insert_or_assign("monitor", s.monitor);
     t.insert_or_assign("fov", double(s.fov));
     t.insert_or_assign("viewmodel_fov", double(s.viewmodel_fov));
     t.insert_or_assign("fps_counter", s.fps_counter);
