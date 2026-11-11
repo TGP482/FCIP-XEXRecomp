@@ -791,6 +791,7 @@ HLE_FUNC(D3DDevice_Swap) {
             Backend()->Present(front);
         }
     }
+    gpu::NoteFrame();
     app::Pace();
     return 0;
 }

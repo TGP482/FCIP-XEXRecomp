@@ -226,12 +226,17 @@ struct Resolved {
     uint32_t view = 0;  // RTV slot
 };
 
+constexpr int kReadBacks = 4;  // a frame's resolves to one address, and the one a frame back
+
 // a resolve the CPU reads: a copy at title size each time the title resolves there
 struct ReadBack {
-    ComPtr<ID3D12Resource> buffer[kFrames];
-    uint64_t seq[kFrames] = {};    // which resolve to the address each holds
-    uint64_t fence[kFrames] = {};  // the submission it lands in
+    ComPtr<ID3D12Resource> buffer[kReadBacks];
+    uint64_t seq[kReadBacks] = {};    // which resolve to the address each holds
+    uint64_t fence[kReadBacks] = {};  // the submission it lands in
     uint32_t next = 0;
+    uint64_t frame_start = 0;   // resolves issued to the address when the title's frame began
+    uint64_t last_frame = 0;    // those the frame before issued
+    uint64_t frame_before = 0;  // and the one before that
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     uint32_t width = 0;  // the resolve's title texels
     uint32_t height = 0;
@@ -2430,7 +2435,7 @@ void D3D12Backend::RecordReadBack(ReadBack& rb, uint32_t base, uint64_t seq) {
     const Resolved& resolve = resolved_[latest->second];
     rb.seq[slot] = seq;
     rb.fence[slot] = fence_value_;
-    rb.next = (slot + 1) % kFrames;
+    rb.next = (slot + 1) % kReadBacks;
     rb.format = resolve.format;
     rb.width = resolve.width;
     rb.height = resolve.height;
@@ -2930,13 +2935,26 @@ void NoteResolve(uint32_t base) {
     g_cpu.issued[base]++;
 }
 
+void NoteFrame() {
+    std::lock_guard lock(g_cpu.lock);
+    for (auto& [base, rb] : g_cpu.read) {
+        auto issued = g_cpu.issued.find(base);
+        uint64_t count = issued == g_cpu.issued.end() ? 0 : issued->second;
+        rb.frame_before = rb.last_frame;
+        rb.last_frame = count - rb.frame_start;
+        rb.frame_start = count;
+    }
+}
+
 bool IsResolve(const uint32_t fetch[6]) {
     uint32_t base = xenos::DecodeTextureFetch(fetch).base;
     std::lock_guard lock(g_cpu.lock);
     return g_cpu.issued.contains(base);
 }
 
-// as the console's lock: waits for the GPU to finish the last resolve there, then the CPU sees it in guest memory
+// as the console's lock: waits for the GPU to finish the last resolve there, then the CPU sees it in guest memory.
+// An address resolved the same number of times every frame is read a frame late, the same resolve of the frame before,
+// so the title records ahead of the GPU instead of in step.
 bool ApplyReadBack(const uint32_t fetch[6]) {
     xenos::TextureFetch t = xenos::DecodeTextureFetch(fetch);
     std::unique_lock lock(g_cpu.lock);
@@ -2944,13 +2962,17 @@ bool ApplyReadBack(const uint32_t fetch[6]) {
     if (issued == g_cpu.issued.end() || t.mip_min || !CpuReadable(t)) return true;
     uint64_t want = issued->second;
     // copied at every resolve from now on
-    g_cpu.read.try_emplace(t.base);
+    ReadBack& seen = g_cpu.read.try_emplace(t.base).first->second;
+    uint64_t per_frame = seen.last_frame;
+    bool steady = per_frame >= 1 && per_frame < kReadBacks && per_frame == seen.frame_before;
+    bool in_frame = want > per_frame && want - seen.frame_start <= per_frame;
+    if (steady && in_frame) want -= per_frame;
     g_cpu.ran.wait(lock, [&] { return g_cpu.done[t.base] >= want; });
     auto read = g_cpu.read.find(t.base);
     if (read == g_cpu.read.end()) return true;
     ReadBack& rb = read->second;
     auto slot = std::find(std::begin(rb.seq), std::end(rb.seq), want) - std::begin(rb.seq);
-    if (slot == kFrames) return false;
+    if (slot == kReadBacks) return false;
     // a texture of another size or format at the address replaced the resolve
     bool same = rb.format == HostTextureFormat(t) && rb.width == t.width && rb.height == t.height;
     if (!same) return true;

@@ -7,6 +7,8 @@ namespace gpu {
 
 // a resolve the title issued to base
 void NoteResolve(uint32_t base);
+// the title's frame ended
+void NoteFrame();
 // a fetch (host order, GPU address) of memory the title resolved to
 bool IsResolve(const uint32_t fetch[6]);
 // a lock of a texture (fetch as above): guest memory gets its last resolve, false when no copy of it was made
