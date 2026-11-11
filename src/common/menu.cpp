@@ -98,7 +98,7 @@ enum RowId {
     kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kViewmodelFov, kFpsCounter, kHdrOutput, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
     kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
-    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kMsaa
+    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kMsaa, kSmaa
 };
 
 constexpr Row kSettingsRows[] = {
@@ -118,6 +118,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kColourBlind, "COLOUR BLIND MODE", "Adjusts the colours for protanopia, deuteranopia or tritanopia"},
     {Kind::Heading, -1, "GRAPHICS", nullptr},
     {Kind::Value, kMsaa, "MSAA", "Smooths jagged edges with 4x or 8x MSAA, or turns off the game's own 2x"},
+    {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024 to 8192, 1344 is stock"},
     {Kind::Value, kShadowDistance, "SHADOW DISTANCE", "Scales the area around the player that casts sun shadows"},
@@ -303,6 +304,7 @@ bool* ToggleFlag(int id) {
         case kSkipIntros: return &g.skip_intros;
         case kFpsCounter: return &g.fps_counter;
         case kHdrOutput: return &g.hdr_output;
+        case kSmaa: return &g.smaa;
         case kGyroAiming: return &g.gyro.enabled;
         case kBlur: return &g.blur;
         case kInvincible: return &g.invincible;

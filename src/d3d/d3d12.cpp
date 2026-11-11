@@ -32,6 +32,8 @@
 #include "common/aspect.h"
 #include "common/settings.h"
 #include "d3d/readback.h"
+#include "d3d/smaa_shader.h"
+#include "d3d/smaa_textures.h"
 #include "backends/imgui_impl_dx12.h"
 #include "backends/imgui_impl_win32.h"
 #include "core/diag.h"
@@ -91,6 +93,8 @@ constexpr float kSdrWhiteUnit = 0.08f;   // Windows' SDR white level: 1000 is 80
 constexpr uint32_t kNullRtv = kRtvCount + kFrames;  // a target slot between bound ones, written nowhere
 constexpr DXGI_FORMAT kNullRtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr uint32_t kOutRtv = kNullRtv + 1;  // the HDR10 output's frame and panel targets
+constexpr int kSmaaTargets = 3;
+constexpr uint32_t kSmaaRtv = kOutRtv + kOutTargets;  // SMAA's edges, blend weights and blended frame
 
 enum : uint32_t {
     kRootVsConsts,
@@ -476,6 +480,64 @@ float4 hdr10(O i) : SV_Target {
 }
 )";
 
+const char* kSmaaConfig = R"(
+cbuffer P : register(b1) { float4 metrics; };
+#define SMAA_RT_METRICS metrics
+#define SMAA_CUSTOM_SL
+#define SMAA_THRESHOLD 0.05
+#define SMAA_MAX_SEARCH_STEPS 16
+#define SMAA_MAX_SEARCH_STEPS_DIAG 8
+#define SMAA_CORNER_ROUNDING 25
+SamplerState LinearSampler : register(s0);
+SamplerState PointSampler : register(s1);
+#define SMAATexture2D(tex) Texture2D tex
+#define SMAATexturePass2D(tex) tex
+#define SMAASampleLevelZero(tex, coord) tex.SampleLevel(LinearSampler, coord, 0)
+#define SMAASampleLevelZeroPoint(tex, coord) tex.SampleLevel(PointSampler, coord, 0)
+#define SMAASampleLevelZeroOffset(tex, coord, offset) tex.SampleLevel(LinearSampler, coord, 0, offset)
+#define SMAASample(tex, coord) tex.Sample(LinearSampler, coord)
+#define SMAASamplePoint(tex, coord) tex.Sample(PointSampler, coord)
+#define SMAASampleOffset(tex, coord, offset) tex.Sample(LinearSampler, coord, offset)
+#define SMAAGather(tex, coord) tex.Gather(LinearSampler, coord, 0)
+#define SMAA_FLATTEN [flatten]
+#define SMAA_BRANCH [branch]
+)";
+
+// after kSmaaHlsl: edges from the frame's luma, blend weights from edges, area and search, then the frame blended
+const char* kSmaaPasses = R"(
+Texture2D tex0 : register(t0);
+Texture2D tex1 : register(t1);
+Texture2D tex2 : register(t2);
+struct SmaaEdgeV { float4 p : SV_Position; float2 uv : TEXCOORD0; float4 o[3] : TEXCOORD1; };
+struct SmaaWeightV { float4 p : SV_Position; float2 uv : TEXCOORD0; float2 pix : TEXCOORD1; float4 o[3] : TEXCOORD2; };
+struct SmaaBlendV { float4 p : SV_Position; float2 uv : TEXCOORD0; float4 o : TEXCOORD1; };
+float4 corner(uint id, out float2 uv) {
+    uv = float2((id << 1) & 2, id & 2);
+    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+SmaaEdgeV vs_edges(uint id : SV_VertexID) {
+    SmaaEdgeV o;
+    o.p = corner(id, o.uv);
+    SMAAEdgeDetectionVS(o.uv, o.o);
+    return o;
+}
+SmaaWeightV vs_weights(uint id : SV_VertexID) {
+    SmaaWeightV o;
+    o.p = corner(id, o.uv);
+    SMAABlendingWeightCalculationVS(o.uv, o.pix, o.o);
+    return o;
+}
+SmaaBlendV vs_blend(uint id : SV_VertexID) {
+    SmaaBlendV o;
+    o.p = corner(id, o.uv);
+    SMAANeighborhoodBlendingVS(o.uv, o.o);
+    return o;
+}
+float4 smaa_edges(SmaaEdgeV i) : SV_Target { return float4(SMAALumaEdgeDetectionPS(i.uv, i.o, tex0), 0, 0); }
+float4 smaa_weights(SmaaWeightV i) : SV_Target { return SMAABlendingWeightCalculationPS(i.uv, i.pix, i.o, tex0, tex1, tex2, 0); }
+float4 smaa_blend(SmaaBlendV i) : SV_Target { return SMAANeighborhoodBlendingPS(i.uv, i.o, tex0, tex1); }
+)";
+
 const char* kBlitHlsl = R"(
 cbuffer P : register(b1) { float4 uvrect; float4 opts; };
 Texture2D<float4> img : register(t0);
@@ -673,7 +735,9 @@ public:
               float mul, DXGI_FORMAT rtv) override;
     void Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3D12_CPU_DESCRIPTOR_HANDLE rh, uint32_t w,
               uint32_t h, ID3D12Resource* const src[3], const DXGI_FORMAT fmt[3], const float p[8],
-              float blend) override;
+              float blend) override {
+        Pass(hlsl, "vs", entry, rtv, rh, w, h, src, fmt, p, blend);
+    }
     void Capture(Target& t, const char* tag, float mul) override;
     float Scale() const override { return scale_; }
     void GuestSize(uint32_t& w, uint32_t& h) const override {
@@ -776,11 +840,25 @@ private:
     bool ResizeBackBuffers(uint32_t w, uint32_t h, DXGI_FORMAT fmt, DXGI_COLOR_SPACE_TYPE space);
     bool EnsureOutTargets();
     bool CreateOutTarget(int i, DXGI_FORMAT fmt);
-    void DrawFront(const xenos::TextureFetch& t, DXGI_FORMAT rtv);
-    void BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, DXGI_FORMAT rtv, UINT mapping,
-                    uint32_t w, uint32_t h);
+    void DrawFront(const xenos::TextureFetch& t, DXGI_FORMAT rtv, D3D12_CPU_DESCRIPTOR_HANDLE target);
+    void BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, DXGI_FORMAT rtv,
+                    D3D12_CPU_DESCRIPTOR_HANDLE target, UINT mapping, uint32_t w, uint32_t h);
     void RenderUi();
     void PresentHdr(const xenos::TextureFetch& t, D3D12_CPU_DESCRIPTOR_HANDLE bb);
+    ID3D12Resource* Smaa(ID3D12Resource* src, DXGI_FORMAT fmt, uint32_t w, uint32_t h);
+    struct SmaaLookup {
+        DXGI_FORMAT fmt;
+        uint32_t w;
+        uint32_t h;
+        uint32_t bpp;  // bytes per texel
+        const uint8_t* data;
+    };
+    bool EnsureSmaaLookups();
+    bool CreateLookupTexture(ComPtr<ID3D12Resource>& r, const SmaaLookup& l);
+    bool EnsureSmaaTargets(DXGI_FORMAT fmt, uint32_t w, uint32_t h);
+    bool CreateSmaaTarget(int i, DXGI_FORMAT fmt, uint32_t w, uint32_t h);
+    bool DrawSmaaPasses(ID3D12Resource* src, DXGI_FORMAT fmt, uint32_t w, uint32_t h, const char* hlsl);
+    D3D12_CPU_DESCRIPTOR_HANDLE SmaaView(int i) { return Rtv(kSmaaRtv + i); }
     void CopyResolve(Target& src, Resolved& dst, const ResolveArgs& r);
     Resolved& EnsureResolved(uint64_t key, DXGI_FORMAT format, uint32_t w, uint32_t h);
     void MakeResolved(Resolved& dst, DXGI_FORMAT format, uint32_t w, uint32_t h, float scale);
@@ -794,7 +872,12 @@ private:
     void WriteResolved(const uint32_t fetch[6]);
 
     // passes
-    ID3D12PipelineState* EnsurePassPipeline(const std::string& hlsl, const char* entry, DXGI_FORMAT rtv, float blend);
+    // Pass with its own vertex shader entry; false when its pipeline cannot be made
+    bool Pass(const char* hlsl, const char* vs_entry, const char* entry, DXGI_FORMAT rtv,
+              D3D12_CPU_DESCRIPTOR_HANDLE rh, uint32_t w, uint32_t h, ID3D12Resource* const src[3],
+              const DXGI_FORMAT fmt[3], const float p[8], float blend);
+    ID3D12PipelineState* EnsurePassPipeline(const std::string& hlsl, const char* vs_entry, const char* entry,
+                                            DXGI_FORMAT rtv, float blend);
     void ShaderView(ID3D12Resource* res, DXGI_FORMAT fmt, uint32_t slot);
     void FullScreen(ID3D12PipelineState* pso, uint32_t views, const float p[8]);
 
@@ -821,6 +904,13 @@ private:
     float peak_nits_ = kDefaultPeakNits;
     float paper_nits_ = kDefaultPaperNits;
     ComPtr<ID3D12Resource> out_[kOutTargets];
+    // SMAA: edges, blend weights and the blended frame, at the frame's size; its area and search lookups
+    ComPtr<ID3D12Resource> smaa_[kSmaaTargets];
+    ComPtr<ID3D12Resource> smaa_lut_[2];
+    D3D12_RESOURCE_STATES smaa_state_[kSmaaTargets] = {};
+    uint32_t smaa_w_ = 0;
+    uint32_t smaa_h_ = 0;
+    DXGI_FORMAT smaa_fmt_ = DXGI_FORMAT_UNKNOWN;
     D3D12_RESOURCE_STATES out_state_[kOutTargets] = {};
     uint32_t out_w_ = 0, out_h_ = 0;
     ComPtr<ID3D12Device> dev_;
@@ -1025,7 +1115,7 @@ void D3D12Backend::CreateHeaps() {
     };
     view_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kViewsPerFrame * kFrames, true, view_heap_);
     sampler_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCount, true, sampler_heap_);
-    rtv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kOutRtv + kOutTargets, false, rtv_heap_);
+    rtv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kSmaaRtv + kSmaaTargets, false, rtv_heap_);
     dsv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvCount, false, dsv_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true, ui_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kPsTextures + kFrames, false, copy_heap_);
@@ -2947,14 +3037,15 @@ bool D3D12Backend::EnsureOutTargets() {
 }
 
 // the front buffer, a resolve or a texture, into the bound target
-void D3D12Backend::DrawFront(const xenos::TextureFetch& t, DXGI_FORMAT rtv) {
+void D3D12Backend::DrawFront(const xenos::TextureFetch& t, DXGI_FORMAT rtv, D3D12_CPU_DESCRIPTOR_HANDLE target) {
     auto resolved = resolved_.find(ResolvedKey(t.base, 0));
     if (resolved != resolved_.end()) {
         Resolved& r = resolved->second;
-        BlitToSwap(r.res.Get(), r.state, r.format, rtv, ComponentMapping(t), uint32_t(std::ceil(r.width * scale_)),
-                   uint32_t(std::ceil(r.height * scale_)));
+        uint32_t w = uint32_t(std::ceil(r.width * scale_));
+        uint32_t h = uint32_t(std::ceil(r.height * scale_));
+        BlitToSwap(r.res.Get(), r.state, r.format, rtv, target, ComponentMapping(t), w, h);
     } else if (Texture* tex = EnsureTexture(t)) {
-        BlitToSwap(tex->res.Get(), tex->state, tex->format, rtv, ComponentMapping(t), t.width, t.height);
+        BlitToSwap(tex->res.Get(), tex->state, tex->format, rtv, target, ComponentMapping(t), t.width, t.height);
     }
 }
 
@@ -2988,9 +3079,18 @@ std::array<float, 9> ColourBlindMatrix(uint32_t mode) {
 
 // the frame over the window at the output's aspect, 4:3 at the narrowest, bars around it
 void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, DXGI_FORMAT rtv,
-                              UINT mapping, uint32_t w, uint32_t h) {
+                              D3D12_CPU_DESCRIPTOR_HANDLE target, UINT mapping, uint32_t w, uint32_t h) {
     ID3D12PipelineState* pso = EnsureResolvePipeline(rtv, false);
     if (!pso) return;
+    D3D12_RESOURCE_STATES* src_state = &state;
+    if (fcip::Get().smaa) {
+        Transition(src, state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        if (ID3D12Resource* aa = Smaa(src, fmt, w, h)) {
+            src = aa;
+            src_state = &smaa_state_[2];
+        }
+        cl_->OMSetRenderTargets(1, &target, FALSE, nullptr);
+    }
     float aspect = fcip::DisplayAspect();
     float vw = std::min(float(swap_w_), swap_h_ * aspect);
     float vh = vw / aspect;
@@ -3001,7 +3101,7 @@ void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state,
     v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     v.Shader4ComponentMapping = mapping;
     v.Texture2D.MipLevels = 1;
-    Transition(src, state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(src, *src_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     dev_->CreateShaderResourceView(src, &v, ViewCpu(views));
     uint32_t mode = std::min(fcip::Get().colour_blind, 3u);
     float cb[20] = {0, 0, float(w), float(h), 1, 0, 0, mode ? 1.0f : 0.0f};
@@ -3020,6 +3120,109 @@ void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state,
     cl_->SetGraphicsRootDescriptorTable(kRootPsViews, ViewGuest(views));
     cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cl_->DrawInstanced(4, 1, 0, 0);
+}
+
+// src readable: SMAA's blend of it, null when it can't run
+ID3D12Resource* D3D12Backend::Smaa(ID3D12Resource* src, DXGI_FORMAT fmt, uint32_t w, uint32_t h) {
+    static const std::string hlsl = std::string(kSmaaConfig) + kSmaaHlsl + kSmaaPasses;
+    if (!EnsureSmaaLookups()) return nullptr;
+    if (!EnsureSmaaTargets(fmt, w, h)) return nullptr;
+    if (!DrawSmaaPasses(src, fmt, w, h, hlsl.c_str())) return nullptr;
+    return smaa_[2].Get();
+}
+
+bool D3D12Backend::EnsureSmaaLookups() {
+    // smaa_textures.h: area 160 x 560 in two channels, search 64 x 16 in one
+    constexpr SmaaLookup area{DXGI_FORMAT_R8G8_UNORM, 160, 560, 2, kSmaaArea};
+    constexpr SmaaLookup search{DXGI_FORMAT_R8_UNORM, 64, 16, 1, kSmaaSearch};
+    static_assert(sizeof(kSmaaArea) == area.w * area.h * area.bpp);
+    static_assert(sizeof(kSmaaSearch) == search.w * search.h * search.bpp);
+    if (smaa_lut_[1]) return true;
+    if (!CreateLookupTexture(smaa_lut_[0], area) || !CreateLookupTexture(smaa_lut_[1], search)) {
+        smaa_lut_[0].Reset();
+        smaa_lut_[1].Reset();
+        return false;
+    }
+    return true;
+}
+
+// a lookup texture filled from l's data, left readable
+bool D3D12Backend::CreateLookupTexture(ComPtr<ID3D12Resource>& r, const SmaaLookup& l) {
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(l.fmt, l.w, l.h);
+    D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_COPY_DEST;
+    if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, st, nullptr, IID_PPV_ARGS(&r)))) {
+        return false;
+    }
+    uint32_t row = l.w * l.bpp;
+    UploadRows(r.Get(), 0, std::vector<uint8_t>(l.data, l.data + size_t(row) * l.h), row);
+    Transition(r.Get(), st, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    return true;
+}
+
+// SMAA's own targets: edges, then blend weights, then the blended frame in the frame's format
+constexpr DXGI_FORMAT kSmaaEdgeFormat = DXGI_FORMAT_R8G8_UNORM;
+constexpr DXGI_FORMAT kSmaaWeightFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+bool D3D12Backend::EnsureSmaaTargets(DXGI_FORMAT fmt, uint32_t w, uint32_t h) {
+    if (smaa_[2] && smaa_w_ == w && smaa_h_ == h && smaa_fmt_ == fmt) return true;
+    smaa_w_ = smaa_h_ = 0;
+    const DXGI_FORMAT f[kSmaaTargets] = {kSmaaEdgeFormat, kSmaaWeightFormat, fmt};
+    for (int i = 0; i < kSmaaTargets; i++) {
+        if (!CreateSmaaTarget(i, f[i], w, h)) {
+            for (auto& r : smaa_) {
+                if (r) Release(std::move(r));
+            }
+            return false;
+        }
+    }
+    smaa_w_ = w;
+    smaa_h_ = h;
+    smaa_fmt_ = fmt;
+    LOGR("D3D12: SMAA %ux%u", w, h);
+    return true;
+}
+
+bool D3D12Backend::CreateSmaaTarget(int i, DXGI_FORMAT fmt, uint32_t w, uint32_t h) {
+    if (smaa_[i]) Release(std::move(smaa_[i]));
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(fmt, w, h);
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    smaa_state_[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    HRESULT hr = dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, smaa_state_[i], nullptr,
+                                               IID_PPV_ARGS(&smaa_[i]));
+    if (FAILED(hr)) return false;
+    dev_->CreateRenderTargetView(smaa_[i].Get(), nullptr, SmaaView(i));
+    return true;
+}
+
+// edges, blend weights, then the blend of src into smaa_[2], left readable
+bool D3D12Backend::DrawSmaaPasses(ID3D12Resource* src, DXGI_FORMAT fmt, uint32_t w, uint32_t h, const char* hlsl) {
+    // edge detection discards where there is no edge, so the edges start clear each frame
+    const float clear[4] = {};
+    float p[8] = {1.0f / w, 1.0f / h, float(w), float(h)};
+    Transition(smaa_[0].Get(), smaa_state_[0], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    cl_->ClearRenderTargetView(SmaaView(0), clear, 0, nullptr);
+    ID3D12Resource* const edges[3] = {src, nullptr, nullptr};
+    const DXGI_FORMAT edges_fmt[3] = {fmt, fmt, fmt};
+    if (!Pass(hlsl, "vs_edges", "smaa_edges", kSmaaEdgeFormat, SmaaView(0), w, h, edges, edges_fmt, p, -1)) {
+        return false;
+    }
+    Transition(smaa_[0].Get(), smaa_state_[0], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(smaa_[1].Get(), smaa_state_[1], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    cl_->ClearRenderTargetView(SmaaView(1), clear, 0, nullptr);
+    ID3D12Resource* const weights[3] = {smaa_[0].Get(), smaa_lut_[0].Get(), smaa_lut_[1].Get()};
+    const DXGI_FORMAT weights_fmt[3] = {kSmaaEdgeFormat, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8_UNORM};
+    if (!Pass(hlsl, "vs_weights", "smaa_weights", kSmaaWeightFormat, SmaaView(1), w, h, weights, weights_fmt, p, -1)) {
+        return false;
+    }
+    Transition(smaa_[1].Get(), smaa_state_[1], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(smaa_[2].Get(), smaa_state_[2], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ID3D12Resource* const blend[3] = {src, smaa_[1].Get(), nullptr};
+    const DXGI_FORMAT blend_fmt[3] = {fmt, kSmaaWeightFormat, fmt};
+    if (!Pass(hlsl, "vs_blend", "smaa_blend", fmt, SmaaView(2), w, h, blend, blend_fmt, p, -1)) return false;
+    Transition(smaa_[2].Get(), smaa_state_[2], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    return true;
 }
 
 void D3D12Backend::RenderUi() {
@@ -3044,7 +3247,7 @@ void D3D12Backend::PresentHdr(const xenos::TextureFetch& t, D3D12_CPU_DESCRIPTOR
     cl_->ClearRenderTargetView(frame, black, 0, nullptr);
     cl_->ClearRenderTargetView(panel, clear, 0, nullptr);
     cl_->OMSetRenderTargets(1, &frame, FALSE, nullptr);
-    DrawFront(t, kOutFrameFormat);
+    DrawFront(t, kOutFrameFormat, frame);
     if (ext_) ext_->Presenting(*this);
     cl_->OMSetRenderTargets(1, &panel, FALSE, nullptr);
     RenderUi();
@@ -3075,7 +3278,7 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     cl_->ClearRenderTargetView(rh, black, 0, nullptr);
     if (!hdr_out_) {
         cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
-        DrawFront(t, kSwapFormat);
+        DrawFront(t, kSwapFormat, rh);
         if (ext_) ext_->Presenting(*this);
         RenderUi();
     } else if (EnsureOutTargets()) {
@@ -3163,15 +3366,16 @@ ID3D12Resource* D3D12Backend::Feedback(Target& t) {
 }
 
 // a full screen pipeline of hlsl's vs and entry, kept by its source; null when it cannot be made
-ID3D12PipelineState* D3D12Backend::EnsurePassPipeline(const std::string& hlsl, const char* entry, DXGI_FORMAT rtv,
-                                                      float blend) {
+ID3D12PipelineState* D3D12Backend::EnsurePassPipeline(const std::string& hlsl, const char* vs_entry, const char* entry,
+                                                      DXGI_FORMAT rtv, float blend) {
     uint64_t seed = uint64_t(rtv) << 1 | (blend >= 0 ? 1 : 0);
     uint64_t key = Hash64(entry, std::strlen(entry), Hash64(hlsl.data(), hlsl.size(), seed));
+    key = Hash64(vs_entry, std::strlen(vs_entry), key);
     auto& pso = pass_pipelines_[key];
     if (pso) return pso.Get();
     std::vector<uint8_t> vs;
     std::vector<uint8_t> ps;
-    if (!CompileHlsl("#define vs main\n" + hlsl, L"vs_6_0", vs)) return nullptr;
+    if (!CompileHlsl(std::string("#define ") + vs_entry + " main\n" + hlsl, L"vs_6_0", vs)) return nullptr;
     if (!CompileHlsl(std::string("#define ") + entry + " main\n" + hlsl, L"ps_6_0", ps)) return nullptr;
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
     d.pRootSignature = root_.Get();
@@ -3225,7 +3429,7 @@ void D3D12Backend::FullScreen(ID3D12PipelineState* pso, uint32_t views, const fl
 
 void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect[4], bool gamma, bool alpha,
                         uint32_t taps, float mul, DXGI_FORMAT rtv) {
-    ID3D12PipelineState* pso = EnsurePassPipeline(kBlitHlsl, "blit", rtv, -1);
+    ID3D12PipelineState* pso = EnsurePassPipeline(kBlitHlsl, "vs", "blit", rtv, -1);
     if (!pso) return;
     uint32_t views = AllocViews(kPsTextures);
     ShaderView(src, fmt, views);
@@ -3235,11 +3439,11 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     FullScreen(pso, views, p);
 }
 
-void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3D12_CPU_DESCRIPTOR_HANDLE rh,
-                        uint32_t w, uint32_t h, ID3D12Resource* const src[3], const DXGI_FORMAT fmt[3],
-                        const float p[8], float blend) {
-    ID3D12PipelineState* pso = EnsurePassPipeline(hlsl, entry, rtv, blend);
-    if (!pso) return;
+bool D3D12Backend::Pass(const char* hlsl, const char* vs_entry, const char* entry, DXGI_FORMAT rtv,
+                        D3D12_CPU_DESCRIPTOR_HANDLE rh, uint32_t w, uint32_t h, ID3D12Resource* const src[3],
+                        const DXGI_FORMAT fmt[3], const float p[8], float blend) {
+    ID3D12PipelineState* pso = EnsurePassPipeline(hlsl, vs_entry, entry, rtv, blend);
+    if (!pso) return false;
     uint32_t views = AllocViews(kPsTextures);
     for (uint32_t i = 0; i < 3; i++) ShaderView(src[i], fmt[i], views + i);
     NullViews(views + 3, kPsTextures - 3);
@@ -3253,6 +3457,7 @@ void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3
         cl_->OMSetBlendFactor(f);
     }
     FullScreen(pso, views, p);
+    return true;
 }
 
 // Capture

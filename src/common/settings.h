@@ -14,6 +14,7 @@ struct Settings {
     bool fps_counter = false;
     bool hdr_output = false;  // HDR10 on a display with Windows HDR on
     uint32_t colour_blind = 0;  // 0 off, 1 protanopia, 2 deuteranopia, 3 tritanopia
+    bool smaa = false;          // over the finished frame, HUD included; combines with MSAA
     uint32_t shadow_resolution = 1344;  // sun shadow map side, 1344 is stock
     uint32_t shadow_distance = 1;       // multipliers on the level's own values, 1 is stock
     uint32_t object_distance = 1;
