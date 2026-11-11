@@ -25,7 +25,13 @@ void LoadSettings(const void* table) {
                               {"vegetation_detail", &s.vegetation_detail}, {"model_detail", &s.model_detail}})
         *value = std::clamp(t[key].value_or(*value), 1u, 32u);
     s.blur = t["aim_and_sprint_blur"].value_or(s.blur);
-    s.sensitivity = std::clamp(t["mouse_sensitivity"].value_or(s.sensitivity), 0.02f, 4.0f);
+    // a file from before the split keeps its one sensitivity for both axes
+    float old = t["mouse_sensitivity"].value_or(1.0f);
+    for (auto [key, value] : {std::pair{"mouse_sensitivity_x", &s.sensitivity_x},
+                              {"mouse_sensitivity_y", &s.sensitivity_y}, {"aim_sensitivity_x", &s.aim_sensitivity_x},
+                              {"aim_sensitivity_y", &s.aim_sensitivity_y}})
+        *value = std::clamp(t[key].value_or(old), 0.02f, 4.0f);
+    s.invert_x = t["invert_mouse_x"].value_or(s.invert_x);
     s.invert_y = t["invert_mouse_y"].value_or(s.invert_y);
     s.mouse_smoothing = t["mouse_smoothing"].value_or(s.mouse_smoothing);
     s.hold_aim = t["hold_to_aim"].value_or(s.hold_aim);
@@ -49,7 +55,12 @@ void SaveSettings(void* table) {
     t.insert_or_assign("vegetation_detail", int64_t(s.vegetation_detail));
     t.insert_or_assign("model_detail", int64_t(s.model_detail));
     t.insert_or_assign("aim_and_sprint_blur", s.blur);
-    t.insert_or_assign("mouse_sensitivity", double(s.sensitivity));
+    t.erase("mouse_sensitivity");
+    t.insert_or_assign("mouse_sensitivity_x", double(s.sensitivity_x));
+    t.insert_or_assign("mouse_sensitivity_y", double(s.sensitivity_y));
+    t.insert_or_assign("aim_sensitivity_x", double(s.aim_sensitivity_x));
+    t.insert_or_assign("aim_sensitivity_y", double(s.aim_sensitivity_y));
+    t.insert_or_assign("invert_mouse_x", s.invert_x);
     t.insert_or_assign("invert_mouse_y", s.invert_y);
     t.insert_or_assign("mouse_smoothing", s.mouse_smoothing);
     t.insert_or_assign("hold_to_aim", s.hold_aim);

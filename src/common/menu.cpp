@@ -84,7 +84,8 @@ void Flip(bool& on, int step) {
 }
 
 enum RowId {
-    kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivity, kInvertY, kSmoothing,
+    kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivityX, kSensitivityY,
+    kAimSensitivityX, kAimSensitivityY, kInvertX, kInvertY, kSmoothing,
     kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kFpsCounter, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
     kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat
@@ -158,8 +159,14 @@ const std::vector<Row>& KeyboardRows() {
     static const std::vector<Row> list = [] {
         std::vector<Row> out = {
             {Kind::Heading, -1, "MOUSE", nullptr},
-            {Kind::Value, kSensitivity, "SENSITIVITY", "Adjusts mouse look sensitivity"},
-            {Kind::Value, kInvertY, "INVERT Y AXIS", "Inverts the vertical mouse look axis"},
+            {Kind::Value, kSensitivityX, "HORIZONTAL SENSITIVITY", "Adjusts horizontal mouse look sensitivity"},
+            {Kind::Value, kSensitivityY, "VERTICAL SENSITIVITY", "Adjusts vertical mouse look sensitivity"},
+            {Kind::Value, kAimSensitivityX, "AIM HORIZONTAL SENSITIVITY",
+             "Adjusts horizontal mouse look sensitivity while aiming"},
+            {Kind::Value, kAimSensitivityY, "AIM VERTICAL SENSITIVITY",
+             "Adjusts vertical mouse look sensitivity while aiming"},
+            {Kind::Value, kInvertX, "INVERT X-AXIS", "Inverts the horizontal mouse look axis"},
+            {Kind::Value, kInvertY, "INVERT Y-AXIS", "Inverts the vertical mouse look axis"},
             {Kind::Value, kSmoothing, "MOUSE SMOOTHING", "The game's weapon lag behind the view and one frame of camera delay"},
             {Kind::Value, kHoldAim, "HOLD TO AIM", "Aim only while the aim key is held instead of toggling"},
             {Kind::Value, kHoldSprint, "HOLD TO SPRINT", "Feral run only while the feral run key is held instead of toggling"},
@@ -222,6 +229,7 @@ app::Mode StepResolution(app::Settings& s, int step) {
 bool* ToggleFlag(int id) {
     Settings& g = Get();
     switch (id) {
+        case kInvertX: return &g.invert_x;
         case kInvertY: return &g.invert_y;
         case kSmoothing: return &g.mouse_smoothing;
         case kHoldAim: return &g.hold_aim;
@@ -231,6 +239,17 @@ bool* ToggleFlag(int id) {
         case kFpsCounter: return &g.fps_counter;
         case kBlur: return &g.blur;
         case kInvincible: return &g.invincible;
+        default: return nullptr;
+    }
+}
+
+float* SensitivityField(int id) {
+    Settings& g = Get();
+    switch (id) {
+        case kSensitivityX: return &g.sensitivity_x;
+        case kSensitivityY: return &g.sensitivity_y;
+        case kAimSensitivityX: return &g.aim_sensitivity_x;
+        case kAimSensitivityY: return &g.aim_sensitivity_y;
         default: return nullptr;
     }
 }
@@ -253,12 +272,12 @@ void StepInputRow(int id, int step, char (&text)[64]) {
     if (bool* on = ToggleFlag(id)) {
         Flip(*on, step);
         std::snprintf(text, sizeof(text), "%s", OnOff(*on));
-    } else if (id == kSensitivity) {
+    } else if (float* sensitivity = SensitivityField(id)) {
         // 0.1 to 20.0 in steps of 0.1, shown as five times the stored value so the game's own reads 5.0
-        int shown = std::clamp(int(std::lround(g.sensitivity * 50.0f)), 1, 200);
+        int shown = std::clamp(int(std::lround(*sensitivity * 50.0f)), 1, 200);
         if (step) {
             shown = StepRange(shown, 1, 200, 1, step);
-            g.sensitivity = float(shown) / 50.0f;
+            *sensitivity = float(shown) / 50.0f;
         }
         std::snprintf(text, sizeof(text), "%.1f", float(shown) / 10.0f);
     } else if (uint32_t* scale = DistanceField(id)) {
@@ -341,6 +360,20 @@ std::string RowText(int id, int step, app::Settings& s = app::Get()) {
     return text;
 }
 
+// the MOUSE AND KEYBOARD page's settings
+void CopyMouseSettings(Settings& to, const Settings& from) {
+    to.sensitivity_x = from.sensitivity_x;
+    to.sensitivity_y = from.sensitivity_y;
+    to.aim_sensitivity_x = from.aim_sensitivity_x;
+    to.aim_sensitivity_y = from.aim_sensitivity_y;
+    to.invert_x = from.invert_x;
+    to.invert_y = from.invert_y;
+    to.mouse_smoothing = from.mouse_smoothing;
+    to.hold_aim = from.hold_aim;
+    to.hold_sprint = from.hold_sprint;
+    to.auto_helpers = from.auto_helpers;
+}
+
 void RestoreDefaults(int page) {
     if (page == kDebugPage) {
         Get().invincible = false;
@@ -348,14 +381,7 @@ void RestoreDefaults(int page) {
         return;
     }
     if (page == kKeyboardPage) {
-        const Settings def;
-        Settings& g = Get();
-        g.sensitivity = def.sensitivity;
-        g.invert_y = def.invert_y;
-        g.mouse_smoothing = def.mouse_smoothing;
-        g.hold_aim = def.hold_aim;
-        g.hold_sprint = def.hold_sprint;
-        g.auto_helpers = def.auto_helpers;
+        CopyMouseSettings(Get(), Settings{});
         keys::ResetBinds();
         Changed(false);
         return;
@@ -375,12 +401,7 @@ void RestoreDefaults(int page) {
     // the mouse settings belong to the other page
     const Settings keep = Get();
     Get() = Settings{};
-    Get().sensitivity = keep.sensitivity;
-    Get().invert_y = keep.invert_y;
-    Get().mouse_smoothing = keep.mouse_smoothing;
-    Get().hold_aim = keep.hold_aim;
-    Get().hold_sprint = keep.hold_sprint;
-    Get().auto_helpers = keep.auto_helpers;
+    CopyMouseSettings(Get(), keep);
     Get().invincible = keep.invincible;
     Changed(true);
 }

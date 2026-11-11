@@ -207,6 +207,12 @@ void ToggleHud() {
 // smoothing off and looking with the mouse
 bool RawLook() { return !fcip::Get().mouse_smoothing && fcip::MouseLookActive() && K::KbmActive(); }
 
+// aiming down the sights or a scope
+bool Zoomed(uint32_t player) {
+    uint32_t zoom = GuestOk(player) ? R32(player + kPlayerZoom) : 0;
+    return GuestOk(zoom) && R8(zoom + kZoomOn);
+}
+
 void MouseLook(uint32_t cmd) {
     uint64_t now = NowMs();
     uint64_t prev = g_gameplay_ms.exchange(now);
@@ -220,9 +226,11 @@ void MouseLook(uint32_t cmd) {
     if (K::PadRecent()) return;
     K::NoteKbm();
     const fcip::Settings& s = fcip::Get();
-    float k = kDegreesPerPixel * s.sensitivity;
-    float yaw = std::clamp(float(dx * k), -kMaxDeltaDegrees, kMaxDeltaDegrees);
-    float pitch = std::clamp(float((s.invert_y ? -dy : dy) * k), -kMaxDeltaDegrees, kMaxDeltaDegrees);
+    bool aiming = Zoomed(g_local_player);
+    float kx = kDegreesPerPixel * (aiming ? s.aim_sensitivity_x : s.sensitivity_x);
+    float ky = kDegreesPerPixel * (aiming ? s.aim_sensitivity_y : s.sensitivity_y);
+    float yaw = std::clamp(float((s.invert_x ? -dx : dx) * kx), -kMaxDeltaDegrees, kMaxDeltaDegrees);
+    float pitch = std::clamp(float((s.invert_y ? -dy : dy) * ky), -kMaxDeltaDegrees, kMaxDeltaDegrees);
     WF(cmd + kCmdYaw, GF(cmd + kCmdYaw) + yaw);
     WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) + pitch);
 }
