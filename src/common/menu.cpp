@@ -22,6 +22,7 @@
 #include <imgui.h>
 
 #include "app/app.h"
+#include "audio/xaudio2.h"
 #include "common/gyro.h"
 #include "common/input.h"
 #include "common/keys.h"
@@ -48,6 +49,9 @@ const char* const kMsaaNames[] = {"OFF", "2x (DEFAULT)", "4x", "8x"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
 const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
 const char* const kAmbientOcclusionNames[] = {"OFF", "SSAO", "GTAO"};
+constexpr uint32_t kAudioOutputs[] = {audio::kOutputAuto, audio::kOutputMono, audio::kOutputStereo,
+                                      audio::kOutputSurround};
+const char* const kAudioOutputNames[] = {"AUTOMATIC", "MONO", "2.0 STEREO", "5.1 SURROUND"};
 constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, 360, app::kFpsCapRefresh, 0};
 constexpr uint32_t kShadowSizes[] = {1024, 1344, 2048, 3072, 4096, 6144, 8192};
 constexpr uint32_t kDistances[] = {1, 2, 4, 6, 8, 12, 16, 32};
@@ -99,7 +103,7 @@ enum RowId {
     kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kViewmodelFov, kFpsCounter, kHdrOutput, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
     kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
-    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kMsaa, kSmaa, kAmbientOcclusion
+    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kMsaa, kSmaa, kAmbientOcclusion, kAudioOutput
 };
 
 constexpr Row kSettingsRows[] = {
@@ -135,6 +139,8 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kModelDetail, "MODEL DETAIL", "Scales how far models keep their higher detail levels"},
     {Kind::Heading, -1, "GENERAL", nullptr},
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
+    {Kind::Value, kAudioOutput, "AUDIO OUTPUT",
+     "Mono, stereo or 5.1 surround, automatic follows the speakers set up in Windows"},
     {Kind::Heading, -1, "GYRO", nullptr},
     {Kind::Value, kGyroAiming, "GYRO AIMING", "Turns the view with the controller's gyro, beside the right stick"},
     {Kind::Value, kGyroSensitivity, "GYRO SENSITIVITY", "Degrees the view turns for each degree the controller turns"},
@@ -432,6 +438,9 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
         case kMsaa:
             std::snprintf(text, sizeof(text), "%s", kMsaaNames[StepTable(kMsaaValues, s.msaa, step)]);
             break;
+        case kAudioOutput:
+            std::snprintf(text, sizeof(text), "%s", kAudioOutputNames[StepTable(kAudioOutputs, s.audio_output, step)]);
+            break;
         case kAniso:
             std::snprintf(text, sizeof(text), "%s", kAnisoNames[StepTable(kAnisoValues, s.aniso, step)]);
             break;
@@ -468,6 +477,7 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
 
 void Changed(bool display) {
     if (display) app::ApplyDisplay();
+    audio::SetOutputMode(app::Get().audio_output);
     app::Save();
 }
 
@@ -515,6 +525,7 @@ void RestoreDefaults(int page) {
     s.fps_cap = def.fps_cap;
     s.aniso = def.aniso;
     s.msaa = def.msaa;
+    s.audio_output = def.audio_output;
     s.custom_textures = def.custom_textures;
     s.dump_textures = def.dump_textures;
     s.texture_dump_format = def.texture_dump_format;
