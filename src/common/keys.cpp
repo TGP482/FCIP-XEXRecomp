@@ -8,9 +8,11 @@
 #endif
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 
 #include <toml++/toml.hpp>
@@ -50,6 +52,8 @@ constexpr ActionInfo kActions[kActionCount] = {
     {"PISTOL", "pistol", '2', 0},
     {"RIFLE", "rifle", '3', 0},
     {"HEAVY WEAPON", "heavy_weapon", '4', 0},
+    {"NEXT WEAPON", "next_weapon", kWheelDown, 0},
+    {"PREVIOUS WEAPON", "previous_weapon", kWheelUp, 0},
     {"OBJECTIVES", "objectives", VK_TAB, 0},
     {"PAUSE MENU", "pause_menu", VK_ESCAPE, 0},
     {"SETTINGS PANEL", "settings_panel", VK_F10, 0},
@@ -66,6 +70,7 @@ struct Name {
 
 constexpr Name kNames[] = {
     {VK_LBUTTON, "LMB"}, {VK_RBUTTON, "RMB"}, {VK_MBUTTON, "MMB"}, {VK_XBUTTON1, "MB4"}, {VK_XBUTTON2, "MB5"},
+    {kWheelUp, "WHEEL UP"}, {kWheelDown, "WHEEL DOWN"},
     {VK_BACK, "BACKSPACE"}, {VK_TAB, "TAB"}, {VK_RETURN, "ENTER"}, {VK_SHIFT, "SHIFT"}, {VK_CONTROL, "CTRL"},
     {VK_MENU, "ALT"}, {VK_PAUSE, "PAUSE"}, {VK_CAPITAL, "CAPS LOCK"}, {VK_ESCAPE, "ESCAPE"}, {VK_SPACE, "SPACE"},
     {VK_PRIOR, "PAGE UP"}, {VK_NEXT, "PAGE DOWN"}, {VK_END, "END"}, {VK_HOME, "HOME"}, {VK_LEFT, "LEFT"},
@@ -108,8 +113,7 @@ uint8_t g_binds[kActionCount][2];
 std::atomic<bool> g_down[256];
 std::atomic<int64_t> g_mouse_x{0};
 std::atomic<int64_t> g_mouse_y{0};
-std::atomic<int> g_wheel{0};
-std::atomic<uint64_t> g_wheel_ms{0};
+std::atomic<int> g_wheel{0};  // window thread adds, pad poll takes whole notches
 std::atomic<uint64_t> g_pad_ms{0};
 std::atomic<uint64_t> g_kbm_ms{0};
 std::atomic<uint64_t> g_delete_ms{0};
@@ -123,6 +127,12 @@ std::atomic<uint8_t> g_captured{0};
 bool g_prev[256];
 bool g_fresh[256];
 bool g_tainted[256];
+
+// pad poll thread: notches waiting to press their key, and the polls the pressed one has left
+int g_notches[2];
+int g_notch_polls[2];
+constexpr int kMaxNotches = 4;  // a fast spin stops soon after the wheel does
+constexpr int kNotchPolls = 2;  // fresh then held, so every reader sees it once
 
 constexpr uint64_t kPadHoldMs = 150;  // covers a key up from Steam's pad mapping landing after the pad let go
 
@@ -267,8 +277,8 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp) {
             Set(MouseKey(msg, wp), IsDown(msg));
             return false;
         case WM_MOUSEWHEEL:
-            g_wheel += GET_WHEEL_DELTA_WPARAM(wp);
-            g_wheel_ms = NowMs();
+            if (g_capture == 1) Set(GET_WHEEL_DELTA_WPARAM(wp) > 0 ? kWheelUp : kWheelDown, true);
+            else g_wheel += GET_WHEEL_DELTA_WPARAM(wp);
             return false;
         case WM_INPUT:
             RawMouse(lp);
@@ -315,8 +325,29 @@ void NoteKbm() {
     if (!PadRecent()) g_kbm_ms = NowMs();
 }
 
+// each notch presses its wheel key for kNotchPolls polls, one after another
+void PulseWheel() {
+    int delta = g_wheel.exchange(0);
+    int steps = delta / WHEEL_DELTA;
+    // fine grained wheels add up to a notch first
+    g_wheel += delta - steps * WHEEL_DELTA;
+    int& queued = g_notches[steps > 0 ? 0 : 1];
+    queued = std::min(queued + std::abs(steps), kMaxNotches);
+    for (int d = 0; d < 2; d++) {
+        uint8_t vk = d ? kWheelDown : kWheelUp;
+        if (g_notch_polls[d] > 0) {
+            if (--g_notch_polls[d] == 0) g_down[vk] = false;
+        } else if (g_notches[d] > 0 && !g_prev[vk]) {
+            g_notches[d]--;
+            g_notch_polls[d] = kNotchPolls;
+            g_down[vk] = true;
+        }
+    }
+}
+
 // edges are judged against the pad: a key that goes down while it is in use is its echo
 void TrackKeys(bool pad_moved, bool menu_open) {
+    PulseWheel();
     uint64_t now = NowMs();
     if (pad_moved) g_pad_ms = now;
     bool pad_recent = PadRecent();
@@ -341,15 +372,6 @@ void TakeMouse(double& dx, double& dy) {
     dy = double(g_mouse_y.exchange(0));
 }
 
-int TakeWheel() {
-    int delta = g_wheel.exchange(0);
-    int steps = delta / WHEEL_DELTA;
-    // fine grained wheels add up to a detent first
-    g_wheel += delta - steps * WHEEL_DELTA;
-    return steps;
-}
-
-bool WheelFresh() { return NowMs() - g_wheel_ms < 250; }
 
 void Load(const void* table) {
     ResetBinds();

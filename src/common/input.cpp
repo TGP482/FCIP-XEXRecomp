@@ -1,5 +1,5 @@
 // Keyboard and mouse as the pad, the walk key, the diagonal clamp, crouch while moving, reload and interact as
-// separate keys, wheel weapon cycling, raw mouse look and no rumble on keyboard and mouse. The hooks run on the
+// separate keys, weapon cycling keys, raw mouse look and no rumble on keyboard and mouse. The hooks run on the
 // guest thread, the messages on the window thread.
 #include "common/input.h"
 
@@ -265,10 +265,10 @@ uint32_t CurrentSlot(uint32_t player) {
 }
 
 // avail[slot - 1] is the game's own "can switch to" answer, so akimbo never triggers
-void WheelSlot(uint32_t player, uint32_t cmd, uint32_t avail, int steps) {
+void CycleSlot(uint32_t player, uint32_t cmd, uint32_t avail, int steps) {
     if (R32(cmd + kCmdActions) & kSlotBits) return;
     static constexpr uint32_t kOrder[] = {2, 1, 3};  // pistol, rifle, heavy: the order of keys 2, 3 and 4
-    int dir = steps > 0 ? -1 : 1;  // wheel down is next
+    int dir = steps > 0 ? -1 : 1;  // positive steps go back
     uint32_t current = CurrentSlot(player);
     int at = dir > 0 ? -1 : 3;
     for (int i = 0; i < 3; i++)
@@ -406,17 +406,24 @@ PPC_FUNC(GUEST(CPlayer_ProcessMovements)) {
     GUEST_ORIG(CPlayer_ProcessMovements)(ctx, base);
 }
 
-// (player, cmd, u8 avail[3]), before ProcessMovements: the wheel presses the next slot the game can switch to
+// (player, cmd, u8 avail[3]), before ProcessMovements: NEXT and PREVIOUS WEAPON press the next slot the game can
+// switch to
 PPC_FUNC(GUEST(CPlayer_SelectWeaponSlot)) {
     uint32_t player = uint32_t(ctx.r[3]);
     uint32_t cmd = uint32_t(ctx.r[4]);
     uint32_t avail = uint32_t(ctx.r[5]);
     if (cmd && cmd == g_local_cmd) {
-        // one slot per frame; notches older than a moment (no slot handler in a vehicle) are dropped
-        int steps = K::TakeWheel();
-        if (steps && K::WheelFresh() && !K::PadRecent() && GuestOk(player) && GuestOk(avail)) {
+        // one slot per press
+        static bool was_next = false;
+        static bool was_previous = false;
+        bool next = Held(K::kNextWeapon);
+        bool previous = Held(K::kPreviousWeapon);
+        int steps = int(previous && !was_previous) - int(next && !was_next);
+        was_next = next;
+        was_previous = previous;
+        if (steps && !K::PadRecent() && GuestOk(player) && GuestOk(avail)) {
             K::NoteKbm();
-            WheelSlot(player, cmd, avail, steps);
+            CycleSlot(player, cmd, avail, steps);
         }
     }
     GUEST_ORIG(CPlayer_SelectWeaponSlot)(ctx, base);
