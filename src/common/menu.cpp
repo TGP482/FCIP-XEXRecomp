@@ -44,6 +44,7 @@ constexpr uint32_t kHostApplyDisplay = WM_APP + 1;  // main.cpp's kApplyDisplay
 constexpr uint32_t kAnisoValues[] = {0, 2, 4, 8, 16};
 const char* const kAnisoNames[] = {"GAME DEFAULT", "2x", "4x", "8x", "16x"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
+const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
 constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, 360, app::kFpsCapRefresh, 0};
 constexpr uint32_t kShadowSizes[] = {1024, 1344, 2048, 3072, 4096, 6144, 8192};
 constexpr uint32_t kDistances[] = {1, 2, 4, 6, 8, 12, 16, 32};
@@ -95,7 +96,7 @@ enum RowId {
     kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kViewmodelFov, kFpsCounter, kHdrOutput, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
     kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
-    kGyroButton, kGyroButtonMode, kGyroCalibrate
+    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind
 };
 
 constexpr Row kSettingsRows[] = {
@@ -112,6 +113,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kMaxFps, "MAX FRAME RATE",
      "Caps the frame rate to your monitor's refresh rate or a custom value, or removes the cap"},
     {Kind::Value, kFpsCounter, "FPS COUNTER", "Displays the frame rate on screen"},
+    {Kind::Value, kColourBlind, "COLOUR BLIND MODE", "Adjusts the colours for protanopia, deuteranopia or tritanopia"},
     {Kind::Heading, -1, "GRAPHICS", nullptr},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024 to 8192, 1344 is stock"},
@@ -421,6 +423,9 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
         }
         case kAniso:
             std::snprintf(text, sizeof(text), "%s", kAnisoNames[StepTable(kAnisoValues, s.aniso, step)]);
+            break;
+        case kColourBlind:
+            StepName(Get().colour_blind, kColourBlindNames, step, text);
             break;
         case kTextureReplacement:
             Flip(s.custom_textures, step);

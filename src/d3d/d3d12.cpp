@@ -403,7 +403,7 @@ struct Query {
 };
 
 const char* kResolveHlsl = R"(
-cbuffer R : register(b0) { float4 src_rect; float4 opts; };
+cbuffer R : register(b0) { float4 src_rect; float4 opts; float4 colour[3]; };
 struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
 O vs(uint id : SV_VertexID) {
     O o;
@@ -429,6 +429,11 @@ float4 ps(O i) : SV_Target {
     // depth is held reversed
     c = opts.y != 0 ? 1 - c.xxxx : c;
     c.rgb *= opts.z != 0 ? opts.z : 1;
+    // opts.w: the rows hold a colour matrix, applied to linear colour
+    if (opts.w > 0) {
+        float3x3 m = float3x3(colour[0].xyz, colour[1].xyz, colour[2].xyz);
+        c.rgb = pow(saturate(mul(m, pow(saturate(c.rgb), 2.2))), 1 / 2.2);
+    }
     return c;
 }
 )";
@@ -2927,6 +2932,34 @@ void D3D12Backend::DrawFront(const xenos::TextureFetch& t, DXGI_FORMAT rtv) {
     }
 }
 
+// Colour blind modes: Machado 2009 simulation at full severity, then Fidaner's daltonize, which moves the difference
+// the eye loses into channels it still sees. Rows of protanopia, deuteranopia, tritanopia.
+constexpr float kColourBlindSimulate[3][9] = {
+    {0.152286f, 1.052583f, -0.204868f, 0.114503f, 0.786281f, 0.099216f, -0.003882f, -0.048116f, 1.051998f},
+    {0.367322f, 0.860646f, -0.227968f, 0.280085f, 0.672501f, 0.047413f, -0.011820f, 0.042940f, 0.968881f},
+    {1.255528f, -0.076749f, -0.178779f, -0.078411f, 0.930809f, 0.147602f, 0.004733f, 0.691367f, 0.303900f},
+};
+constexpr float kColourBlindShift[3][9] = {
+    {0, 0, 0, 0.7f, 1, 0, 0.7f, 0, 1},
+    {0, 0, 0, 0.7f, 1, 0, 0.7f, 0, 1},
+    {1, 0, 0.7f, 0, 1, 0.7f, 0, 0, 0},
+};
+
+// mode 1 to 3: identity + shift * (identity - simulate)
+std::array<float, 9> ColourBlindMatrix(uint32_t mode) {
+    const float* sim = kColourBlindSimulate[mode - 1];
+    const float* shift = kColourBlindShift[mode - 1];
+    std::array<float, 9> m{};
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) {
+            float lost = 0;
+            for (int k = 0; k < 3; k++) lost += shift[r * 3 + k] * (float(k == c) - sim[k * 3 + c]);
+            m[r * 3 + c] = float(r == c) + lost;
+        }
+    }
+    return m;
+}
+
 // the frame over the window at the output's aspect, 4:3 at the narrowest, bars around it
 void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, DXGI_FORMAT rtv,
                               UINT mapping, uint32_t w, uint32_t h) {
@@ -2944,7 +2977,12 @@ void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state,
     v.Texture2D.MipLevels = 1;
     Transition(src, state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     dev_->CreateShaderResourceView(src, &v, ViewCpu(views));
-    float cb[8] = {0, 0, float(w), float(h), 1, 0, 0, 0};
+    uint32_t mode = std::min(fcip::Get().colour_blind, 3u);
+    float cb[20] = {0, 0, float(w), float(h), 1, 0, 0, mode ? 1.0f : 0.0f};
+    if (mode) {
+        std::array<float, 9> colour = ColourBlindMatrix(mode);
+        for (int row = 0; row < 3; row++) std::memcpy(cb + 8 + row * 4, colour.data() + row * 3, 3 * sizeof(float));
+    }
     D3D12_GPU_VIRTUAL_ADDRESS addr = UploadConstants(cb, sizeof(cb));
     D3D12_VIEWPORT vp{(swap_w_ - vw) / 2, (swap_h_ - vh) / 2, vw, vh, 0, 1};
     D3D12_RECT sc{0, 0, LONG(swap_w_), LONG(swap_h_)};
