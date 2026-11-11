@@ -25,6 +25,7 @@ void LoadSettings(const void* table) {
     s.hdr_output = t["hdr_output"].value_or(s.hdr_output);
     s.colour_blind = std::min(t["colour_blind"].value_or(s.colour_blind), 3u);
     s.smaa = t["smaa"].value_or(s.smaa);
+    s.ambient_occlusion = std::min(t["ambient_occlusion"].value_or(s.ambient_occlusion), 2u);
     s.shadow_resolution = std::clamp(t["shadow_resolution"].value_or(s.shadow_resolution), 512u, 8192u);
     for (auto [key, value] : {std::pair{"shadow_distance", &s.shadow_distance}, {"object_distance", &s.object_distance},
                               {"detail_distance", &s.detail_distance}, {"grass_distance", &s.grass_distance},
@@ -63,6 +64,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("hdr_output", s.hdr_output);
     t.insert_or_assign("colour_blind", int64_t(s.colour_blind));
     t.insert_or_assign("smaa", s.smaa);
+    t.insert_or_assign("ambient_occlusion", int64_t(s.ambient_occlusion));
     t.insert_or_assign("shadow_resolution", int64_t(s.shadow_resolution));
     t.insert_or_assign("shadow_distance", int64_t(s.shadow_distance));
     t.insert_or_assign("object_distance", int64_t(s.object_distance));

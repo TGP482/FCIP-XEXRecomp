@@ -106,7 +106,7 @@ UIWidget_CanFocus = 0x8246B950
 PlayMovie = 0x8233FFA0
 RaiseStartupScreen = 0x821558C8
 
-# CryRender and Cry3DEngine: aspect, field of view, blur, shadows, draw distance, grass, fps counter
+# CryRender and Cry3DEngine: aspect, field of view, blur, shadows, draw distance, grass, fps counter, ambient occlusion
 Bink_DrawFrame = 0x8234DDB8
 C3DEngine_RenderWorld = 0x825EDB98
 CCamera_Update = 0x825C37D8
@@ -126,6 +126,10 @@ Grass_SetTexture = 0x823739F0
 Overlay_Flush = 0x82369480
 PerspectiveFov = 0x8264D520
 Renderer_Init = 0x8236EA88
+Scene_Draw = 0x82502F48
+Scene_Pop = 0x82509400
+Scene_Push = 0x825091A0
+Scene_Sort = 0x82502B88
 ShadowMaps_Update = 0x825EF248
 Shadow_Extent = 0x8236A680
 Shadow_Pass = 0x82367D68
@@ -175,6 +179,7 @@ UbisoftMovie_return = 0x82315F58
 
 # CryRender and Cry3DEngine: the display block and the engine, object manager and renderer objects
 C3DEngine_pointer = 0x829122C8
+Device_pointer = 0x829161B4
 DisplayBlock = 0x829161A0
 ObjManager_pointer = 0x82913474
 Renderer_pointer = 0x829127E8

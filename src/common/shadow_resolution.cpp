@@ -10,6 +10,7 @@
 // follows the resolve rect.
 #include <algorithm>
 
+#include "common/render_pass.h"
 #include "common/settings.h"
 #include "xdk/hle.h"
 
@@ -23,12 +24,14 @@ constexpr uint32_t kMaxSide = 8192;
 constexpr uint32_t kMaxBacked = 4096;  // the largest setting whose maps fit in guest memory
 constexpr uint32_t kPassWidth = 0x1C;
 constexpr uint32_t kPassHeight = 0x20;
+constexpr uint32_t kPassType = 0x10;
 
 // while the surface call binds a rescaled map: the chosen side, the side the texture is backed at, and the slot the
 // pool writes the handle to
 thread_local uint32_t t_side = 0;
 thread_local uint32_t t_backed = 0;
 thread_local uint32_t t_handle = 0;
+thread_local uint32_t t_pass_type = 0;  // the pass being submitted
 
 // the replacement side, 0 when this is not the shadow map
 uint32_t Wanted(uint32_t side) {
@@ -111,6 +114,8 @@ PPC_FUNC(GUEST(Shadow_Extent)) {
 PPC_FUNC(GUEST(Shadow_Pass)) {
     uint32_t pass = uint32_t(ctx.r[4]);
     bool ok = pass >= 0x10000u && pass < 0xC0000000u;
+    uint32_t outer = t_pass_type;
+    t_pass_type = ok ? R32(pass + kPassType) : 0;
     uint32_t w = ok ? R32(pass + kPassWidth) : 0;
     uint32_t h = ok ? R32(pass + kPassHeight) : 0;
     uint32_t side = ok && w == h ? Wanted(w) : 0;
@@ -119,8 +124,11 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
         W32(pass + kPassHeight, side);
     }
     GUEST_ORIG(Shadow_Pass)(ctx, base);
+    t_pass_type = outer;
     if (side) {
         W32(pass + kPassWidth, w);
         W32(pass + kPassHeight, h);
     }
 }
+
+uint32_t fcip::SubmittedPass() { return t_pass_type; }

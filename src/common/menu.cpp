@@ -47,6 +47,7 @@ constexpr uint32_t kMsaaValues[] = {1, 0, 4, 8};  // 0 keeps the game's own 2x
 const char* const kMsaaNames[] = {"OFF", "2x (DEFAULT)", "4x", "8x"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
 const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
+const char* const kAmbientOcclusionNames[] = {"OFF", "SSAO", "GTAO"};
 constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, 360, app::kFpsCapRefresh, 0};
 constexpr uint32_t kShadowSizes[] = {1024, 1344, 2048, 3072, 4096, 6144, 8192};
 constexpr uint32_t kDistances[] = {1, 2, 4, 6, 8, 12, 16, 32};
@@ -98,7 +99,7 @@ enum RowId {
     kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kViewmodelFov, kFpsCounter, kHdrOutput, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
     kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
-    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kMsaa, kSmaa
+    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kMsaa, kSmaa, kAmbientOcclusion
 };
 
 constexpr Row kSettingsRows[] = {
@@ -117,6 +118,8 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kFpsCounter, "FPS COUNTER", "Displays the frame rate on screen"},
     {Kind::Value, kColourBlind, "COLOUR BLIND MODE", "Adjusts the colours for protanopia, deuteranopia or tritanopia"},
     {Kind::Heading, -1, "GRAPHICS", nullptr},
+    {Kind::Value, kAmbientOcclusion, "AMBIENT OCCLUSION",
+     "Shades the world's creases and corners, SSAO or the more accurate GTAO, characters and fog left alone"},
     {Kind::Value, kMsaa, "MSAA", "Smooths jagged edges with 4x or 8x MSAA, or turns off the game's own 2x"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
@@ -434,6 +437,9 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             break;
         case kColourBlind:
             StepName(Get().colour_blind, kColourBlindNames, step, text);
+            break;
+        case kAmbientOcclusion:
+            StepName(Get().ambient_occlusion, kAmbientOcclusionNames, step, text);
             break;
         case kTextureReplacement:
             Flip(s.custom_textures, step);

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "app/app.h"
+#include "d3d/occlusion.h"
 #include "d3d/readback.h"
 #include "gpu/backend.h"
 #include "kernel/memory.h"
@@ -592,6 +593,19 @@ void ResolveTo(uint32_t dev, const ResolveCall& c) {
 }
 
 }  // namespace
+
+void Occlusion(uint32_t dev, const gpu::OcclusionArgs& a) {
+    if (!R32(dev + kDevTargets) || !R32(dev + kDevDepth)) return;
+    float color[4];
+    float z = 0;
+    uint32_t stencil = 0;
+    gpu::Rect rect{};
+    gpu::PackOcclusion(a, color, z, stencil, rect);
+    std::lock_guard lock(g_lock);
+    gpu::State s;
+    ReadRegisters(dev, s);
+    Backend()->Clear(s, gpu::kClearOcclusion, color, z, stencil, &rect);
+}
 
 // Shaders: the library makes its object, the host translates the container's microcode as created
 HLE_AFTER(D3DDevice_CreateVertexShader) { CreateShader(a[0], uint32_t(ctx.r[3]), true); }

@@ -31,6 +31,7 @@
 #include "app/app.h"
 #include "common/aspect.h"
 #include "common/settings.h"
+#include "d3d/occlusion.h"
 #include "d3d/readback.h"
 #include "d3d/smaa_shader.h"
 #include "d3d/smaa_textures.h"
@@ -95,6 +96,8 @@ constexpr DXGI_FORMAT kNullRtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr uint32_t kOutRtv = kNullRtv + 1;  // the HDR10 output's frame and panel targets
 constexpr int kSmaaTargets = 3;
 constexpr uint32_t kSmaaRtv = kOutRtv + kOutTargets;  // SMAA's edges, blend weights and blended frame
+constexpr int kAoTargets = 2;
+constexpr uint32_t kAoRtv = kSmaaRtv + kSmaaTargets;  // ambient occlusion's raw pass and first blur
 
 enum : uint32_t {
     kRootVsConsts,
@@ -538,6 +541,187 @@ float4 smaa_weights(SmaaWeightV i) : SV_Target { return SMAABlendingWeightCalcul
 float4 smaa_blend(SmaaBlendV i) : SV_Target { return SMAANeighborhoodBlendingPS(i.uv, i.o, tex0, tex1); }
 )";
 
+// Ambient occlusion from the scene's depth: occlusion pass, then a blur across and one down that multiplies it into
+// the colour. The sky is far: a pixel's samples there span less than one pixel and it stays lit
+const char* kAoHlsl = R"(
+cbuffer A : register(b1) { float4 proj; float4 zp; float4 ndc; float4 vp; float4 opt; float4 fog; float4 fogcolor; };
+#ifdef MS
+Texture2DMS<float> depth : register(t0);
+float Raw(int2 p) { return depth.Load(p, 0); }
+#else
+Texture2D<float> depth : register(t0);
+float Raw(int2 p) { return depth.Load(int3(p, 0)); }
+#endif
+Texture2D<float2> ao : register(t1);
+float4 vs(uint id : SV_VertexID) : SV_Position {
+    float2 t = float2((id << 1) & 2, id & 2);
+    return float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+// view space position of a pixel, z the view distance. proj: 1 / scale xy, centre xy; zp: z = x / (raw - y) of the
+// host's reversed depth; ndc: a pixel centre to the title's ndc; vp: the scissor in pixels
+float3 View(float2 px) {
+    int2 p = clamp(int2(px), int2(vp.xy), int2(vp.xy + vp.zw) - 1);
+    float z = zp.x / (Raw(p) - zp.y);
+    float2 n = (p + 0.5) * ndc.xy + ndc.zw;
+    return float3((n - proj.zw) * proj.xy * z, z);
+}
+// pixels a world radius spans at view distance z
+float2 Span(float z) { return opt.x / (proj.xy * z * abs(ndc.xy)); }
+// normal from the nearer neighbour each way: no bend over depth edges
+float3 Normal(float2 pos, float3 c) {
+    float3 l = View(pos - float2(1, 0));
+    float3 r = View(pos + float2(1, 0));
+    float3 u = View(pos - float2(0, 1));
+    float3 d = View(pos + float2(0, 1));
+    float3 dx = abs(r.z - c.z) < abs(c.z - l.z) ? r - c : c - l;
+    float3 dy = abs(d.z - c.z) < abs(c.z - u.z) ? d - c : c - u;
+    return normalize(cross(dx, dy));
+}
+static const float kDither[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+// opt: world radius, most pixels it may span; out: occlusion, view distance
+float2 occlusion(float4 pos : SV_Position) : SV_Target {
+    float3 c = View(pos.xy);
+    float2 rad = Span(c.z);
+    float span = max(rad.x, rad.y);
+    if (span < 1) return float2(1, c.z);
+    float3 n = Normal(pos.xy, c);
+    float k = min(1, opt.y / span);
+    float R = opt.x * k;
+    int2 cell = int2(pos.xy) & 3;
+    float turn = kDither[cell.y * 4 + cell.x] * (6.2831853 / 16);
+    float a = 0;
+    for (int i = 0; i < 16; i++) {
+        float f = (i + 0.5) / 16;
+        float t = i * 2.3999632 + turn;
+        float3 v = (View(pos.xy + float2(cos(t), sin(t)) * rad * (k * f)) - c) / R;
+        float vv = dot(v, v);
+        float w = max(1 - vv, 0);
+        a += w * w * w * max((dot(v, n) - 0.05) / (vv + 0.01), 0);
+    }
+    return float2(max(1 - a * 0.25, 0), c.z);
+}
+static const float kHalfPi = 1.5707963;
+// GTAO (Jimenez 2016) at XeGTAO's high preset: 3 slices, 3 steps a side, squared step spread, falloff over the outer
+// 61.5% of the radius, power 2.2. Per slice the highest horizon each side, the visible arc between integrated against
+// the normal projected into the slice
+float2 gtao(float4 pos : SV_Position) : SV_Target {
+    float3 c = View(pos.xy);
+    float2 rad = Span(c.z);
+    float span = max(rad.x, rad.y);
+    if (span < 1) return float2(1, c.z);
+    float3 n = Normal(pos.xy, c);
+    float3 v = normalize(-c);
+    float k = min(1, opt.y / span);
+    float R = opt.x * k;
+    int2 cell = int2(pos.xy) & 3;
+    float slice_noise = kDither[cell.y * 4 + cell.x] / 16;
+    float step_noise = kDither[cell.x * 4 + cell.y] / 16;
+    float vis = 0;
+    for (int s = 0; s < 3; s++) {
+        float phi = (s + slice_noise) * (kHalfPi * 2 / 3);
+        float3 dir = float3(cos(phi), sin(phi), 0);
+        // in pixels; screen y runs down, view y up
+        float2 omega = float2(dir.x, -dir.y) * rad * k;
+        float3 ortho = dir - dot(dir, v) * v;
+        float3 axis = normalize(cross(ortho, v));
+        float3 pn = n - axis * dot(n, axis);
+        float pn_len = max(length(pn), 1e-4);
+        float cos_n = saturate(dot(pn, v) / pn_len);
+        float an = sign(dot(ortho, pn)) * acos(cos_n);
+        // x: the +omega side, y: the -omega side; lowest is flat along the slice's tangent
+        float2 low = float2(cos(an + kHalfPi), cos(an - kHalfPi));
+        float2 hc = low;
+        for (int j = 0; j < 3; j++) {
+            float f = (j + step_noise) / 3;
+            // at least 1.3 pixels out, off the centre pixel
+            float2 off = omega * (f * f + 1.3 / length(omega));
+            float3 d0 = View(pos.xy + off) - c;
+            float3 d1 = View(pos.xy - off) - c;
+            float2 len = max(float2(length(d0), length(d1)), 1e-4);
+            float2 w = saturate((R - len) / (R * 0.615));
+            float2 sc = float2(dot(d0, v), dot(d1, v)) / len;
+            hc = max(hc, lerp(low, sc, w));
+        }
+        float h0 = an + clamp(-acos(hc.y) - an, -kHalfPi, kHalfPi);
+        float h1 = an + clamp(acos(hc.x) - an, -kHalfPi, kHalfPi);
+        float sin_n = sin(an);
+        float arc0 = (cos_n + 2 * h0 * sin_n - cos(2 * h0 - an)) / 4;
+        float arc1 = (cos_n + 2 * h1 * sin_n - cos(2 * h1 - an)) / 4;
+        vis += pn_len * (arc0 + arc1);
+    }
+    return float2(pow(saturate(vis / 3), 2.2), c.z);
+}
+// opt.zw: step; 5 taps average the 4 pixel dither, depth edges left out
+float Smooth(float2 pos, out float z) {
+    int2 p = int2(pos);
+    int2 lo = int2(vp.xy);
+    int2 hi = int2(vp.xy + vp.zw) - 1;
+    z = ao.Load(int3(p, 0)).y;
+    float sum = 0;
+    float n = 0;
+    for (int i = -2; i <= 2; i++) {
+        float2 s = ao.Load(int3(clamp(p + i * int2(opt.zw), lo, hi), 0));
+        float w = (abs(i) == 2 ? 0.5 : 1) * saturate(2 - abs(s.y - z) / (z * 0.02));
+        sum += s.x * w;
+        n += w;
+    }
+    return sum / n;
+}
+float2 occlusion_blur(float4 pos : SV_Position) : SV_Target {
+    float z;
+    float a = Smooth(pos.xy, z);
+    return float2(a, z);
+}
+// the fog is already drawn: only the scene share under it is occluded, blended as colour * a + rgb
+float4 occlusion_apply(float4 pos : SV_Position) : SV_Target {
+    float z;
+    float a = Smooth(pos.xy, z);
+    float fogged = saturate(fog.x * z + fog.y);
+    return float4(fogcolor.rgb * fogged * (1 - a), a);
+}
+)";
+constexpr int kAoConstants = 28;  // kAoHlsl's b1
+constexpr DXGI_FORMAT kAoFormat = DXGI_FORMAT_R16G16_FLOAT;
+constexpr float kAoRadius = 0.8f;    // world units, the engine's are metres
+constexpr float kAoMaxSpan = 0.15f;  // of the view's height, the most one pixel's samples may cover
+
+// a channel of 0xRRGGBB, 0 to 1
+float Channel(uint32_t rgb, uint32_t shift) { return float(rgb >> shift & 0xFF) / 255.0f; }
+
+// b1 of kAoHlsl: the draws map the title's ndc over the whole w x h target as d says, rect is the scissor
+void OcclusionConstants(const OcclusionArgs& a, const DrawConstants& d, const D3D12_RECT& rect, uint32_t w,
+                        uint32_t h, float c[kAoConstants]) {
+    // a pixel centre's host ndc back through the viewport to the title's
+    float nx = 2.0f / float(w) / d.ndc_scale[0];
+    float ny = -2.0f / float(h) / d.ndc_scale[1];
+    float ox = (-1 - d.ndc_offset[0]) / d.ndc_scale[0];
+    float oy = (1 - d.ndc_offset[1]) / d.ndc_scale[1];
+    // the host holds 1 - (ndc depth * zs + zo)
+    float zs = d.ndc_scale[2];
+    float zo = d.ndc_offset[2];
+    float vw = float(rect.right - rect.left);
+    float vh = float(rect.bottom - rect.top);
+    const float out[kAoConstants] = {a.proj[0], a.proj[1], a.proj[2], a.proj[3],
+                                     -a.m32 * zs, 1 - zo + a.m22 * zs, 0, 0,
+                                     nx, ny, ox, oy,
+                                     float(rect.left), float(rect.top), vw, vh,
+                                     kAoRadius, kAoMaxSpan * vh, 0, 0,
+                                     a.fog_scale, a.fog_bias, 0, 0,
+                                     Channel(a.fog_colour, 16), Channel(a.fog_colour, 8), Channel(a.fog_colour, 0), 0};
+    std::memcpy(c, out, sizeof(out));
+}
+
+// dst = dst * src.a + src; the alpha the game's blends read stays
+void OcclusionBlend(D3D12_RENDER_TARGET_BLEND_DESC& b) {
+    b.BlendEnable = TRUE;
+    b.SrcBlend = D3D12_BLEND_ONE;
+    b.SrcBlendAlpha = D3D12_BLEND_ZERO;
+    b.DestBlend = D3D12_BLEND_SRC_ALPHA;
+    b.DestBlendAlpha = D3D12_BLEND_ONE;
+    b.BlendOp = D3D12_BLEND_OP_ADD;
+    b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+}
+
 const char* kBlitHlsl = R"(
 cbuffer P : register(b1) { float4 uvrect; float4 opts; };
 Texture2D<float4> img : register(t0);
@@ -859,6 +1043,21 @@ private:
     bool CreateSmaaTarget(int i, DXGI_FORMAT fmt, uint32_t w, uint32_t h);
     bool DrawSmaaPasses(ID3D12Resource* src, DXGI_FORMAT fmt, uint32_t w, uint32_t h, const char* hlsl);
     D3D12_CPU_DESCRIPTOR_HANDLE SmaaView(int i) { return Rtv(kSmaaRtv + i); }
+    // one full screen pass of kAoHlsl, t0 the depth, t1 src
+    struct AoPass {
+        const char* entry;
+        DXGI_FORMAT out = kAoFormat;
+        uint32_t samples = 1;  // of the target drawn to
+        bool blend = false;    // OcclusionBlend
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+        ID3D12Resource* src = nullptr;
+        float step_x = 0;
+        float step_y = 0;
+    };
+    void Occlusion(const State& s, const OcclusionArgs& a);
+    bool EnsureOcclusionTargets(uint32_t w, uint32_t h);
+    ID3D12PipelineState* EnsureOcclusionPipeline(const AoPass& p, bool ms_depth);
+    bool OcclusionPass(const AoPass& p, Target& depth, float c[kAoConstants], const D3D12_RECT& rect);
     void CopyResolve(Target& src, Resolved& dst, const ResolveArgs& r);
     Resolved& EnsureResolved(uint64_t key, DXGI_FORMAT format, uint32_t w, uint32_t h);
     void MakeResolved(Resolved& dst, DXGI_FORMAT format, uint32_t w, uint32_t h, float scale);
@@ -911,6 +1110,12 @@ private:
     uint32_t smaa_w_ = 0;
     uint32_t smaa_h_ = 0;
     DXGI_FORMAT smaa_fmt_ = DXGI_FORMAT_UNKNOWN;
+    // ambient occlusion: the raw pass and its first blur, each with view distance beside it
+    ComPtr<ID3D12Resource> ao_[kAoTargets];
+    D3D12_RESOURCE_STATES ao_state_[kAoTargets] = {};
+    uint32_t ao_w_ = 0;
+    uint32_t ao_h_ = 0;
+    std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> ao_pipelines_;
     D3D12_RESOURCE_STATES out_state_[kOutTargets] = {};
     uint32_t out_w_ = 0, out_h_ = 0;
     ComPtr<ID3D12Device> dev_;
@@ -1115,7 +1320,7 @@ void D3D12Backend::CreateHeaps() {
     };
     view_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kViewsPerFrame * kFrames, true, view_heap_);
     sampler_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCount, true, sampler_heap_);
-    rtv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kSmaaRtv + kSmaaTargets, false, rtv_heap_);
+    rtv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kAoRtv + kAoTargets, false, rtv_heap_);
     dsv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvCount, false, dsv_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true, ui_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kPsTextures + kFrames, false, copy_heap_);
@@ -2638,6 +2843,10 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
 // D3D Clear, within the scissor: a whole target clear also clears the targets its EDRAM range holds
 void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], float z, uint32_t stencil,
                          const Rect* rect) {
+    if (flags & kClearOcclusion) {
+        if (rect) Occlusion(s, UnpackOcclusion(color, z, stencil, *rect));
+        return;
+    }
     g_perf.clears++;
     uint32_t height = TargetHeight(s);
     uint32_t width = TargetWidth(s);
@@ -2657,6 +2866,114 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         if (flags >> i & 1) clear(ColorTarget(s, i, height), 1u << i);
     }
     if (flags & (kClearZ | kClearStencil)) clear(DepthTarget(s, height), flags & (kClearZ | kClearStencil));
+}
+
+// Ambient occlusion
+
+// multiplies occlusion from the bound depth into the bound colour target
+void D3D12Backend::Occlusion(const State& s, const OcclusionArgs& a) {
+    uint32_t height = TargetHeight(s);
+    Target* rt = ColorTarget(s, 0, height);
+    Target* ds = DepthTarget(s, height);
+    if (!rt || !ds || rt->w != ds->w || rt->h != ds->h || rt->samples != ds->samples) return;
+    if (!EnsureOcclusionTargets(rt->w, rt->h)) return;
+    Bound b{TargetWidth(s), height, rt->scale};
+    DrawConstants d;
+    FillDrawConstants(s, b, d);
+    D3D12_RECT rect = HostRect(GuestScissor(s, b.w, b.h), b.scale);
+    if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+    float c[kAoConstants];
+    OcclusionConstants(a, d, rect, rt->w, rt->h, c);
+    AoPass raw{.entry = a.gtao ? "gtao" : "occlusion", .rtv = Rtv(kAoRtv)};
+    AoPass across{.entry = "occlusion_blur", .rtv = Rtv(kAoRtv + 1), .src = ao_[0].Get(), .step_x = 1};
+    AoPass down{.entry = "occlusion_apply", .out = rt->fmt, .samples = rt->samples, .blend = true, .rtv = Rtv(rt->view),
+                .src = ao_[1].Get(), .step_y = 1};
+    Transition(ds->res.Get(), ds->state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(ao_[0].Get(), ao_state_[0], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    bool ok = OcclusionPass(raw, *ds, c, rect);
+    Transition(ao_[0].Get(), ao_state_[0], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(ao_[1].Get(), ao_state_[1], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ok = ok && OcclusionPass(across, *ds, c, rect);
+    Transition(ao_[1].Get(), ao_state_[1], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (ok) OcclusionPass(down, *ds, c, rect);
+    Unbind();
+}
+
+bool D3D12Backend::EnsureOcclusionTargets(uint32_t w, uint32_t h) {
+    if (ao_[kAoTargets - 1] && ao_w_ == w && ao_h_ == h) return true;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(kAoFormat, w, h);
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    ao_w_ = ao_h_ = 0;
+    for (int i = 0; i < kAoTargets; i++) {
+        if (ao_[i]) Release(std::move(ao_[i]));
+        ao_state_[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        HRESULT hr = dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, ao_state_[i], nullptr,
+                                                   IID_PPV_ARGS(&ao_[i]));
+        if (FAILED(hr)) {
+            LOGE("D3D12: no %ux%u ambient occlusion target", w, h);
+            return false;
+        }
+        dev_->CreateRenderTargetView(ao_[i].Get(), nullptr, Rtv(kAoRtv + i));
+    }
+    ao_w_ = w;
+    ao_h_ = h;
+    return true;
+}
+
+ID3D12PipelineState* D3D12Backend::EnsureOcclusionPipeline(const AoPass& p, bool ms_depth) {
+    uint64_t seed = uint64_t(p.out) | uint64_t(p.samples) << 8 | uint64_t(p.blend) << 16 | uint64_t(ms_depth) << 17;
+    auto& pso = ao_pipelines_[Hash64(p.entry, std::strlen(p.entry), seed)];
+    if (pso) return pso.Get();
+    std::string src = std::string(ms_depth ? "#define MS 1\n" : "") + kAoHlsl;
+    std::vector<uint8_t> vs;
+    std::vector<uint8_t> ps;
+    if (!CompileHlsl("#define vs main\n" + src, L"vs_6_0", vs)) return nullptr;
+    if (!CompileHlsl(std::string("#define ") + p.entry + " main\n" + src, L"ps_6_0", ps)) return nullptr;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
+    d.pRootSignature = root_.Get();
+    d.VS = {vs.data(), vs.size()};
+    d.PS = {ps.data(), ps.size()};
+    D3D12_RENDER_TARGET_BLEND_DESC& b = d.BlendState.RenderTarget[0];
+    b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    if (p.blend) OcclusionBlend(b);
+    d.SampleMask = UINT_MAX;
+    d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    d.NumRenderTargets = 1;
+    d.RTVFormats[0] = p.out;
+    d.SampleDesc.Count = p.samples;
+    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return nullptr;
+    return pso.Get();
+}
+
+// one triangle over the whole target, drawn within rect
+bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoConstants], const D3D12_RECT& rect) {
+    ID3D12PipelineState* pso = EnsureOcclusionPipeline(p, depth.samples > 1);
+    if (!pso) return false;
+    c[18] = p.step_x;
+    c[19] = p.step_y;
+    uint32_t views = AllocViews(kPsTextures);
+    D3D12_SHADER_RESOURCE_VIEW_DESC v{};
+    v.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+    v.ViewDimension = depth.samples > 1 ? D3D12_SRV_DIMENSION_TEXTURE2DMS : D3D12_SRV_DIMENSION_TEXTURE2D;
+    v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    v.Texture2D.MipLevels = 1;
+    dev_->CreateShaderResourceView(depth.res.Get(), &v, ViewCpu(views));
+    ShaderView(p.src, kAoFormat, views + 1);
+    NullViews(views + 2, kPsTextures - 2);
+    cl_->OMSetRenderTargets(1, &p.rtv, FALSE, nullptr);
+    D3D12_VIEWPORT vp{0, 0, float(depth.w), float(depth.h), 0, 1};
+    cl_->RSSetViewports(1, &vp);
+    cl_->RSSetScissorRects(1, &rect);
+    cl_->SetPipelineState(pso);
+    cl_->SetGraphicsRootConstantBufferView(kRootFlow, UploadConstants(c, kAoConstants * sizeof(float)));
+    cl_->SetGraphicsRootDescriptorTable(kRootPsViews, ViewGuest(views));
+    cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cl_->DrawInstanced(3, 1, 0, 0);
+    return true;
 }
 
 // D3D Resolve: the target's rect to the texture at dst_base, held on the host and read in place of guest memory
