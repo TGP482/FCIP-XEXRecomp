@@ -132,6 +132,10 @@ UIRect_Draw = 0x82608758
 UIWidget_Draw = 0x8239ABD0
 UI_DrawQuad = 0x82496B60
 
+# Direct3D device fields the SDK does not know yet
+[layout]
+Device_Predication = 0x32A0
+
 [data]
 # CryUI, the menus
 UICloneVisitor_vtable = 0x820197B0

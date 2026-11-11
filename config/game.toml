@@ -142,6 +142,10 @@ Game_Update = 0x8220D008
 LoadingScreen_Wait = 0x82156AB0
 SaveManager_NewStory = 0x8222AE98
 
+# Direct3D device fields the SDK does not know yet
+[layout]
+Device_Predication = 0x32A0  # SetPredication 8273D1E8's select, tile i is 3 << 2i
+
 [data]
 # CryUI, the menus
 UICloneVisitor_vtable = 0x82079D90
