@@ -84,7 +84,7 @@ void Flip(bool& on, int step) {
 
 enum RowId {
     kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivity, kInvertY, kSmoothing,
-    kHoldAim, kHoldSprint, kAutoHelpers, kWalkSpeed, kSkipIntros, kFov, kFpsCounter, kShadowResolution,
+    kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kFpsCounter, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
     kInvincible
 };
@@ -158,7 +158,6 @@ const std::vector<Row>& KeyboardRows() {
             {Kind::Value, kHoldSprint, "HOLD TO SPRINT", "Feral run only while the feral run key is held instead of toggling"},
             {Kind::Value, kAutoHelpers, "AUTO DISABLE HELPERS",
              "Turns the aiming helper off while the keyboard or mouse is in use"},
-            {Kind::Value, kWalkSpeed, "WALK SPEED", "Movement speed while the walk key is held"},
             {Kind::Heading, -1, "KEYBOARD", nullptr},
         };
         for (int i = 0; i < keys::kActionCount; i++) out.push_back({Kind::Bind, i, keys::Label(i), "Accept rebinds the key"});
@@ -264,11 +263,6 @@ void StepInputRow(int id, int step, char (&text)[64]) {
         int fov = StepRange(int(std::lround(g.fov)), 45, 140, 1, step);
         if (step) g.fov = float(fov);
         std::snprintf(text, sizeof(text), fov == 90 ? "%d (DEFAULT)" : "%d", fov);
-    } else if (id == kWalkSpeed) {
-        // 10% to 100% in steps of 5
-        int percent = StepRange(int(std::lround(g.walk_speed * 100.0f)), 10, 100, 5, step);
-        if (step) g.walk_speed = float(percent) / 100.0f;
-        std::snprintf(text, sizeof(text), "%d%%", percent);
     }
 }
 
@@ -341,7 +335,6 @@ void RestoreDefaults(int page) {
         g.hold_aim = def.hold_aim;
         g.hold_sprint = def.hold_sprint;
         g.auto_helpers = def.auto_helpers;
-        g.walk_speed = def.walk_speed;
         keys::ResetBinds();
         Changed(false);
         return;
@@ -364,7 +357,6 @@ void RestoreDefaults(int page) {
     Get().hold_aim = keep.hold_aim;
     Get().hold_sprint = keep.hold_sprint;
     Get().auto_helpers = keep.auto_helpers;
-    Get().walk_speed = keep.walk_speed;
     Get().invincible = keep.invincible;
     Changed(true);
 }

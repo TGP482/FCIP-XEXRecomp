@@ -35,6 +35,8 @@ constexpr const char* kRecompCaption = "RECOMP SETTINGS";
 constexpr const char* kRecompHelp = "Display and graphics settings";
 constexpr const char* kInputCaption = "MOUSE AND KEYBOARD";
 constexpr const char* kInputHelp = "Mouse settings and keyboard bindings";
+constexpr const char* kExitCaption = "EXIT";
+constexpr const char* kExitHelp = "Close the game and return to the desktop";
 
 // UTF-16 text, then a string view of it, then scratch for the copy visitor and a by reference argument
 constexpr uint32_t kTextUnits = 0x180u;
@@ -229,12 +231,14 @@ void SetCaption(PPCContext& ctx, uint32_t element, const char* text) {
 const char* CaptionFor(uint32_t crc) {
     if (crc == kCrcMultiplayerSetup || crc == kCrcRecompSettings) return kRecompCaption;
     if (crc == kCrcMouseKeyboard) return kInputCaption;
+    if (crc == kCrcExit) return kExitCaption;
     return nullptr;
 }
 
 const char* HelpFor(uint32_t crc) {
     if (crc == kCrcMultiplayerSetup || crc == kCrcRecompSettings) return kRecompHelp;
     if (crc == kCrcMouseKeyboard) return kInputHelp;
+    if (crc == kCrcExit) return kExitHelp;
     return nullptr;
 }
 
@@ -245,7 +249,7 @@ int PageFor(uint32_t crc) {
 }
 
 void SetEntryCaptions(PPCContext& ctx, uint32_t page) {
-    for (uint32_t crc : {kCrcMultiplayerSetup, kCrcRecompSettings, kCrcMouseKeyboard}) {
+    for (uint32_t crc : {kCrcMultiplayerSetup, kCrcRecompSettings, kCrcMouseKeyboard, kCrcExit}) {
         if (uint32_t widget = FindWidget(page, crc)) SetCaption(ctx, Read32(widget + kWidgetElement), CaptionFor(crc));
     }
 }

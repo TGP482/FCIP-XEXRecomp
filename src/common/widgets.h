@@ -11,6 +11,7 @@ namespace fcip::ui {
 constexpr uint32_t kCrcRecompSettings = 0x7B8654F7u;  // B_RecompSettings
 constexpr uint32_t kCrcMouseKeyboard = 0xFF898DA7u;   // B_MouseKeyboard
 constexpr uint32_t kCrcMultiplayerSetup = 0x5FC27D09u;
+constexpr uint32_t kCrcExit = 0x5C6EA6F2u;  // B_Exit
 
 // CUIWidget
 constexpr uint32_t kWidgetNameCrc = 0x04u;

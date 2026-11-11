@@ -1,5 +1,5 @@
 // default.xex: the settings entries in the User page and the pause menu's OPTIONS, the pages they open inside
-// CONTROLLER OPTIONS, and the main menu watermark
+// CONTROLLER OPTIONS, EXIT on the main menu and the main menu watermark
 #include <iterator>
 #include <string>
 
@@ -18,10 +18,23 @@ constexpr uint32_t kCrcEditProfile = 0x3C5E4151u;
 constexpr uint32_t kCrcVideo = 0xC8040339u;  // GAME OPTIONS, the template for every clone
 constexpr uint32_t kCrcControlSetup = 0x7765E2D2u;
 constexpr uint32_t kCrcResetDefault = 0x3C4AD511u;
+constexpr uint32_t kCrcMainPage = 0x39514C08u;  // P_Main
+constexpr uint32_t kCrcOptions = 0x188FC220u;
+constexpr uint32_t kCrcCredits = 0x89ADE9D9u;
+// P_Main's rows top to bottom
+constexpr uint32_t kMainRows[] = {
+    0x17130B2Fu,  // B_StoryMode
+    0x28A23D05u,  // B_ExpansionCampaign
+    0x344E8201u,  // B_Multiplayer
+    0x08D70D76u,  // B_MapEditor
+    kCrcOptions, kCrcCredits,
+    0x3C3BFDBBu,  // B_Cheats
+};
 
 // primary vtables of the two menu classes
 constexpr uint32_t kVtProfile = 0x8205CBA8u;  // CryProfile, P_EditProfile is pages[1]
 constexpr uint32_t kVtInGame = 0x82059CA0u;   // CryInGame, P_EditProfile is pages[4]
+constexpr uint32_t kVtPreGame = 0x82059FD0u;  // CryPreGame, P_Main is pages[1]
 constexpr uint32_t kProfilePages = 0x50u;
 constexpr uint32_t kProfileHelp = 0x1F4u;
 constexpr uint32_t kInGameHelp = 0x10Cu;
@@ -29,6 +42,21 @@ constexpr uint32_t kInGameHelp = 0x10Cu;
 uint32_t ProfilePage(uint32_t self, uint32_t index) {
     uint32_t page = Read32(Read32(self + kProfilePages) + index * 4);
     return page && Read32(page + kPageNameCrc) == kCrcEditProfile ? page : 0;
+}
+
+uint32_t MainPage(uint32_t self) {
+    uint32_t page = Read32(Read32(self + kProfilePages) + 4);
+    return page && Read32(page + kPageNameCrc) == kCrcMainPage ? page : 0;
+}
+
+// the lowest row the layout shows
+uint32_t LastMainRow(uint32_t page) {
+    uint32_t last = 0;
+    for (uint32_t crc : kMainRows) {
+        uint32_t widget = FindWidget(page, crc);
+        if (Read8(widget + kWidgetVisible) & 0x80) last = widget;
+    }
+    return last;
 }
 
 // the hidden multiplayer slot comes back the way GAME OPTIONS sits, rather than guessing the bits the hide cleared
@@ -53,6 +81,9 @@ void AddEntriesFor(PPCContext& ctx, uint32_t self) {
         uint32_t page = ProfilePage(self, 4);
         AddEntries(ctx, page, FindWidget(page, kCrcVideo), kCrcVideo, kCrcControlSetup,
                    {kCrcRecompSettings, kCrcMouseKeyboard});
+    } else if (vtable == kVtPreGame) {
+        uint32_t page = MainPage(self);
+        AddEntries(ctx, page, LastMainRow(page), kCrcCredits, kCrcOptions, {kCrcExit});
     }
 }
 
@@ -299,7 +330,6 @@ void OpenNative(PPCContext& ctx, uint8_t* base, uint32_t page, int mode, PPCFunc
 // Watermark: B_Text mirrors "{A} SELECT" at the bottom left of P_Main; the prompt setter empties it on every call,
 // so this follows each one
 
-constexpr uint32_t kCrcMainPage = 0x39514C08u;    // P_Main
 constexpr uint32_t kCrcHeader = 0x8D948810u;      // A_Header
 constexpr uint32_t kCrcNavigation = 0xDEB8BA8Bu;  // A_Navigation
 constexpr uint32_t kCrcBackText = 0xF3EC853Bu;    // B_Text, empty on P_Main
@@ -353,7 +383,8 @@ PPC_FUNC(sub_821E31D0) {
 PPC_FUNC(sub_8216F570) {
     uint32_t page = uint32_t(ctx.r[4]);
     __imp__sub_8216F570(ctx, base);
-    if (Read32(page + kPageNameCrc) == kCrcEditProfile) SetEntryCaptions(ctx, page);
+    uint32_t crc = Read32(page + kPageNameCrc);
+    if (crc == kCrcEditProfile || crc == kCrcMainPage) SetEntryCaptions(ctx, page);
 }
 
 // User page help text

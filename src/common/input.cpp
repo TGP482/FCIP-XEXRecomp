@@ -43,6 +43,7 @@ constexpr uint32_t kMoveForward = 3;
 constexpr uint32_t kMoveBackward = 4;
 // RUN, set once an axis passes 0.7: feral run and no crouch while set
 constexpr uint32_t kRunBit = 1u << (9 - 1);
+constexpr float kWalkSpeed = 0.4f;  // of a full stick, under the 0.7 RUN threshold
 // PRIMARY_WEAPON 0x17, SECONDARY_WEAPON 0x18, SPECIAL_WEAPON 0x19
 constexpr uint32_t kSlotBits = 0x01C00000u;
 constexpr uint32_t kReloadUseBit = 1u << (0x15 - 1);
@@ -237,7 +238,7 @@ void OnMovement(uint32_t player, uint32_t cmd) {
     float length = std::sqrt(x * x + y * y);
     if (!(length > 0.0f)) return;
     float scale = length > 1.0f ? 1.0f / length : 1.0f;
-    if (walk) scale *= fcip::Get().walk_speed;
+    if (walk) scale *= kWalkSpeed;
     if (scale == 1.0f) return;
     WF(cmd + kCmdMoveX, x * scale);
     WF(cmd + kCmdMoveY, y * scale);
