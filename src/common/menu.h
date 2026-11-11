@@ -25,8 +25,9 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
 inline void (*g_menu_tick)(PPCContext& ctx, uint32_t mgr) = nullptr;
 // default.xex's debug page: queues a story level by folder name, false before START at the title screen
 inline bool (*g_load_level)(const char* folder) = nullptr;
-// window thread: the cursor and buttons for the game's menus
+// window thread: the cursor and buttons for the game's menus, a left click skips a skippable movie
 void MenuMouseMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);
+bool SkippableMovie();
 
 namespace rows {
 

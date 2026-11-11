@@ -353,6 +353,11 @@ void MenuMouseMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp) {
         case WM_MOUSEMOVE: SetPos(static_cast<HWND>(hwnd), lp); break;
         case WM_LBUTTONDOWN:
             SetPos(static_cast<HWND>(hwnd), lp);
+            // the menu behind never sees it
+            if (fcip::SkippableMovie()) {
+                fcip::PressStart();
+                break;
+            }
             g_input.left_down++;
             break;
         case WM_LBUTTONUP:
