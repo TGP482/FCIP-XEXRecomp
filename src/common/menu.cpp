@@ -43,6 +43,8 @@ constexpr uint32_t kHostApplyDisplay = WM_APP + 1;  // main.cpp's kApplyDisplay
 
 constexpr uint32_t kAnisoValues[] = {0, 2, 4, 8, 16};
 const char* const kAnisoNames[] = {"GAME DEFAULT", "2x", "4x", "8x", "16x"};
+constexpr uint32_t kMsaaValues[] = {1, 0, 4, 8};  // 0 keeps the game's own 2x
+const char* const kMsaaNames[] = {"OFF", "2x (DEFAULT)", "4x", "8x"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
 const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
 constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, 360, app::kFpsCapRefresh, 0};
@@ -96,7 +98,7 @@ enum RowId {
     kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kViewmodelFov, kFpsCounter, kHdrOutput, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
     kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
-    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind
+    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kMsaa
 };
 
 constexpr Row kSettingsRows[] = {
@@ -115,6 +117,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kFpsCounter, "FPS COUNTER", "Displays the frame rate on screen"},
     {Kind::Value, kColourBlind, "COLOUR BLIND MODE", "Adjusts the colours for protanopia, deuteranopia or tritanopia"},
     {Kind::Heading, -1, "GRAPHICS", nullptr},
+    {Kind::Value, kMsaa, "MSAA", "Smooths jagged edges with 4x or 8x MSAA, or turns off the game's own 2x"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024 to 8192, 1344 is stock"},
     {Kind::Value, kShadowDistance, "SHADOW DISTANCE", "Scales the area around the player that casts sun shadows"},
@@ -421,6 +424,9 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             else std::snprintf(text, sizeof(text), "UNLIMITED");
             break;
         }
+        case kMsaa:
+            std::snprintf(text, sizeof(text), "%s", kMsaaNames[StepTable(kMsaaValues, s.msaa, step)]);
+            break;
         case kAniso:
             std::snprintf(text, sizeof(text), "%s", kAnisoNames[StepTable(kAnisoValues, s.aniso, step)]);
             break;
@@ -500,6 +506,7 @@ void RestoreDefaults(int page) {
     s.vsync = def.vsync;
     s.fps_cap = def.fps_cap;
     s.aniso = def.aniso;
+    s.msaa = def.msaa;
     s.custom_textures = def.custom_textures;
     s.dump_textures = def.dump_textures;
     s.texture_dump_format = def.texture_dump_format;
