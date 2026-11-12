@@ -22,6 +22,8 @@ endif()
 include(${SDK}/cmake/XexRecomp.cmake)
 # src/d3d and src/xaudio replace the SDK's D3D HLE, renderer and XAudio HLE
 list(FILTER XEX_RUNTIME_SOURCES EXCLUDE REGEX "/(xdk/d3d9|xdk/xaudio|gpu/d3d12)\\.cpp$")
+# gyro aiming reads the controllers through SDL
+set_source_files_properties(src/common/gyro.cpp PROPERTIES INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
 
 file(GLOB XEX_HOST_SOURCES CONFIGURE_DEPENDS src/*/*.cpp)
 list(FILTER XEX_HOST_SOURCES EXCLUDE REGEX "/src/(game|editor)/")
