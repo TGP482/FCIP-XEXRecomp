@@ -68,6 +68,7 @@ constexpr uint32_t kPlayerZoom = 0x884;  // zoomed u8 +4, leaving u8 +6
 constexpr uint32_t kZoomOn = 0x04;
 constexpr uint32_t kZoomLeaving = 0x06;
 constexpr uint32_t kPlayerAkimbo = 0x8E0;  // u8, SECONDARY_FIRE fires the second gun
+constexpr uint32_t kPlayerCutscene = 0xBA3;  // set by BeginCutScene, cleared by EndCutScene
 constexpr uint32_t kPlayerBlurLock = 0x994;  // u8 set stops every blur write (script SetBlur sets it too)
 // press trackers read an action: press time float +4 (0 idle), consumed u8 +0xC
 constexpr uint32_t kPlayerStanceTracker = 0xBB8;  // MOVEMODE
@@ -257,6 +258,9 @@ bool Zoomed(uint32_t player) {
     return GuestOk(zoom) && R8(zoom + kZoomOn);
 }
 
+// the game takes no look or aim input in cutscenes, so nothing written straight into the command may either
+bool InCutscene(uint32_t player) { return GuestOk(player) && R8(player + kPlayerCutscene); }
+
 void MouseLook(uint32_t cmd) {
     uint64_t now = NowMs();
     uint64_t prev = g_gameplay_ms.exchange(now);
@@ -266,6 +270,7 @@ void MouseLook(uint32_t cmd) {
     K::TakeMouse(dx, dy);
     bool running = prev && now - prev <= kGameplayTimeoutMs;
     if (!cmd || !running || !fcip::MouseLookActive() || (dx == 0 && dy == 0)) return;
+    if (InCutscene(g_local_player)) return;
     // Steam turns the pad's stick into mouse motion, the pad already looks
     if (K::PadRecent()) return;
     K::NoteKbm();
@@ -282,7 +287,7 @@ void MouseLook(uint32_t cmd) {
 // the controller's gyro turns the view beside the right stick
 void GyroLook(uint32_t cmd) {
     gyro::Turn turn = gyro::Take(fcip::Get().gyro);
-    if (!cmd || fcip::MenuOpen() || (turn.yaw == 0.0f && turn.pitch == 0.0f)) return;
+    if (!cmd || fcip::MenuOpen() || InCutscene(g_local_player) || (turn.yaw == 0.0f && turn.pitch == 0.0f)) return;
     // the gyro turns left positive, the command right positive
     WF(cmd + kCmdYaw, GF(cmd + kCmdYaw) - turn.yaw);
     WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) + turn.pitch);
