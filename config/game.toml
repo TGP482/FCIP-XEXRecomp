@@ -165,7 +165,6 @@ Device_Predication = 0x32A0  # SetPredication 8273D1E8's select, tile i is 3 << 
 [data]
 # CryUI, the menus
 UICloneVisitor_vtable = 0x82079D90
-UIMatrixStack_pointer = 0x82912C30
 UITransform_vtable = 0x82079188
 UIWidgetFocus_vtable = 0x82078BC4
 UIWidgetText_vtable = 0x82079880
@@ -286,3 +285,8 @@ call = "ScaleEmitterCount"
 [[hook]]  # after it, also the out of view branch's target
 at = 0x825D88A8
 call = "RestoreEmitterCount"
+
+# instruction hooks, defined in src/game/ai_arrival.cpp
+[[hook]]  # f1 = the frame time in the path point arrival test
+at = 0x822D355C
+call = "ArrivalFrameTime"

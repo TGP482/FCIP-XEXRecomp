@@ -142,7 +142,6 @@ Device_Predication = 0x32A0
 [data]
 # CryUI, the menus
 UICloneVisitor_vtable = 0x820197B0
-UIMatrixStack_pointer = 0x828F6ABC
 UITransform_vtable = 0x82005AC0
 UIWidgetFocus_vtable = 0x820022C4
 UIWidgetText_vtable = 0x8201E158
