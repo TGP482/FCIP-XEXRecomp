@@ -43,9 +43,9 @@ std::atomic<bool> g_open{false};
 constexpr uint32_t kHostApplyDisplay = WM_APP + 1;  // main.cpp's kApplyDisplay
 
 constexpr uint32_t kAnisoValues[] = {0, 2, 4, 8, 16};
-const char* const kAnisoNames[] = {"GAME DEFAULT", "2x", "4x", "8x", "16x"};
-constexpr uint32_t kMsaaValues[] = {1, 0, 4, 8};  // 0 keeps the game's own 2x
-const char* const kMsaaNames[] = {"OFF", "2x (DEFAULT)", "4x", "8x"};
+const char* const kAnisoNames[] = {"OFF", "2x", "4x", "8x", "16x"};
+constexpr uint32_t kMsaaValues[] = {0, 2, 4, 8};
+const char* const kMsaaNames[] = {"OFF", "2x", "4x", "8x"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
 const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
 const char* const kAmbientOcclusionNames[] = {"OFF", "SSAO", "GTAO"};
@@ -124,7 +124,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Heading, -1, "GRAPHICS", nullptr},
     {Kind::Value, kAmbientOcclusion, "AMBIENT OCCLUSION",
      "Shades the world's creases and corners, SSAO or the more accurate GTAO, characters and fog left alone"},
-    {Kind::Value, kMsaa, "MSAA", "Smooths jagged edges with 4x or 8x MSAA, or turns off the game's own 2x"},
+    {Kind::Value, kMsaa, "MSAA", "Smooths jagged edges with 2x, 4x or 8x MSAA in place of the game's own 2x"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024 to 8192, 1344 is stock"},
