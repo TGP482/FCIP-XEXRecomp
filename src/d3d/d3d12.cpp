@@ -1067,6 +1067,8 @@ private:
     void MakeResolved(Resolved& dst, DXGI_FORMAT format, uint32_t w, uint32_t h, float scale);
     void ReleaseResolved(Resolved& r);
     void DropResolved(uint32_t base);
+    void DropTarget(uint64_t map_key);
+    void KeepSunMap(int map, uint32_t base, const Target* src);
     void KeepBlocks(Target& src, Resolved& dst, const ResolveArgs& r);
     Resolved* CpuSource(uint32_t base);
     bool MakeCpuTexels(Resolved& from);
@@ -1160,6 +1162,10 @@ private:
     std::unordered_map<uint32_t, Resolved> blocks_;     // by address: a resolve with the whole blocks it writes past
     Resolved* sun_[fcip::kSunMaps] = {};                // the sharper sun maps the draw's pixel shader reads
     fcip::SunMaps sun_maps_;
+    // the sun maps' resolves and depth targets since the last far map, then the frame before's: a new side leaves
+    // the old ones behind, released once the next far map is in
+    std::vector<uint32_t> sun_bases_[2];
+    std::vector<uint64_t> sun_targets_[2];
     Resolved cpu_texels_;                               // a resolve at title size, for the CPU
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> pass_pipelines_;
     std::vector<std::unique_ptr<Shader>> shaders_;
@@ -2193,7 +2199,7 @@ Resolved* D3D12Backend::SunMap(uint32_t base) {
 
 // the sharper sun maps, with a flag on each pixel shader fetch of the far one; false when the draw reads no far map
 bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
-    fcip::SunMaps m = fcip::SunMapsNow();
+    fcip::SunMaps m = fcip::SunMapsDrawn();
     if (!m.count || info.textures.size() > fcip::kSunFirstSlot) return false;
     // a missing map would read zero depth: it and the coarser ones are left to the far map
     Resolved* maps[fcip::kSunMaps] = {};
@@ -3079,6 +3085,7 @@ void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
         if (read != g_cpu.read.end()) RecordReadBack(read->second, r.dst_base, seq);
     }
     g_cpu.ran.notify_all();
+    if (int map = fcip::SunResolved(r.dst_base); map >= 0) KeepSunMap(map, r.dst_base, src);
     if (src && r.clear) {
         ClearTarget(*src, r.clear, r.clear_color, r.clear_z, uint8_t(r.clear_stencil), nullptr, 0);
         ClearSpan(*src, r.clear, r.clear_color, r.clear_z, uint8_t(r.clear_stencil));
@@ -3118,6 +3125,34 @@ void D3D12Backend::ReleaseResolved(Resolved& r) {
     if (!r.res) return;
     Release(r.res);
     free_rtv_.push_back(r.view);
+}
+
+void D3D12Backend::DropTarget(uint64_t map_key) {
+    auto it = targets_.find(map_key);
+    if (it == targets_.end()) return;
+    Target& t = it->second;
+    if (&t == cap_rt_) cap_rt_ = nullptr;
+    Release(t.res);
+    Release(t.fb);
+    (t.depth ? free_dsv_ : free_rtv_).push_back(t.view);
+    targets_.erase(it);
+    Unbind();
+}
+
+void D3D12Backend::KeepSunMap(int map, uint32_t base, const Target* src) {
+    sun_bases_[0].push_back(base);
+    if (src) sun_targets_[0].push_back(TargetMapKey(src->surface, src->depth, src->width, src->key));
+    if (map != fcip::kSunFar) return;
+    for (uint32_t old : sun_bases_[1]) {
+        if (std::find(sun_bases_[0].begin(), sun_bases_[0].end(), old) == sun_bases_[0].end()) DropResolved(old);
+    }
+    for (uint64_t old : sun_targets_[1]) {
+        if (std::find(sun_targets_[0].begin(), sun_targets_[0].end(), old) == sun_targets_[0].end()) DropTarget(old);
+    }
+    sun_bases_[1].swap(sun_bases_[0]);
+    sun_targets_[1].swap(sun_targets_[0]);
+    sun_bases_[0].clear();
+    sun_targets_[0].clear();
 }
 
 // guest memory at base is read again

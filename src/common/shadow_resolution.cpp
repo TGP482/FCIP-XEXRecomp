@@ -17,7 +17,8 @@
 // pass), so detail halves from one map to the next. Every sun camera sits where the stock radius puts it, on the far
 // map's texel grid, with the far map's depth range, and is as wide as its radius. The far map draws last, so the
 // receivers keep its texture and matrix. The renderer finds the maps by their resolve addresses and reads the sharpest
-// one that covers the point.
+// one that covers the point. Inside a vis area every run draws four light frustums at 672, the sun among them; only
+// the sun's resolve is recorded.
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -78,12 +79,25 @@ constexpr int kFarMap = int(fcip::kSunMaps);
 thread_local int t_map = kNoMap;
 thread_local bool t_sun = false;
 
-std::atomic<uint32_t> g_bases[fcip::kSunMaps];
-std::atomic<uint32_t> g_far_base{0};
 std::atomic<uint32_t> g_distance{0};  // the far map's radius over the stock one, 0 without sharper maps
 std::atomic<uint32_t> g_maps{0};      // sharper maps drawn
 std::atomic<uint32_t> g_side{0};      // the sun map's guest side, as ShadowMatrix takes it
 uint32_t g_pool_side = 0;             // the sun map side the pool's surfaces were made for
+
+// sun map resolves in the order the title issues them; the render thread runs up to a frame behind, so it matches each
+// of its own resolves to the first unmatched record of that address and reads the maps as they were drawn
+struct SunResolve {
+    uint32_t address = 0;
+    int map = kNoMap;
+    uint32_t count = 0;
+    uint32_t distance = 0;
+    uint32_t side = 0;
+};
+constexpr uint32_t kResolveRing = 64;  // several frames of sun map resolves
+SunResolve g_ring[kResolveRing];
+std::atomic<uint32_t> g_issued{0};
+uint32_t g_matched = 0;   // render thread
+fcip::SunMaps g_drawn;    // render thread
 
 // a map's radius over the stock one
 uint32_t Reach(int map) { return map == kFarMap ? g_distance.load() : 1u << map; }
@@ -272,11 +286,16 @@ PPC_FUNC(GUEST(Shadow_Resolve)) {
     uint32_t side = ok && w == h ? Wanted(w) : 0;
     if (side <= w) side = 0;
     if (side) W32(size, (bits & ~0x3FFFFFFu) | (side - 1) | (side - 1) << 13);
+    // recorded before the resolve is queued, so the render thread finds it
+    if (ok && w == h && t_sun && t_map != kNoMap) {
+        uint32_t at = mem::PhysicalFromVirtual(R32(tex + XDK_Texture_FetchConstant + kFetchAddress) & 0xFFFFF000);
+        uint32_t n = g_issued.load(std::memory_order_relaxed);
+        g_ring[n % kResolveRing] = {at, t_map, g_maps, g_distance, g_side};
+        g_issued.store(n + 1, std::memory_order_release);
+        t_sun = false;  // the lights after the sun in a quad run
+    }
     GUEST_ORIG(Shadow_Resolve)(ctx, base);
     if (side) W32(size, bits);
-    if (!ok || w != h || !t_sun || t_map == kNoMap) return;
-    uint32_t at = mem::PhysicalFromVirtual(R32(tex + XDK_Texture_FetchConstant + kFetchAddress) & 0xFFFFF000);
-    (t_map == kFarMap ? g_far_base : g_bases[t_map]) = at;
 }
 
 namespace {
@@ -309,25 +328,36 @@ uint32_t fcip::SubmittedPass() { return t_pass_type; }
 
 void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     uint32_t distance = Get().shadow_distance;
-    bool quad = (ctx.r[6] & 0xFF) != 0;  // four light frustums, no sun map
     // the far map's texel grid must hold whole texels of each sharper map
     uint32_t maps = 0;
-    while (!quad && maps < kSunMaps && (1u << maps) < distance && distance % (1u << maps) == 0) maps++;
+    while (maps < kSunMaps && (1u << maps) < distance && distance % (1u << maps) == 0) maps++;
     g_distance = maps ? distance : 0;
     g_maps = maps;
     for (uint32_t i = 0; i < maps; i++) RunCascade(ctx, base, int(i));
     RunShadowMaps(ctx, base, kFarMap);
 }
 
-fcip::SunMaps fcip::SunMapsNow() {
-    SunMaps m;
-    m.far_base = g_far_base;
-    m.count = g_maps;
-    m.distance = g_distance;
-    m.side = g_side;
-    for (uint32_t i = 0; i < m.count; i++) m.bases[i] = g_bases[i];
-    return m;
+int fcip::SunResolved(uint32_t address) {
+    uint32_t issued = g_issued.load(std::memory_order_acquire);
+    if (issued - g_matched > kResolveRing) g_matched = issued - kResolveRing;
+    for (uint32_t i = g_matched; i != issued; i++) {
+        const SunResolve& r = g_ring[i % kResolveRing];
+        if (r.address != address) continue;
+        g_matched = i + 1;
+        if (r.map != kFarMap) {
+            g_drawn.bases[r.map] = address;
+            return r.map;
+        }
+        g_drawn.far_base = address;
+        g_drawn.count = r.count;
+        g_drawn.distance = r.distance;
+        g_drawn.side = r.side;
+        return r.map;
+    }
+    return kNoMap;
 }
+
+fcip::SunMaps fcip::SunMapsDrawn() { return g_drawn; }
 
 uint32_t fcip::SunShadowSide() {
     uint32_t side = Wanted(kStockSide);

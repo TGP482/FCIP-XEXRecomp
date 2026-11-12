@@ -30,7 +30,12 @@ struct SunMaps {
     uint32_t distance = 0;
     uint32_t side = 0;  // guest side of every map
 };
-SunMaps SunMapsNow();
+constexpr int kSunFar = int(kSunMaps);  // SunResolved's answer for the far map
+
+// render thread: each resolve's address, answering which sun map it is, -1 for none; then the maps as of the last far
+// map resolve
+int SunResolved(uint32_t address);
+SunMaps SunMapsDrawn();
 constexpr uint8_t kSunCascade = 1;     // ShaderOptions::tex_flags on a fetch of the far map
 
 }  // namespace fcip
