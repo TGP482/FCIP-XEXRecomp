@@ -34,12 +34,16 @@ std::atomic<uint32_t> g_renderer{0};
 std::atomic<int> g_wide{-1};  // the mode the device started in, -1 before
 
 thread_local float g_anchor = 0.5f;  // share of the spare width left of what is drawn
-thread_local bool g_rect = false;    // a rect element is drawing
+thread_local bool g_text = false;    // a glyph is drawing
+thread_local bool g_paint = false;   // the red paint is drawing
+std::atomic<int64_t> g_world_ms{-1000};  // when the 3D world last drew
 
 // HUD widgets that sit against a screen side, by crc32 of their name: ai_status-base, -Valerie, -Doyle, -Kade
 constexpr uint32_t kLeftWidgets[] = {0x17C753E5u, 0xA4F0EADFu, 0x4DA638F6u, 0xCF7E37C7u};
 // ai_ammo-count1 and the unnamed count beside it, ai_objective-item, ai_live_event
 constexpr uint32_t kRightWidgets[] = {0x2909DFF7u, 0xB0008E4Du, 0xDC33DFAAu, 0x0A5255EEu};
+// the menus' red paint image, RedBar.xbt
+constexpr uint32_t kRedPaintWidget = 0xA4E1836Eu;
 
 uint32_t Bits(float f) {
     uint32_t b;
@@ -74,6 +78,11 @@ void WriteRenderer(float aspect, uint32_t renderer) {
 
 bool In(uint32_t name, const uint32_t (&list)[4]) { return std::find(std::begin(list), std::end(list), name) != std::end(list); }
 
+int64_t NowMs() {
+    auto since = std::chrono::steady_clock::now().time_since_epoch();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(since).count();
+}
+
 }  // namespace
 
 namespace fcip {
@@ -85,8 +94,7 @@ float DisplayAspect() {
     static std::atomic<int64_t> due{0};
     const app::Settings& s = app::Get();
     uint64_t k = uint64_t(s.width) << 32 | s.height;
-    auto since = std::chrono::steady_clock::now().time_since_epoch();
-    int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(since).count();
+    int64_t now = NowMs();
     if (key.exchange(k) != k || now >= due) {
         app::Mode m = app::Output();
         aspect = m.height ? std::max(float(m.width) / float(m.height), 4.0f / 3.0f) : 4.0f / 3.0f;
@@ -117,6 +125,7 @@ void Anchor2D(float side) { g_anchor = side; }
 
 void AspectTick() {
     static std::atomic<float> applied{0.0f};
+    g_world_ms = NowMs();
     uint32_t renderer = g_renderer;
     float aspect = DisplayAspect();
     if (renderer && applied.exchange(aspect) != aspect) WriteRenderer(aspect, renderer);
@@ -128,7 +137,7 @@ PPC_EXTERN_FUNC(GUEST_ORIG(Device_Init));
 PPC_EXTERN_FUNC(GUEST_ORIG(Renderer_Init));
 PPC_EXTERN_FUNC(GUEST_ORIG(Bink_DrawFrame));
 PPC_EXTERN_FUNC(GUEST_ORIG(UIWidget_Draw));
-PPC_EXTERN_FUNC(GUEST_ORIG(UIRect_Draw));
+PPC_EXTERN_FUNC(GUEST_ORIG(Font_Draw));
 PPC_EXTERN_FUNC(GUEST_ORIG(UI_DrawQuad));
 
 PPC_FUNC(GUEST(Device_Init)) {
@@ -164,21 +173,47 @@ PPC_FUNC(GUEST(UIWidget_Draw)) {
     float outer = g_anchor;
     if (In(name, kLeftWidgets)) g_anchor = 0.0f;
     if (In(name, kRightWidgets)) g_anchor = 1.0f;
+    g_paint = name == kRedPaintWidget;
     GUEST_ORIG(UIWidget_Draw)(ctx, base);
+    g_paint = false;
     g_anchor = outer;
 }
 
-PPC_FUNC(GUEST(UIRect_Draw)) {
-    g_rect = true;
-    GUEST_ORIG(UIRect_Draw)(ctx, base);
-    g_rect = false;
+PPC_FUNC(GUEST(Font_Draw)) {
+    g_text = true;
+    GUEST_ORIG(Font_Draw)(ctx, base);
+    g_text = false;
 }
 
-// a corner's x scaled by k with pos the share of the spare width before it; when narrowed, a rect's corner on a page
-// edge stays there, so fills still reach the screen edges
+// where a page edge lands: the screen edge over the 3D world, else no wider than 16:9, as the menu movies and loading
+// art are
+static float EdgeScale() {
+    bool world = NowMs() - g_world_ms < 100;
+    return world ? 1.0f : std::min(1.0f, (16.0f / 9.0f) / fcip::DisplayAspect());
+}
+
+// a corner's x scaled by k with pos the share of the spare width before it; when narrowed, a corner at or past a page
+// edge goes with that edge, so the paint, panels and lines stretch out while text and logos keep their shape
 static float Fit(float x, float k, float pos, float width) {
-    if (g_rect && k < 1.0f && (x <= 1.5f || x >= width - 2.5f)) return x;
+    bool edge = !g_text && !g_paint && k < 1.0f && (x <= 1.5f || x >= width - 2.5f);
+    if (edge) {
+        k = EdgeScale();
+        pos = 0.5f;
+    }
     return (x + 0.5f) * k + pos * (1.0f - k) * width - 0.5f;
+}
+
+// the red paint keeps its shape, held against the page side it runs off
+static float PaintSide(const uint32_t (&x)[4], float width) {
+    float lo = Float(x[0]);
+    float hi = lo;
+    for (uint32_t v : x) {
+        lo = std::min(lo, Float(v));
+        hi = std::max(hi, Float(v));
+    }
+    if (lo <= 1.5f && hi < width - 2.5f) return 0.0f;
+    if (hi >= width - 2.5f && lo > 1.5f) return 1.0f;
+    return g_anchor;
 }
 
 // every image, rect and glyph of the UI: r4 to r7 point at the corners, {x, y} in back buffer pixels; x is scaled
@@ -194,7 +229,8 @@ PPC_FUNC(GUEST(UI_DrawQuad)) {
     uint32_t corner[4] = {uint32_t(ctx.r[4]), uint32_t(ctx.r[5]), uint32_t(ctx.r[6]), uint32_t(ctx.r[7])};
     uint32_t saved[4];
     for (int i = 0; i < 4; i++) saved[i] = R32(corner[i]);
-    for (int i = 0; i < 4; i++) W32(corner[i], Bits(Fit(Float(saved[i]), scale, g_anchor, width)));
+    float anchor = g_paint ? PaintSide(saved, width) : g_anchor;
+    for (int i = 0; i < 4; i++) W32(corner[i], Bits(Fit(Float(saved[i]), scale, anchor, width)));
     GUEST_ORIG(UI_DrawQuad)(ctx, base);
     for (int i = 0; i < 4; i++) W32(corner[i], saved[i]);
 }
