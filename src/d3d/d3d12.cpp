@@ -2195,13 +2195,14 @@ Resolved* D3D12Backend::SunMap(uint32_t base) {
 bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
     fcip::SunMaps m = fcip::SunMapsNow();
     if (!m.count || info.textures.size() > fcip::kSunFirstSlot) return false;
+    // a missing map would read zero depth: it and the coarser ones are left to the far map
     Resolved* maps[fcip::kSunMaps] = {};
-    bool found = false;
-    for (uint32_t i = 0; i < m.count; i++) {
-        maps[i] = SunMap(m.bases[i]);
-        found = found || maps[i];
+    uint32_t count = 0;
+    for (; count < m.count; count++) {
+        maps[count] = SunMap(m.bases[count]);
+        if (!maps[count]) break;
     }
-    if (!found) return false;
+    if (!count) return false;
     bool any = false;
     for (uint32_t i = 0; i < info.textures.size(); i++) {
         const TextureBinding& b = info.textures[i];
@@ -2215,6 +2216,7 @@ bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOpti
     if (!any) return false;
     std::copy(std::begin(maps), std::end(maps), sun_);
     sun_maps_ = m;
+    sun_maps_.count = count;
     return true;
 }
 
