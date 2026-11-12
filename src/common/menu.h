@@ -17,6 +17,7 @@ constexpr int kDebugPage = 2;
 bool MenuOpen();
 void ToggleMenu();
 void OpenMenuPage(int page);
+uint32_t SettingsRevision();  // counts every change, from the panel or the game's menus
 
 // GameInfo hooks
 void DrawUi(double fps);

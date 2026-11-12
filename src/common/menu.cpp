@@ -39,6 +39,7 @@ using rows::Kind;
 using rows::Row;
 
 std::atomic<bool> g_open{false};
+std::atomic<uint32_t> g_revision{0};
 
 constexpr uint32_t kHostApplyDisplay = WM_APP + 1;  // main.cpp's kApplyDisplay
 
@@ -482,6 +483,7 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
 }
 
 void Changed(bool display) {
+    g_revision++;
     if (display) app::ApplyDisplay();
     audio::SetOutputMode(app::Get().audio_output);
     app::Save();
@@ -695,6 +697,7 @@ void PollCapture() {
     }
     g_capture = -1;
 }
+bool g_confirm = false;  // Defaults asks first
 std::atomic<int> g_page{kSettingsPage};
 std::atomic<bool> g_page_set{true};  // the tab bar picks g_page on its next frame
 
@@ -745,7 +748,7 @@ void DrawRows(int page) {
 void DrawTabs() {
     int count = PageCount();
     int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) - ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false);
-    if (step) {
+    if (step && !g_confirm) {
         g_page = StepIndex(g_page, step, count);
         g_page_set = true;
     }
@@ -770,6 +773,26 @@ void DrawTabs() {
     }
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(4);
+}
+
+void ConfirmDefaults() {
+    if (!g_confirm) return;
+    constexpr ImGuiWindowFlags kFlags =
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove;
+    ImGui::OpenPopup("##defaults");
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("##defaults", nullptr, kFlags)) return;
+    ImGui::TextUnformatted("Restore every setting on this page to its default?");
+    float bw = ImGui::GetFontSize() * 8;
+    if (ImGui::Button("Yes", ImVec2(bw, 0))) {
+        g_display_held = false;
+        RestoreDefaults(g_page);
+        g_confirm = false;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("No", ImVec2(bw, 0))) g_confirm = false;
+    if (!g_confirm) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 void DrawPanel() {
@@ -807,14 +830,12 @@ void DrawPanel() {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(buttons_pad, 0.0f));
         if (ImGui::Button("Back", ImVec2(bw, 0))) ToggleMenu();
         ImGui::SameLine();
-        if (ImGui::Button("Defaults", ImVec2(bw, 0)) && g_capture < 0) {
-            g_display_held = false;
-            RestoreDefaults(g_page);
-        }
+        if (ImGui::Button("Defaults", ImVec2(bw, 0)) && g_capture < 0) g_confirm = true;
         ImGui::SameLine();
         ImGui::BeginDisabled(!g_display_held);
         if (ImGui::Button("Apply", ImVec2(bw, 0))) Apply();
         ImGui::EndDisabled();
+        ConfirmDefaults();
     }
     ImGui::End();
     ImGui::PopStyleVar(4);
@@ -825,10 +846,13 @@ void DrawPanel() {
 
 bool MenuOpen() { return g_open.load(std::memory_order_relaxed); }
 
+uint32_t SettingsRevision() { return g_revision; }
+
 void ToggleMenu() {
     std::lock_guard lock(app::UiLock());
     g_open = !g_open;
     g_display_held = false;
+    g_confirm = false;
     g_capture = -1;
 }
 
@@ -837,6 +861,7 @@ void OpenMenuPage(int page) {
     g_page = std::clamp(page, 0, PageCount() - 1);
     g_page_set = true;
     g_display_held = false;
+    g_confirm = false;
     g_open = true;
 }
 

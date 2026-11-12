@@ -9,6 +9,7 @@
 #include "common/menu.h"
 #include "common/widgets.h"
 #include "core/log.h"
+#include "cpu/dispatch.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 
@@ -205,14 +206,27 @@ constexpr uint32_t kPushInput = 0x8246B158u;     // (stack, page, 1, 0)
 constexpr uint32_t kPopInput = 0x8246B318u;      // (stack, 0, 0)
 constexpr uint32_t kDefaultFocus = 0x8246BB58u;  // (page)
 
-// our block: the two listeners, the help bar's strings, the icon colour and the listener argument
+// the game's message box as RESET DEFAULTS on the User page opens it (0x821E44F8): (box, id, const std::wstring* title,
+// text, buttons, priority, listener, two button texts, 0, 0, 0, -1); the listener's vtable +0 runs on OK, +4 on cancel
+constexpr uint32_t kMessageBox = 0x8216B168u;
+constexpr uint32_t kMenuUi = 0x10u;  // a menu object's UI, its message boxes at +0x0C
+constexpr uint32_t kUiMessageBoxes = 0x0Cu;
+constexpr uint32_t kOkCancel = 4u;
+constexpr const char* kDefaultsQuestion = "Restore every setting on this page to its default?";
+constexpr uint32_t kWideCapacity = 0x18u;
+constexpr uint32_t kInlineCapacity = 7u;
+
+// our block: the two listeners, the help bar's strings, the icon colour, the listener argument, the message box's
+// listener with its three slot vtable after it and an empty std::wstring
 constexpr uint32_t kBlockValuesListener = 0x00u;
 constexpr uint32_t kBlockSoundListener = kListenerBytes;
 constexpr uint32_t kBlockButtons = kListenerBytes * 2;
 constexpr uint32_t kBlockText = kBlockButtons + kStringBytes;
 constexpr uint32_t kBlockIcon = kBlockText + kStringBytes;
 constexpr uint32_t kBlockArgument = kBlockIcon + 4;
-constexpr uint32_t kBlockBytes = kBlockArgument + 4;
+constexpr uint32_t kBlockConfirm = kBlockArgument + 4;
+constexpr uint32_t kBlockEmpty = kBlockConfirm + 16;
+constexpr uint32_t kBlockBytes = kBlockEmpty + kStringBytes;
 
 struct Popup {
     uint32_t block = 0;
@@ -229,6 +243,13 @@ Popup g_popup;
 
 const rows::Row& NativeRow(int row) { return *g_native.rows[size_t(row)]; }
 int NativeCount() { return int(g_native.rows.size()); }
+
+// our rows are still in the list
+bool ListOk() {
+    uint32_t first = Read32(g_native.list + kListItems);
+    uint32_t last = Read32(g_native.list + kListItems + 4);
+    return Read32(g_native.list) == kVtList && last >= first && (last - first) / kListItemBytes == uint32_t(NativeCount());
+}
 
 // a heading or RESTORE DEFAULTS, where a section ends
 bool SectionEnd(const rows::Row& r) { return r.kind == rows::Kind::Heading || r.kind == rows::Kind::Defaults; }
@@ -364,6 +385,16 @@ void ShowSection(PPCContext& ctx, int section) {
     NativeHelp(ctx);
 }
 
+// the message box's OK
+void DefaultsConfirmed(PPCContext& ctx, uint8_t*) {
+    if (g_native.mode < 0 || !ListOk()) return;
+    rows::Defaults(g_native.mode);
+    RefreshValues(ctx);
+    kernel::CallGuest(ctx, kSoundPlay, {Read32(kSoundSystem), kSoundChange});
+}
+
+void Ignored(PPCContext&, uint8_t*) {}
+
 // the listeners keep our reference, so the page dropping its own never frees them
 bool EnsureBlock() {
     if (g_popup.block) return true;
@@ -379,8 +410,26 @@ bool EnsureBlock() {
         Write32(listener + kListenerRefs, 1);
         Write8(listener + kListenerEnabled, 1);
     }
+    uint32_t confirm = block + kBlockConfirm;
+    Write32(confirm, confirm + 4);
+    Write32(confirm + 4, dispatch::HostThunk(DefaultsConfirmed));
+    Write32(confirm + 8, dispatch::HostThunk(Ignored));
+    Write32(confirm + 12, dispatch::HostThunk(Ignored));
+    uint32_t empty = block + kBlockEmpty;
+    for (uint32_t at = 0; at < kStringBytes; at += 4) Write32(empty + at, 0);
+    Write32(empty + kWideCapacity, kInlineCapacity);
     g_popup.block = block;
     return true;
+}
+
+void AskDefaults(PPCContext& ctx) {
+    uint32_t boxes = Read32(Read32(g_native.obj + kMenuUi) + kUiMessageBoxes);
+    if (!boxes || !EnsureBlock()) return;
+    uint32_t text = View(kDefaultsQuestion);
+    uint32_t empty = g_popup.block + kBlockEmpty;
+    uint32_t listener = g_popup.block + kBlockConfirm;
+    kernel::CallGuest(ctx, kMessageBox,
+                      {boxes, 0, empty, text, kOkCancel, 0, listener, empty, empty, 0, 0, 0, 0xFFFFFFFFu});
 }
 
 uint32_t DrawStack() { return Read32(Read32(kUiManager) + kUiDraw); }
@@ -489,8 +538,11 @@ void NativeKey(PPCContext& ctx, uint32_t code) {
         if (accept) StartCapture(ctx, row);
         return;
     }
-    if (r.kind == rows::Kind::Defaults && accept) rows::Defaults(g_native.mode);
-    else if (r.kind != rows::Kind::Value || !StepValue(ctx, row, step)) return;
+    if (r.kind == rows::Kind::Defaults) {
+        if (accept) AskDefaults(ctx);
+        return;
+    }
+    if (r.kind != rows::Kind::Value || !StepValue(ctx, row, step)) return;
     RefreshValues(ctx);
     kernel::CallGuest(ctx, kSoundPlay, {Read32(kSoundSystem), kSoundChange});
 }
@@ -501,13 +553,6 @@ void Leave() {
     g_popup.row = -1;
     if (g_native.capture >= 0 && keys::Capturing()) keys::Captured();
     g_native.capture = -1;
-}
-
-// our rows are still in the list
-bool ListOk() {
-    uint32_t first = Read32(g_native.list + kListItems);
-    uint32_t last = Read32(g_native.list + kListItems + 4);
-    return Read32(g_native.list) == kVtList && last >= first && (last - first) / kListItemBytes == uint32_t(NativeCount());
 }
 
 // A picks the value, B keeps the one set; closed as 0x821BAEA0 does, where only A drops the listeners
@@ -537,6 +582,11 @@ void NativeUnbind(PPCContext& ctx) {
 
 // menu thread, each frame: a bind row's capture ends with a key, Escape, or the page going away
 void NativeTick(PPCContext& ctx, uint32_t) {
+    // a change from the panel shows at once
+    static uint32_t seen = 0;
+    uint32_t revision = SettingsRevision();
+    if (revision != seen && g_native.mode >= 0 && ListOk()) RefreshValues(ctx);
+    seen = revision;
     bool unbind = keys::TakeDelete();
     if (g_native.capture < 0) {
         if (unbind) NativeUnbind(ctx);
