@@ -72,8 +72,9 @@ constexpr uint32_t kLeftWidgets[] = {0x17C753E5u, 0xA4F0EADFu, 0x4DA638F6u, 0xCF
 constexpr uint32_t kRightWidgets[] = {0x2909DFF7u, 0xB0008E4Du, 0xDC33DFAAu, 0x0A5255EEu};
 // the menus' red paint image, RedBar.xbt
 constexpr uint32_t kRedPaintWidget = 0xA4E1836Eu;
-// the main menu's help box stays about the middle: A_Help, A_InfoText
-constexpr uint32_t kHelpWidgets[] = {0x46740CFEu, 0xAD70BF0Fu};
+// menu parts that stay about the middle: the help box (A_Help, A_InfoText), the controller map's label groups and its
+// page list
+constexpr uint32_t kStayWidgets[] = {0x46740CFEu, 0xAD70BF0Fu, 0x5DDFF3C6u, 0xC3577984u, 0x221F5C34u};
 
 uint32_t Bits(float f) {
     uint32_t b;
@@ -220,8 +221,9 @@ static float HeldAnchor(const Span& span) {
     return (gap_left < gap_right ? span.left : span.right) / page;
 }
 
-// A menu list, or a part narrower than 60% of the page that draws text, keeps the place the stretched console layout
-// gave it, at its own shape. Its span is last frame's, as a part's size is known only once it has drawn.
+// A menu control (button, slider, list), or a part narrower than 60% of the page that draws text, keeps the place the
+// stretched console layout gave it, at its own shape; parts reaching a page side are frames and stay as they are. Its
+// span is last frame's, as a part's size is known only once it has drawn.
 static void HoldInPlace(uint32_t widget) {
     if (!MenuLayout() || fcip::Scale2D() >= 1.0f) return;
     Span span;
@@ -232,10 +234,11 @@ static void HoldInPlace(uint32_t widget) {
         span = it->second.span;
     }
     uint32_t element = R32(widget + kWidgetElement);
-    bool list = element && R32(element) == SYM_UIList_vtable;
+    bool control = R32(widget) == SYM_UIWidgetFocus_vtable || (element && R32(element) == SYM_UIList_vtable);
     float width = span.right - span.left;
     bool part = span.text && width < kMenuWidth * 0.6f;
-    if (width <= 0.0f || (!list && !part)) return;
+    bool frame = span.left <= 0.5f || span.right >= kMenuWidth - 0.5f;
+    if (width <= 0.0f || frame || (!control && !part)) return;
     g_anchor = HeldAnchor(span);
     g_held = true;
 }
@@ -254,7 +257,7 @@ PPC_FUNC(GUEST(UIWidget_Draw)) {
     bool outer_held = g_held;
     if (In(name, kLeftWidgets)) g_anchor = 0.0f;
     if (In(name, kRightWidgets)) g_anchor = 1.0f;
-    if (In(name, kLeftWidgets) || In(name, kRightWidgets) || In(name, kHelpWidgets)) g_held = true;
+    if (In(name, kLeftWidgets) || In(name, kRightWidgets) || In(name, kStayWidgets)) g_held = true;
     if (!g_held) HoldInPlace(widget);
     g_paint = name == kRedPaintWidget;
     g_open.push_back({widget});
