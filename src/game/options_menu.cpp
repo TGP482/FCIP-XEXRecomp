@@ -97,8 +97,8 @@ void SetHelp(PPCContext& ctx, uint32_t self, uint32_t help_offset, uint32_t send
 }
 
 // Native pages: CONTROLLER OPTIONS (P_Controller) hosts our rows. Its list has L_Name and L_Value columns and scrolls;
-// A opens the list of a row's values (an on / off row flips) or rebinds a key, a row without a list steps on Left,
-// Right and A. A page first lists its sections, A opens one and B goes back to them.
+// Left and Right step a value, A opens the list of a row's values (an on / off row flips) or rebinds a key. A page
+// first lists its sections, A opens one and B goes back to them.
 
 constexpr uint32_t kCrcController = 0x4CCDB8BDu;         // P_Controller
 constexpr uint32_t kCrcControllerOptions = 0xA3EDB04Fu;  // LST_ControllerOptions
@@ -499,14 +499,15 @@ void OpenPopup(PPCContext& ctx, int row, const std::vector<std::string>& choices
     SetCaption(ctx, Read32(helper + kHelperTitle), "");
 }
 
-// a row with a list changes only through it, an on / off one flips on A; false when nothing changed
+// step 0 is A, which opens a row's list, flips an on / off row and steps a row without a list; false when nothing
+// changed
 bool StepValue(PPCContext& ctx, int row, int step) {
     const rows::Row& r = NativeRow(row);
     int current = 0;
-    std::vector<std::string> choices = rows::Choices(r, &current);
+    std::vector<std::string> choices = step ? std::vector<std::string>() : rows::Choices(r, &current);
     bool flip = choices.size() == 2 && choices[0] == "OFF" && choices[1] == "ON";
-    if (choices.size() > 1 && (!flip || step)) {
-        if (!step) OpenPopup(ctx, row, choices, current);
+    if (choices.size() > 1 && !flip) {
+        OpenPopup(ctx, row, choices, current);
         return false;
     }
     rows::Text(r, step ? step : 1);
