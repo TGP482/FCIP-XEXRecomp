@@ -7,10 +7,10 @@
 // The setting is the map's edge on the host, which draws every guest pixel at the render scale, so the guest side is
 // the setting over the render scale; 0 keeps the stock side, which then follows the render scale.
 //
-// Above 4096 the map outgrows guest physical memory (144 MB at 6144, 256 MB at 8192): the texture create fails, the
-// sun pass is skipped and receivers keep the last map under a new matrix. There the texture is backed at the stock
-// side and reports the chosen one; while the depth is resolved its header carries the chosen size too, as the
-// renderer sizes its copy from it.
+// Only the host reads a map, so its guest texture is never backed above the stock side: larger ones outgrow guest
+// physical memory (144 MB at 6144), and a cascade takes six. While the depth is resolved its header carries the chosen
+// size, as the renderer sizes its copy from it. A new side leaves the old surfaces in the pool, which frees unused
+// ones only when the screen size changes, so it is told the screen changed.
 //
 // Past 1x shadow distance sharper maps are drawn first, at 1x, 2x, 4x and on of the stock radius while they divide the
 // distance, each a whole run of the update into another pool surface (the pool frees its surfaces after the camera
@@ -39,7 +39,6 @@ namespace {
 constexpr uint32_t kStockSide = 1344;     // one frustum
 constexpr uint32_t kStockSideQuad = 672;  // four frustums
 constexpr uint32_t kMaxSide = 8192;
-constexpr uint32_t kMaxBacked = 4096;  // the largest guest side whose maps fit in guest memory
 constexpr uint32_t kPassWidth = 0x1C;
 constexpr uint32_t kPassHeight = 0x20;
 constexpr uint32_t kPassType = 0x10;
@@ -56,6 +55,11 @@ constexpr uint32_t kCameraOrthoWidth = 0x33C;
 constexpr uint32_t kCameraOrthoHeight = 0x340;
 // the view the sun camera follows: the shadow radius
 constexpr uint32_t kViewShadowRadius = 0x34;
+// the renderer's surface pool frees its unused surfaces when the screen width it last saw changes
+constexpr uint32_t kRendererTargets = 0x4;
+constexpr uint32_t kTargetsPool = 0x25E4;
+constexpr uint32_t kPoolScreenWidth = 0x28;
+constexpr uint32_t kNoScreen = 0xFFFFFFFF;
 
 // while the surface call binds a rescaled map: the chosen side, the side the texture is backed at, and the slot the
 // pool writes the handle to
@@ -76,6 +80,7 @@ std::atomic<uint32_t> g_far_base{0};
 std::atomic<uint32_t> g_distance{0};  // the far map's radius over the stock one, 0 without sharper maps
 std::atomic<uint32_t> g_maps{0};      // sharper maps drawn
 std::atomic<uint32_t> g_side{0};      // the sun map's guest side, as ShadowMatrix takes it
+uint32_t g_pool_side = 0;             // the sun map side the pool's surfaces were made for
 
 // a map's radius over the stock one
 uint32_t Reach(int map) { return map == kFarMap ? g_distance.load() : 1u << map; }
@@ -115,9 +120,6 @@ void SnapAlong(Vec& p, Vec axis, double texel) {
     p = {p.x - axis.x * off, p.y - axis.y * off, p.z - axis.z * off};
 }
 
-// four quad maps take the memory of one full map
-bool Fits(uint32_t side, uint32_t stock) { return uint64_t(side) * kStockSide <= uint64_t(kMaxBacked) * stock; }
-
 // a square side in registers a and b
 void Pair(PPCContext& ctx, int a, int b) {
     uint32_t w = uint32_t(ctx.r[a]);
@@ -137,14 +139,20 @@ PPC_EXTERN_FUNC(GUEST_ORIG(Shadow_Pass));
 PPC_EXTERN_FUNC(GUEST_ORIG(Shadow_Resolve));
 PPC_EXTERN_FUNC(GUEST_ORIG(ShadowMaps_Update));
 
-// depth surface create or fetch, vtable +0x1E0, r7 r8 the size
+// depth surface create or fetch, vtable +0x1E0, r4 the renderer, r7 r8 the size
 PPC_FUNC(GUEST(Shadow_Surface)) {
+    uint32_t side = fcip::SunShadowSide();
+    if (side != g_pool_side) {
+        uint32_t pool = R32(R32(uint32_t(ctx.r[4]) + kRendererTargets) + kTargetsPool);
+        if (g_pool_side) W32(pool + kPoolScreenWidth, kNoScreen);
+        g_pool_side = side;
+    }
     uint32_t stock = uint32_t(ctx.r[7]);
     Pair(ctx, 7, 8);
     uint32_t w = uint32_t(ctx.r[7]);
     if (w != stock) {
         t_side = w;
-        t_backed = Fits(w, stock) ? w : stock;
+        t_backed = std::min(w, stock);
         t_handle = uint32_t(ctx.r[3]);
     }
     GUEST_ORIG(Shadow_Surface)(ctx, base);
@@ -254,7 +262,7 @@ PPC_FUNC(GUEST(Shadow_Resolve)) {
     uint32_t w = (bits & 0x1FFF) + 1;
     uint32_t h = (bits >> 13 & 0x1FFF) + 1;
     uint32_t side = ok && w == h ? Wanted(w) : 0;
-    if (side && Fits(side, w)) side = 0;
+    if (side <= w) side = 0;
     if (side) W32(size, (bits & ~0x3FFFFFFu) | (side - 1) | (side - 1) << 13);
     GUEST_ORIG(Shadow_Resolve)(ctx, base);
     if (side) W32(size, bits);
