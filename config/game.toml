@@ -149,6 +149,9 @@ Game_Update = 0x8220D008
 LoadingScreen_Wait = 0x82156AB0
 SaveManager_NewStory = 0x8222AE98
 
+# CryAnimation, MORE: a model's animation step
+Animation_Step = 0x82461648
+
 # CrySystem, the frame clock: the millisecond clock, the timer's time source and its update
 Clock_Get = 0x823C3338
 Clock_Ms = 0x823C4828
@@ -162,6 +165,7 @@ Device_Predication = 0x32A0  # SetPredication 8273D1E8's select, tile i is 3 << 
 [data]
 # CryUI, the menus
 UICloneVisitor_vtable = 0x82079D90
+UIMatrixStack_pointer = 0x82912C30
 UITransform_vtable = 0x82079188
 UIWidgetFocus_vtable = 0x82078BC4
 UIWidgetText_vtable = 0x82079880
