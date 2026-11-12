@@ -46,7 +46,6 @@ thread_local float g_anchor = 0.5f;  // share of the spare width left of what is
 thread_local bool g_text = false;    // a glyph is drawing
 thread_local bool g_paint = false;   // the red paint is drawing
 thread_local bool g_held = false;    // a menu part above has its place
-std::atomic<int64_t> g_world_ms{-1000};  // when the 3D world last drew
 
 // a widget's quads in the layout's virtual x, gathered while it draws, and its glyphs alone
 struct Span {
@@ -166,7 +165,6 @@ void Anchor2D(float side) { g_anchor = side; }
 
 void AspectTick() {
     static std::atomic<float> applied{0.0f};
-    g_world_ms = NowMs();
     uint32_t renderer = g_renderer;
     float aspect = DisplayAspect();
     if (renderer && applied.exchange(aspect) != aspect) WriteRenderer(aspect, renderer);
@@ -280,25 +278,16 @@ PPC_FUNC(GUEST(Font_Draw)) {
     g_text = false;
 }
 
-// where a page edge lands: the screen edge over the 3D world, else no wider than 16:9, as the menu movies and loading
-// art are
-static float EdgeScale() {
-    bool world = NowMs() - g_world_ms < 100;
-    return world ? 1.0f : std::min(1.0f, (16.0f / 9.0f) / fcip::DisplayAspect());
-}
-
 // a corner's x scaled by k with pos the share of the spare width before it; when narrowed, a corner at or past a page
 // edge goes with that edge, so the paint, panels and lines stretch out while text and logos keep their shape
 static float Fit(float x, float k, float pos, float width) {
     bool edge = !g_text && !g_paint && k < 1.0f && (x <= 1.5f || x >= width - 2.5f);
-    if (edge) {
-        k = EdgeScale();
-        pos = 0.5f;
-    }
+    if (edge) return x;
     return (x + 0.5f) * k + pos * (1.0f - k) * width - 0.5f;
 }
 
-// the red paint keeps its shape, held against the page side it runs off
+// the red paint keeps its shape at the share of the spare width it had, so a swipe moves smoothly and paint running
+// off a side stays against it
 static float PaintSide(const uint32_t (&x)[4], float width) {
     float lo = Float(x[0]);
     float hi = lo;
@@ -306,9 +295,9 @@ static float PaintSide(const uint32_t (&x)[4], float width) {
         lo = std::min(lo, Float(v));
         hi = std::max(hi, Float(v));
     }
-    if (lo <= 1.5f && hi < width - 2.5f) return 0.0f;
-    if (hi >= width - 2.5f && lo > 1.5f) return 1.0f;
-    return g_anchor;
+    float spare = width - (hi - lo);
+    if (spare < 1.0f) return 0.5f;
+    return std::clamp((lo + 0.5f) / spare, 0.0f, 1.0f);
 }
 
 // the quad's x, as the game placed it, into the spans of the widgets drawing it
