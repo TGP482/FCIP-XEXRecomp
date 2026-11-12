@@ -13,7 +13,10 @@ echo.
 set "PF86=%ProgramFiles(x86)%"
 set "VSINST=%PF86%\Microsoft Visual Studio\Installer"
 set "VSWHERE=%VSINST%\vswhere.exe"
-set "OUT=%CD%\out\build\release"
+rem "build.bat debug" builds with the full logs
+set "PRESET=release"
+if /i "%~1"=="debug" set "PRESET=debug"
+set "OUT=%CD%\out\build\%PRESET%"
 
 if not exist assets\%GAME_XEX% goto :nogame
 
@@ -43,12 +46,12 @@ for /f "tokens=*" %%v in ('clang++ --version ^| findstr /i version') do echo    
 
 rem symbols
 echo [2/3] XDK symbols
-cmake --preset release >nul || goto :fail
+cmake --preset %PRESET% >nul || goto :fail
 findstr /b /l /c:"[symbols]" config\game.toml >nul 2>nul && echo       config\game.toml already written && goto :game
-cmake --build out\build\release --target xex_symbols >nul || goto :fail
+cmake --build "%OUT%" --target xex_symbols >nul || goto :fail
 rem the configure step wrote where the SDK is
-if not exist out\build\release\sdk_dir.txt echo       out\build\release\sdk_dir.txt was not written, update the SDK. && goto :fail
-set /p SDK=<out\build\release\sdk_dir.txt
+if not exist "%OUT%\sdk_dir.txt" echo       out\build\%PRESET%\sdk_dir.txt was not written, update the SDK. && goto :fail
+set /p SDK=<"%OUT%\sdk_dir.txt"
 if not exist config mkdir config
 "%OUT%\xex_symbols.exe" assets\%GAME_XEX% "%SDK%\xdk" --library %GAME_EXE%.dll --out config\game.toml || goto :fail
 "%OUT%\xex_symbols.exe" assets\ige.xex "%SDK%\xdk" --library FCIPEditor.dll --name editor --out config\editor.toml || goto :fail
@@ -57,11 +60,11 @@ rem game
 :game
 echo [3/3] Game code
 echo       first build recompiles %GAME_XEX% and ige.xex, expect 30 to 90 minutes ...
-cmake --build out\build\release || goto :fail
+cmake --build "%OUT%" || goto :fail
 
 echo.
 echo   %GAME_TITLE% built.
-echo   out\build\release\%GAME_EXE%.exe
+echo   out\build\%PRESET%\%GAME_EXE%.exe
 echo.
 if defined CI exit /b 0
 choice /c YN /n /m "  Play now? [Y/N] "

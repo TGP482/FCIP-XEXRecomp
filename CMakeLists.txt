@@ -1,7 +1,7 @@
 # Far Cry Instincts Predator (Xbox 360), statically recompiled
 
 cmake_minimum_required(VERSION 3.25)
-project(fcip LANGUAGES C CXX)
+project(fcip LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,3 +38,20 @@ add_xex_image(FCIP default.xex game.toml ${PARTITIONS_game} game)
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/assets/ige.xex)
     add_xex_image(FCIPEditor ige.xex editor.toml ${PARTITIONS_editor} editor)
 endif()
+
+# build_info.h for the version resource, rewritten only when the commit changes
+find_package(Git QUIET)
+set(BUILD_INFO ${CMAKE_CURRENT_BINARY_DIR}/build_info.h)
+add_custom_target(build_info
+    COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${BUILD_INFO} -DGIT=${GIT_EXECUTABLE}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/build_info.cmake
+    BYPRODUCTS ${BUILD_INFO}
+    VERBATIM)
+set_source_files_properties(src/common/version.rc PROPERTIES
+    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_BINARY_DIR} OBJECT_DEPENDS ${BUILD_INFO})
+foreach(target FCIP FCIPEditor)
+    if(TARGET ${target})
+        target_sources(${target} PRIVATE src/common/version.rc)
+        add_dependencies(${target} build_info)
+    endif()
+endforeach()
