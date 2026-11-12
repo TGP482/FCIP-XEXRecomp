@@ -149,6 +149,12 @@ Game_Update = 0x8220D008
 LoadingScreen_Wait = 0x82156AB0
 SaveManager_NewStory = 0x8222AE98
 
+# CrySystem, the frame clock: the millisecond clock, the timer's time source and its update
+Clock_Get = 0x823C3338
+Clock_Ms = 0x823C4828
+Timer_Now = 0x823177E8
+Timer_Update = 0x823175F0
+
 # Direct3D device fields the SDK does not know yet
 [layout]
 Device_Predication = 0x32A0  # SetPredication 8273D1E8's select, tile i is 3 << 2i
@@ -190,6 +196,9 @@ Renderer_pointer = 0x829127E8
 GodMode_cvar = 0x8291231C
 SaveManager_pointer = 0x8293A79C
 UserManager_pointer = 0x8293A808
+
+# CrySystem, the frame clock: the timer
+Timer = 0x828BBE50
 
 # instruction hooks, defined in src/game/draw_distance.cpp
 
@@ -237,3 +246,24 @@ call = "ShadowRadiusLight"
 at = 0x825FAFA8
 call = "ShadowRadiusRange"
 
+
+# instruction hooks, defined in src/game/frame_time.cpp
+[[hook]]  # f13 = frame time in milliseconds, the menu input's truncation
+at = 0x82130818
+call = "WholeFrameMsF13"
+
+[[hook]]  # f10 = the same for each pad's input
+at = 0x8213084C
+call = "WholeFrameMsF10"
+
+[[hook]]  # f13 = the same for the menu manager's first page update
+at = 0x82130D8C
+call = "WholeFrameMsF13"
+
+[[hook]]  # f10 = the same for its second page update
+at = 0x82130DFC
+call = "WholeFrameMsF10"
+
+[[hook]]  # f10 = the same for the UI update at the end of sub_822248F8
+at = 0x822250F8
+call = "WholeFrameMsF10"
