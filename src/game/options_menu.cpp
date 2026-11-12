@@ -1,5 +1,6 @@
 // default.xex: the settings entries in the User page and the pause menu's OPTIONS, the pages they open inside
 // CONTROLLER OPTIONS, EXIT on the main menu and the main menu watermark
+#include <algorithm>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -96,7 +97,7 @@ void SetHelp(PPCContext& ctx, uint32_t self, uint32_t help_offset, uint32_t send
 
 // Native pages: CONTROLLER OPTIONS (P_Controller) hosts our rows. Its list has L_Name and L_Value columns and scrolls;
 // A opens the list of a row's values (an on / off row flips) or rebinds a key, a row without a list steps on Left,
-// Right and A.
+// Right and A. RECOMP SETTINGS first lists its sections, A opens one and B goes back to them.
 
 constexpr uint32_t kCrcController = 0x4CCDB8BDu;         // P_Controller
 constexpr uint32_t kCrcControllerOptions = 0xA3EDB04Fu;  // LST_ControllerOptions
@@ -141,6 +142,8 @@ struct Native {
     uint32_t widget = 0;
     uint32_t list = 0;
     int capture = -1;  // the row waiting for a key
+    int section = -1;  // RECOMP SETTINGS: the heading shown, -1 for the list of them
+    std::vector<const rows::Row*> rows;  // per list row
 };
 
 constexpr const char* kCaptureHelp = "Press the key to bind, Escape cancels";
@@ -226,8 +229,31 @@ Saved g_saved[4];
 int g_pending = -1;
 Popup g_popup;
 
-const rows::Row& NativeRow(int row) { return rows::Page(g_native.mode)[size_t(row)]; }
-int NativeCount() { return int(rows::Page(g_native.mode).size()); }
+const rows::Row& NativeRow(int row) { return *g_native.rows[size_t(row)]; }
+int NativeCount() { return int(g_native.rows.size()); }
+
+// RECOMP SETTINGS lists its headings and RESTORE DEFAULTS
+bool ListingSections() { return g_native.mode == kSettingsPage && g_native.section < 0; }
+
+// a section shows the rows under its heading, other pages every row with the headings between them
+void ListRows() {
+    std::span<const rows::Row> page = rows::Page(g_native.mode);
+    g_native.rows.clear();
+    if (g_native.section >= 0) {
+        for (size_t i = size_t(g_native.section) + 1; i < page.size() && page[i].kind == rows::Kind::Value; i++) {
+            g_native.rows.push_back(&page[i]);
+        }
+        return;
+    }
+    bool listing = ListingSections();
+    for (const rows::Row& r : page) {
+        if (!listing || r.kind == rows::Kind::Heading || r.kind == rows::Kind::Defaults) g_native.rows.push_back(&r);
+    }
+}
+
+// a heading between rows, which the keys skip
+bool Divider(int row) { return NativeRow(row).kind == rows::Kind::Heading && !ListingSections(); }
+int FirstRow() { return NativeCount() > 1 && Divider(0) ? 1 : 0; }
 
 void SetCell(PPCContext& ctx, int row, int column, const char* text) {
     if (uint32_t view = View(text)) kernel::CallGuest(ctx, kListSetCell, {g_native.list, uint32_t(row), uint32_t(column), view});
@@ -256,7 +282,9 @@ void NativeHelp(PPCContext& ctx) {
 
 void NativeTitle(PPCContext& ctx) {
     uint32_t title = FindWidget(g_native.page, kCrcTitle);
-    SetCaption(ctx, Read32(title + kWidgetElement), CaptionFor(g_native.mode ? kCrcMouseKeyboard : kCrcRecompSettings));
+    const char* caption = CaptionFor(g_native.mode ? kCrcMouseKeyboard : kCrcRecompSettings);
+    if (g_native.section >= 0) caption = rows::Page(g_native.mode)[size_t(g_native.section)].label;
+    SetCaption(ctx, Read32(title + kWidgetElement), caption);
 }
 
 // puts the page back the way the layout had it; the stock open rebuilds its own rows
@@ -295,18 +323,18 @@ Saved& SaveControls(uint32_t page, uint32_t widget, uint32_t list) {
     return saved;
 }
 
-void FillRows(PPCContext& ctx, uint32_t list) {
+void FillRows(PPCContext& ctx, uint32_t list, int select) {
     kernel::CallGuest(ctx, kListClear, {list});
     for (int i = 0; i < NativeCount(); i++) {
         kernel::CallGuest(ctx, kListAddRow, {list, Text(""), 0});
         SetCell(ctx, i, 0, NativeRow(i).label);
-        if (NativeRow(i).kind != rows::Kind::Heading) continue;
+        if (!Divider(i)) continue;
         Write8(Read32(list + kListItems) + uint32_t(i) * kListItemBytes + kItemSkip, 1);
         kernel::CallGuest(ctx, kListUpdateRow, {list, uint32_t(i)});
     }
     RefreshValues(ctx);
     kernel::CallGuest(ctx, kListRefresh, {list});
-    kernel::CallGuest(ctx, kListSelect, {list, 1, 1, 1});  // row 0 is a heading
+    kernel::CallGuest(ctx, kListSelect, {list, uint32_t(select), 1, 1});
 }
 
 // after the stock open: our rows replace the stock options
@@ -318,7 +346,8 @@ void Customise(PPCContext& ctx, uint32_t obj, int mode) {
         LOGE("options menu: controller page %08X not as expected, stock page kept", page);
         return;
     }
-    g_native = {mode, obj, page, widget, list, -1};
+    g_native = {mode, obj, page, widget, list};
+    ListRows();
     Saved& saved = SaveControls(page, widget, list);
     // Left and Right step values, so the list keeps the focus
     for (uint32_t i = 0; i < 4; i++) Write32(widget + kWidgetUp + i * 4, 0);
@@ -327,7 +356,20 @@ void Customise(PPCContext& ctx, uint32_t obj, int mode) {
         Write8(saved.map + kWidgetEnabled, saved.map_enabled & ~0x40);
     }
     Write8(list + kListRows, kNativeRows);
-    FillRows(ctx, list);
+    FillRows(ctx, list, FirstRow());
+    NativeTitle(ctx);
+    NativeHelp(ctx);
+}
+
+// a section's rows, or with -1 the sections again with the one left selected
+void ShowSection(PPCContext& ctx, int section) {
+    std::span<const rows::Row> page = rows::Page(g_native.mode);
+    const rows::Row* left = g_native.section >= 0 ? &page[size_t(g_native.section)] : nullptr;
+    g_native.section = section;
+    ListRows();
+    auto it = std::find(g_native.rows.begin(), g_native.rows.end(), left);
+    int select = it == g_native.rows.end() ? FirstRow() : int(it - g_native.rows.begin());
+    FillRows(ctx, g_native.list, select);
     NativeTitle(ctx);
     NativeHelp(ctx);
 }
@@ -448,6 +490,11 @@ void NativeKey(PPCContext& ctx, uint32_t code) {
     if (code == kKeyLeft) step = -1;
     if (code == kKeyRight) step = 1;
     if (!accept && !step) return;
+    // only the list of sections can select a heading
+    if (r.kind == rows::Kind::Heading) {
+        if (accept) ShowSection(ctx, int(&r - rows::Page(g_native.mode).data()));
+        return;
+    }
     if (r.kind == rows::Kind::Bind) {
         if (accept) StartCapture(ctx, row);
         return;
@@ -460,6 +507,7 @@ void NativeKey(PPCContext& ctx, uint32_t code) {
 
 void Leave() {
     g_native.mode = -1;
+    g_native.section = -1;
     g_popup.row = -1;
     if (g_native.capture >= 0 && keys::Capturing()) keys::Captured();
     g_native.capture = -1;
@@ -664,6 +712,13 @@ PPC_FUNC(sub_821D6200) {
 
 // CONTROLLER OPTIONS back: the page is put back once it is closed, so nothing flickers
 PPC_FUNC(sub_821D65F0) {
+    // a section goes back to the list of them
+    bool section = g_native.mode >= 0 && g_native.section >= 0;
+    if (section && uint32_t(ctx.r[3]) == g_native.obj && ListOk()) {
+        ShowSection(ctx, -1);
+        ctx.r[3] = 0;
+        return;
+    }
     bool ours = g_native.mode >= 0;
     Leave();
     __imp__sub_821D65F0(ctx, base);
