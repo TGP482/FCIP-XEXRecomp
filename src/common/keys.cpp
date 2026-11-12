@@ -233,6 +233,8 @@ std::string KeyName(uint8_t vk) {
 }
 
 std::string KeyLabel(uint8_t vk) {
+    // shown short, the settings file keeps ESCAPE
+    if (vk == VK_ESCAPE) return "ESC";
     UINT scan = ScanOf(vk);
     UINT live = scan ? MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, Layout()) : 0;
     if (!live || live == vk) return KeyName(vk);

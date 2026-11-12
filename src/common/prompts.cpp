@@ -57,15 +57,21 @@ constexpr uint32_t kSlots = 4;  // measure runs inside draw
 
 uint32_t TextData(uint32_t str) { return R32(str + kStringCapacity) >= 8 ? R32(str + kStringData) : str + kStringData; }
 
+// Escape reads ESC, as in the other recomps
+std::string Label(uint8_t vk) {
+    std::string key = K::KeyLabel(vk);
+    return key == "ESCAPE" ? "ESC" : key;
+}
+
 bool IsMouse(uint8_t vk) { return vk == 0x01 || vk == 0x02 || vk == 0x04 || vk == 0x05 || vk == 0x06; }
 
 std::string KeyText(const Bind& bind, bool& mouse) {
     if (bind.first < 0) return {};
     uint8_t vk = K::Key(bind.first, 0);
-    std::string key = K::KeyLabel(vk);
+    std::string key = Label(vk);
     mouse = IsMouse(vk);
     if (bind.second >= 0) {
-        std::string other = K::KeyLabel(K::Key(bind.second, 0));
+        std::string other = Label(K::Key(bind.second, 0));
         if (key.empty() || other.empty()) return {};
         key += "/" + other;
     }
@@ -77,7 +83,7 @@ std::string MenuKeyText(int index) {
     uint8_t vk = 0;
     if (index == kGlyphA || (index == kGlyphStart && fcip::OnTitle())) vk = kEnter;
     if (index == kGlyphB) vk = K::Key(K::kPause, 0);
-    std::string key = vk && fcip::InMenu() ? K::KeyLabel(vk) : std::string();
+    std::string key = vk && fcip::InMenu() ? Label(vk) : std::string();
     return key.empty() ? key : "(" + key + ")";
 }
 
@@ -96,6 +102,19 @@ bool Is(const std::u16string& s, size_t begin, size_t end, std::string_view word
     for (size_t i = 0; i < word.size(); i++)
         if ((s[begin + i] | 0x20) != word[i]) return false;
     return true;
+}
+
+// the title's PRESS START names the key that starts
+bool SwapStartWord(std::u16string& s) {
+    std::string key = fcip::OnTitle() ? MenuKeyText(kGlyphStart) : std::string();
+    constexpr size_t kLength = 5;
+    for (size_t i = 0; !key.empty() && i + kLength <= s.size(); i++) {
+        bool alone = (i == 0 || !IsLetter(s[i - 1])) && (i + kLength == s.size() || !IsLetter(s[i + kLength]));
+        if (!alone || !Is(s, i, i + kLength, "start")) continue;
+        s.replace(i, kLength, std::u16string(key.begin(), key.end()));
+        return true;
+    }
+    return false;
 }
 
 // "Pull and Hold" before a key becomes "Click and Hold" or "Press and Hold", case kept
@@ -223,6 +242,7 @@ std::u16string WithKeyText(const std::u16string& text) {
             i += kButton.size();
         }
     }
+    if (SwapStartWord(out)) swapped = true;
     return swapped ? out : std::u16string();
 }
 
