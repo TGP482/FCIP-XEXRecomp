@@ -103,6 +103,8 @@ std::atomic<bool> g_reload_only{false};
 std::atomic<bool> g_interact_only{false};
 std::atomic<bool> g_pad_y{false};  // the pad's own Y, before the keys merge in
 std::atomic<int64_t> g_start_until{0};  // steady clock ns START stays held to
+std::atomic<uint64_t> g_menu_ms{0};  // the last frame the menus took input
+std::atomic<bool> g_title{false};
 
 uint64_t NowMs() {
     auto since = std::chrono::steady_clock::now().time_since_epoch();
@@ -149,6 +151,31 @@ constexpr ButtonBind kButtonBinds[] = {
     {K::kReload, input::kX},          {K::kFeralRun, input::kY},
 };
 
+// the pause key backs out of a menu as B; it keeps the role it went down with, so closing a menu never reopens it
+bool PauseBacks(bool menu) {
+    static bool back = false;
+    bool held = Held(K::kPause, true);
+    if (!held) back = menu;
+    return held && back;
+}
+
+// in the game's menus Enter is A, Backspace B, the move and look keys the d-pad; the other binds act as in play
+input::Pad MenuKeys(input::Pad kb) {
+    constexpr int kUp[] = {K::kMoveForward, K::kLookUp};
+    constexpr int kDown[] = {K::kMoveBack, K::kLookDown};
+    constexpr int kLeft[] = {K::kStrafeLeft, K::kLookLeft};
+    constexpr int kRight[] = {K::kStrafeRight, K::kLookRight};
+    auto any = [](const int (&actions)[2]) { return Held(actions[0]) || Held(actions[1]); };
+    kb.lx = kb.ly = kb.rx = kb.ry = 0;
+    if (K::KeyHeld(VK_RETURN)) kb.buttons |= input::kA;
+    if (K::KeyHeld(VK_BACK)) kb.buttons |= input::kB;
+    if (any(kUp)) kb.buttons |= input::kDpadUp;
+    if (any(kDown)) kb.buttons |= input::kDpadDown;
+    if (any(kLeft)) kb.buttons |= input::kDpadLeft;
+    if (any(kRight)) kb.buttons |= input::kDpadRight;
+    return kb;
+}
+
 input::Pad Keyboard(const input::Pad& pad) {
     input::Pad kb;
     for (const ButtonBind& b : kButtonBinds)
@@ -165,10 +192,16 @@ input::Pad Keyboard(const input::Pad& pad) {
     kb.ly = int16_t(Axis(K::kMoveForward, K::kMoveBack));
     kb.rx = int16_t(Axis(K::kLookRight, K::kLookLeft));
     kb.ry = int16_t(Axis(K::kLookUp, K::kLookDown));
-    // the menu scan takes START only with no other key held and both sticks under 0.5, a stick latches until it
-    // reads 0; so from the moment the pause key goes down it is the only key, and it lands a poll later
-    if (Held(K::kPause, true)) kb = {.buttons = uint16_t(kb.buttons & input::kStart)};
-    return kb;
+    bool menu = fcip::InMenu();
+    if (PauseBacks(menu)) {
+        kb.buttons &= ~input::kStart;
+        if (menu) kb.buttons |= input::kB;
+    } else if (Held(K::kPause, true)) {
+        // the menu scan takes START only with no other key held and both sticks under 0.5, a stick latches until
+        // it reads 0; so from the moment the pause key goes down it is the only key, and it lands a poll later
+        return {.buttons = uint16_t(kb.buttons & input::kStart)};
+    }
+    return menu ? MenuKeys(kb) : kb;
 }
 
 // Gameplay
@@ -374,6 +407,18 @@ bool MouseLookActive() {
     uint64_t stamp = g_gameplay_ms;
     return stamp && NowMs() - stamp <= kGameplayTimeoutMs;
 }
+
+void NoteMenu(bool menu, bool title) {
+    g_menu_ms = menu ? NowMs() : 0;
+    g_title = title;
+}
+
+// play keeps its keys through the moment a menu shows over it, and from when the menus stop updating
+bool InMenu() {
+    uint64_t stamp = g_menu_ms;
+    return stamp && NowMs() - stamp <= kGameplayTimeoutMs && !MouseLookActive();
+}
+bool OnTitle() { return g_title; }
 
 void PressStart() {
     auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);

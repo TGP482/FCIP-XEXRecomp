@@ -97,7 +97,7 @@ void SetHelp(PPCContext& ctx, uint32_t self, uint32_t help_offset, uint32_t send
 
 // Native pages: CONTROLLER OPTIONS (P_Controller) hosts our rows. Its list has L_Name and L_Value columns and scrolls;
 // A opens the list of a row's values (an on / off row flips) or rebinds a key, a row without a list steps on Left,
-// Right and A. RECOMP SETTINGS first lists its sections, A opens one and B goes back to them.
+// Right and A. A page first lists its sections, A opens one and B goes back to them.
 
 constexpr uint32_t kCrcController = 0x4CCDB8BDu;         // P_Controller
 constexpr uint32_t kCrcControllerOptions = 0xA3EDB04Fu;  // LST_ControllerOptions
@@ -108,7 +108,6 @@ constexpr uint32_t kControllerHelp = 0xACu;              // A_Help element
 constexpr uint32_t kVtList = 0x82078A40u;
 constexpr uint32_t kListItems = 0x88u;
 constexpr uint32_t kListItemBytes = 0x40u;
-constexpr uint32_t kItemSkip = 0x3Eu;      // the keys step over it
 constexpr uint32_t kListRows = 0xC2u;      // visible rows, 5 in the layout
 constexpr uint32_t kListSelected = 0xC4u;  // s16
 // 22 unit rows from y 125 end at 279, clear of the help frame at 299 once CONTROLLER SETUP is hidden
@@ -119,7 +118,6 @@ constexpr uint32_t kListSetCell = 0x8246F6C8u;  // (list, row, column, const std
 constexpr uint32_t kListRefresh = 0x8246FAB8u;  // (list)
 constexpr uint32_t kListClear = 0x82471F18u;    // (list), keeps the columns
 constexpr uint32_t kListAddRow = 0x82471CA0u;   // (list, text, 0)
-constexpr uint32_t kListUpdateRow = 0x82472248u;  // (list, row)
 constexpr uint32_t kListSelect = 0x82471970u;   // (list, row, 1, 1)
 constexpr uint32_t kListAddColumn = 0x8246F500u;  // (list, name crc)
 constexpr uint32_t kTextSetString = 0x821557A8u;  // (text element, UTF-16)
@@ -142,7 +140,7 @@ struct Native {
     uint32_t widget = 0;
     uint32_t list = 0;
     int capture = -1;  // the row waiting for a key
-    int section = -1;  // RECOMP SETTINGS: the heading shown, -1 for the list of them
+    int section = -1;  // the heading shown, -1 for the list of them
     std::vector<const rows::Row*> rows;  // per list row
 };
 
@@ -232,28 +230,23 @@ Popup g_popup;
 const rows::Row& NativeRow(int row) { return *g_native.rows[size_t(row)]; }
 int NativeCount() { return int(g_native.rows.size()); }
 
-// RECOMP SETTINGS lists its headings and RESTORE DEFAULTS
-bool ListingSections() { return g_native.mode == kSettingsPage && g_native.section < 0; }
+// a heading or RESTORE DEFAULTS, where a section ends
+bool SectionEnd(const rows::Row& r) { return r.kind == rows::Kind::Heading || r.kind == rows::Kind::Defaults; }
 
-// a section shows the rows under its heading, other pages every row with the headings between them
+// the rows under the section's heading, or the headings and RESTORE DEFAULTS
 void ListRows() {
     std::span<const rows::Row> page = rows::Page(g_native.mode);
     g_native.rows.clear();
-    if (g_native.section >= 0) {
-        for (size_t i = size_t(g_native.section) + 1; i < page.size() && page[i].kind == rows::Kind::Value; i++) {
-            g_native.rows.push_back(&page[i]);
+    if (g_native.section < 0) {
+        for (const rows::Row& r : page) {
+            if (SectionEnd(r)) g_native.rows.push_back(&r);
         }
         return;
     }
-    bool listing = ListingSections();
-    for (const rows::Row& r : page) {
-        if (!listing || r.kind == rows::Kind::Heading || r.kind == rows::Kind::Defaults) g_native.rows.push_back(&r);
+    for (size_t i = size_t(g_native.section) + 1; i < page.size() && !SectionEnd(page[i]); i++) {
+        g_native.rows.push_back(&page[i]);
     }
 }
-
-// a heading between rows, which the keys skip
-bool Divider(int row) { return NativeRow(row).kind == rows::Kind::Heading && !ListingSections(); }
-int FirstRow() { return NativeCount() > 1 && Divider(0) ? 1 : 0; }
 
 void SetCell(PPCContext& ctx, int row, int column, const char* text) {
     if (uint32_t view = View(text)) kernel::CallGuest(ctx, kListSetCell, {g_native.list, uint32_t(row), uint32_t(column), view});
@@ -328,9 +321,6 @@ void FillRows(PPCContext& ctx, uint32_t list, int select) {
     for (int i = 0; i < NativeCount(); i++) {
         kernel::CallGuest(ctx, kListAddRow, {list, Text(""), 0});
         SetCell(ctx, i, 0, NativeRow(i).label);
-        if (!Divider(i)) continue;
-        Write8(Read32(list + kListItems) + uint32_t(i) * kListItemBytes + kItemSkip, 1);
-        kernel::CallGuest(ctx, kListUpdateRow, {list, uint32_t(i)});
     }
     RefreshValues(ctx);
     kernel::CallGuest(ctx, kListRefresh, {list});
@@ -356,7 +346,7 @@ void Customise(PPCContext& ctx, uint32_t obj, int mode) {
         Write8(saved.map + kWidgetEnabled, saved.map_enabled & ~0x40);
     }
     Write8(list + kListRows, kNativeRows);
-    FillRows(ctx, list, FirstRow());
+    FillRows(ctx, list, 0);
     NativeTitle(ctx);
     NativeHelp(ctx);
 }
@@ -368,7 +358,7 @@ void ShowSection(PPCContext& ctx, int section) {
     g_native.section = section;
     ListRows();
     auto it = std::find(g_native.rows.begin(), g_native.rows.end(), left);
-    int select = it == g_native.rows.end() ? FirstRow() : int(it - g_native.rows.begin());
+    int select = it == g_native.rows.end() ? 0 : int(it - g_native.rows.begin());
     FillRows(ctx, g_native.list, select);
     NativeTitle(ctx);
     NativeHelp(ctx);

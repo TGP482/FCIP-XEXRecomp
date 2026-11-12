@@ -200,7 +200,7 @@ const std::vector<Row>& DebugRows() {
 const std::vector<Row>& KeyboardRows() {
     static const std::vector<Row> list = [] {
         std::vector<Row> out = {
-            {Kind::Heading, -1, "MOUSE", nullptr},
+            {Kind::Heading, -1, "MOUSE", "Mouse sensitivity, inversion and hold or toggle"},
             {Kind::Value, kSensitivityX, "HORIZONTAL SENSITIVITY", "Adjusts horizontal mouse look sensitivity"},
             {Kind::Value, kSensitivityY, "VERTICAL SENSITIVITY", "Adjusts vertical mouse look sensitivity"},
             {Kind::Value, kAimSensitivityX, "AIM HORIZONTAL SENSITIVITY",
@@ -211,7 +211,7 @@ const std::vector<Row>& KeyboardRows() {
             {Kind::Value, kInvertY, "INVERT Y-AXIS", "Inverts the vertical mouse look axis"},
             {Kind::Value, kHoldAim, "HOLD TO AIM", "Aim only while the aim key is held instead of toggling"},
             {Kind::Value, kHoldSprint, "HOLD TO SPRINT", "Feral run only while the feral run key is held instead of toggling"},
-            {Kind::Heading, -1, "KEYBOARD", nullptr},
+            {Kind::Heading, -1, "KEYBOARD", "Key bindings"},
         };
         for (int i = 0; i < keys::kActionCount; i++) {
             out.push_back({Kind::Bind, i, keys::Label(i), "Accept rebinds the key, Delete unbinds it"});

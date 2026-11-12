@@ -254,6 +254,8 @@ uint8_t PositionKey(uintptr_t vk) {
 
 bool Held(int action, bool fresh) { return Usable(Key(action, 0), fresh) || Usable(Key(action, 1), fresh); }
 
+bool KeyHeld(uint8_t vk) { return Usable(vk, true); }
+
 bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp) {
     switch (msg) {
         case WM_KEYDOWN:

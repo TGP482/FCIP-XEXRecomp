@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 
+#include "common/input.h"
 #include "common/keys.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
@@ -18,7 +19,11 @@ namespace {
 
 // the 31 pad glyphs, u16 each, in token order
 constexpr int kGlyphCount = 31;
+constexpr int kGlyphA = 0;
+constexpr int kGlyphB = 1;
 constexpr int kGlyphX = 2;
+constexpr int kGlyphStart = 6;
+constexpr uint8_t kEnter = 0x0D;  // VK_RETURN
 
 struct Bind {
     int first;
@@ -64,6 +69,15 @@ std::string KeyText(const Bind& bind, bool& mouse) {
         if (key.empty() || other.empty()) return {};
         key += "/" + other;
     }
+    return key.empty() ? key : "(" + key + ")";
+}
+
+// the menus take Enter as A and the pause key as B
+std::string MenuKeyText(int index) {
+    uint8_t vk = 0;
+    if (index == kGlyphA || (index == kGlyphStart && fcip::OnTitle())) vk = kEnter;
+    if (index == kGlyphB) vk = K::Key(K::kPause, 0);
+    std::string key = vk && fcip::InMenu() ? K::KeyLabel(vk) : std::string();
     return key.empty() ? key : "(" + key + ")";
 }
 
@@ -192,9 +206,9 @@ std::u16string WithKeyText(const std::u16string& text) {
     for (size_t i = 0; i < text.size(); i++) {
         int index = GlyphIndex(text[i]);
         bool mouse = false;
-        std::string key;
-        if (index == kGlyphX && MentionsReload(text)) key = KeyText({K::kReload, -1}, mouse);
-        else if (index >= 0) key = KeyText(kBinds[index], mouse);
+        std::string key = index >= 0 ? MenuKeyText(index) : std::string();
+        if (key.empty() && index == kGlyphX && MentionsReload(text)) key = KeyText({K::kReload, -1}, mouse);
+        else if (key.empty() && index >= 0) key = KeyText(kBinds[index], mouse);
         if (key.empty()) {
             out.push_back(text[i]);
             continue;

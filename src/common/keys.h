@@ -31,6 +31,7 @@ uint8_t PositionKey(uintptr_t vk);  // a key the window was sent, as the key bin
 // guest threads: the key is held and was not started while the pad was in use or the panel was open; a key
 // pressed since the last poll counts only when fresh is set
 bool Held(int action, bool fresh = false);
+bool KeyHeld(uint8_t vk);  // a key itself, bound or not
 
 // window thread: every message after the panel's; true takes it
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);

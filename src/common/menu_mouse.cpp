@@ -42,6 +42,7 @@ constexpr uint32_t kPageFirst = 0x08u;
 constexpr uint32_t kPageLast = 0x0Cu;
 constexpr uint32_t kPageDrawn = 0x1Eu;
 constexpr uint32_t kPageFocus = 0x20u;
+constexpr uint32_t kWidgetName = 0x04u;     // crc32 of the layout's name
 constexpr uint32_t kWidgetElement = 0x08u;
 constexpr uint32_t kWidgetVisible = 0x18u;  // bit 0x80
 constexpr uint32_t kWidgetState = 0x4Cu;    // bit 0x40 enabled
@@ -67,6 +68,7 @@ constexpr uint32_t kKeyA = 0x2Fu;
 constexpr uint32_t kKeyB = 0x30u;
 constexpr uint32_t kKeyUp = 0x26u;
 constexpr uint32_t kKeyDown = 0x28u;
+constexpr uint32_t kCrcStart = 0x2BBA8C9Au;  // B_Start, PRESS START on the title
 
 constexpr uint32_t kImageLow = 0x82000000u;
 constexpr uint32_t kImageHigh = 0x82A00000u;
@@ -327,7 +329,9 @@ void Pointer(Guest& guest, uint32_t page, const Input& in) {
     if (in.left_up) Release(guest, page, hit, element, row);
 }
 
-void Update(PPCContext& ctx, uint32_t mgr) {
+bool OnStart(uint32_t page) { return page && Read32(Read32(page + kPageFocus) + kWidgetName) == kCrcStart; }
+
+void Update(Guest& guest, uint32_t page) {
     Input in = TakeInput();
     // Steam turns the pad into cursor motion and clicks, the pad already drives the menu
     if (fcip::MenuOpen() || fcip::MouseLookActive() || fcip::keys::PadRecent() || fcip::keys::Capturing() ||
@@ -337,10 +341,14 @@ void Update(PPCContext& ctx, uint32_t mgr) {
     }
     if (!in.moved && !in.left_down && !in.left_up && !in.right_up && !in.wheel) return;
     fcip::keys::NoteKbm();
-    Guest guest(ctx);
-    uint32_t page = InputPage(guest, mgr);
     if (!page) {
         g_press_widget = 0;
+        return;
+    }
+    // PRESS START takes a click anywhere
+    if (in.left_up && OnStart(page)) {
+        g_press_widget = 0;
+        Press(guest, page, kKeyA);
         return;
     }
     Pointer(guest, page, in);
@@ -400,5 +408,8 @@ PPC_FUNC(GUEST(MenuManager_UpdateInput)) {
     uint32_t mgr = uint32_t(ctx.r[3]);
     GUEST_ORIG(MenuManager_UpdateInput)(ctx, base);
     if (fcip::g_menu_tick) fcip::g_menu_tick(ctx, mgr);
-    Update(ctx, mgr);
+    Guest guest(ctx);
+    uint32_t page = InputPage(guest, mgr);
+    fcip::NoteMenu(page != 0, OnStart(page));
+    Update(guest, page);
 }

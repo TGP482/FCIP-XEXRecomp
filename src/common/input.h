@@ -20,6 +20,10 @@ void* MenuCursor();
 void PressStart();
 
 bool MouseLookActive();
+// menu thread, each frame: whether the game's menus take input and PRESS START is up
+void NoteMenu(bool menu, bool title);
+bool InMenu();
+bool OnTitle();
 uint32_t LocalPlayer();  // the CPlayer ProcessView last ran for
 
 }  // namespace fcip
