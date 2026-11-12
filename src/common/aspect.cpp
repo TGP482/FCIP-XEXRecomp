@@ -1,10 +1,12 @@
 // The frame takes the output's shape. The game's own mode, 16:9 or 4:3, only picks its 2D set. Each layout keeps the
-// shape it was made for: narrower by as much as the frame is wider than it, shorter by as much as it is narrower.
+// shape it was made for: narrower by as much as the frame is wider than it, wider by as much as it is narrower, about
+// the side it sits against, so the HUD keeps its offsets from the screen edges.
 #include "common/aspect.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <iterator>
 
@@ -109,9 +111,7 @@ static float LayoutAspect() {
     return DisplayWide() ? 16.0f / 9.0f : 4.0f / 3.0f;
 }
 
-float Narrow2D() { return std::min(1.0f, LayoutAspect() / DisplayAspect()); }
-
-float Short2D() { return std::min(1.0f, DisplayAspect() / LayoutAspect()); }
+float Scale2D() { return LayoutAspect() / DisplayAspect(); }
 
 void Anchor2D(float side) { g_anchor = side; }
 
@@ -174,37 +174,27 @@ PPC_FUNC(GUEST(UIRect_Draw)) {
     g_rect = false;
 }
 
-// one axis of a corner: scaled by k with pos the share of the spare length before it; a rect's corner on a page edge
-// stays there, so fills still reach the screen edges
-static float Fit(float v, float k, float pos, float length) {
-    if (g_rect && (v <= 1.5f || v >= length - 2.5f)) return v;
-    return (v + 0.5f) * k + pos * (1.0f - k) * length - 0.5f;
+// a corner's x scaled by k with pos the share of the spare width before it; when narrowed, a rect's corner on a page
+// edge stays there, so fills still reach the screen edges
+static float Fit(float x, float k, float pos, float width) {
+    if (g_rect && k < 1.0f && (x <= 1.5f || x >= width - 2.5f)) return x;
+    return (x + 0.5f) * k + pos * (1.0f - k) * width - 0.5f;
 }
 
-// every image, rect and glyph of the UI: r4 to r7 point at the corners, {x, y} in back buffer pixels; x is narrowed
-// about the anchor, y shortened about the middle
+// every image, rect and glyph of the UI: r4 to r7 point at the corners, {x, y} in back buffer pixels; x is scaled
+// about the anchor
 PPC_FUNC(GUEST(UI_DrawQuad)) {
-    float narrow = fcip::Narrow2D();
-    float shorten = fcip::Short2D();
-    if (narrow > 0.999f && shorten > 0.999f) {
+    float scale = fcip::Scale2D();
+    // 854x480 is 16:9 to within a pixel
+    if (std::fabs(scale - 1.0f) < 0.002f) {
         GUEST_ORIG(UI_DrawQuad)(ctx, base);
         return;
     }
     float width = float(R32(SYM_DisplayBlock + kBlockWidth));
-    float height = float(R32(SYM_DisplayBlock + kBlockHeight));
     uint32_t corner[4] = {uint32_t(ctx.r[4]), uint32_t(ctx.r[5]), uint32_t(ctx.r[6]), uint32_t(ctx.r[7])};
-    uint32_t saved[4][2];
-    for (int i = 0; i < 4; i++) {
-        saved[i][0] = R32(corner[i]);
-        saved[i][1] = R32(corner[i] + 4);
-    }
-    for (int i = 0; i < 4; i++) {
-        W32(corner[i], Bits(Fit(Float(saved[i][0]), narrow, g_anchor, width)));
-        W32(corner[i] + 4, Bits(Fit(Float(saved[i][1]), shorten, 0.5f, height)));
-    }
+    uint32_t saved[4];
+    for (int i = 0; i < 4; i++) saved[i] = R32(corner[i]);
+    for (int i = 0; i < 4; i++) W32(corner[i], Bits(Fit(Float(saved[i]), scale, g_anchor, width)));
     GUEST_ORIG(UI_DrawQuad)(ctx, base);
-    for (int i = 0; i < 4; i++) {
-        W32(corner[i], saved[i][0]);
-        W32(corner[i] + 4, saved[i][1]);
-    }
+    for (int i = 0; i < 4; i++) W32(corner[i], saved[i]);
 }
