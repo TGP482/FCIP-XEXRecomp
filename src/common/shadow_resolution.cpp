@@ -53,7 +53,10 @@ constexpr uint32_t kCameraFar = 0x38;
 constexpr uint32_t kCameraFarCopy = 0x360;
 constexpr uint32_t kCameraOrthoWidth = 0x33C;
 constexpr uint32_t kCameraOrthoHeight = 0x340;
-// the view the sun camera follows: the shadow radius
+constexpr uint32_t kCameraFov = 0x3C;  // horizontal radians, narrower while zoomed
+constexpr float kHipFov = 1.5707964f;  // the stock 90 degrees outside zoom
+// the view the sun camera follows: its camera and the shadow radius
+constexpr uint32_t kViewCamera = 0x0;
 constexpr uint32_t kViewShadowRadius = 0x34;
 // the renderer's surface pool frees its unused surfaces when the screen width it last saw changes
 constexpr uint32_t kRendererTargets = 0x4;
@@ -197,6 +200,10 @@ PPC_FUNC(GUEST(Shadow_Snap)) {
     }
     uint64_t args[6];
     std::memcpy(args, &ctx.r[3], sizeof(args));
+    // the snap widens the map by the view's angle, so zoom would pull the far map in
+    uint32_t view_cam = R32(view + kViewCamera);
+    float fov = GF(view_cam + kCameraFov);
+    WF(view_cam + kCameraFov, std::max(fov, kHipFov));
     // the far map's depth range first, then the stock centre on the stock texel grid
     GUEST_ORIG(Shadow_Snap)(ctx, base);
     float far_plane = GF(cam + kCameraFar);
@@ -205,6 +212,7 @@ PPC_FUNC(GUEST(Shadow_Snap)) {
     std::memcpy(&ctx.r[3], args, sizeof(args));
     GUEST_ORIG(Shadow_Snap)(ctx, base);
     WF(view + kViewShadowRadius, radius);
+    WF(view_cam + kCameraFov, fov);
 
     double width = GF(cam + kCameraOrthoWidth);
     double far_texel = width * distance / double(uint32_t(args[2]));
