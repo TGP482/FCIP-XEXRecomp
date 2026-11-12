@@ -52,7 +52,6 @@ constexpr uint32_t kZoomBit = 1u << (0x1B - 1);
 constexpr uint32_t kSecondaryFireBit = 1u << (0x12 - 1);
 
 // CPlayer
-constexpr uint32_t kPlayerEntity = 0x04;
 constexpr uint32_t kPlayerInventory = 0xC0;  // 16 byte entries [+0x20, +0x24), id +0, slot +8
 constexpr uint32_t kPlayerWeaponObject = 0x2CC;
 constexpr uint32_t kPlayerWeapon = 0x2D8;  // current weapon id
@@ -80,12 +79,6 @@ constexpr uint32_t kInvFirst = 0x20;
 constexpr uint32_t kInvLast = 0x24;
 constexpr uint32_t kInvEntry = 0x10;
 constexpr uint32_t kEntrySlot = 0x08;
-
-// the render camera is copied before the player update rebuilds it: angles {pitch, roll, yaw} at entity +0x374,
-// camera object at *(entity+0x11C) with angles at +0x14
-constexpr uint32_t kEntityAngles = 0x374;
-constexpr uint32_t kEntityCamera = 0x11C;
-constexpr uint32_t kCameraAngles = 0x14;
 
 // cl_aimingHelper and cl_display_hud: ICVars the game object holds, their value through an int pointer at +0x10
 constexpr uint32_t kCVarValuePtr = 0x10;
@@ -663,22 +656,9 @@ PPC_FUNC(GUEST(CPlayer_UpdateView)) {
     WF(player + kPlayerYawLag, 0.0f);
 }
 
-// (this, cmd) applies this frame's look to the entity after the camera was built from last frame's; the same turn
-// goes onto the camera before it is copied for rendering, so the mouse shows up the frame it moved
+// (this, cmd) applies this frame's look to the entity; the camera, the weapon yaw and the look bones were already built
+// from last frame's, so all of them show it next frame, as on the console
 PPC_FUNC(GUEST(CPlayer_ProcessView)) {
-    uint32_t player = uint32_t(ctx.r[3]);
-    g_local_player = player;
-    uint32_t ent = player && RawLook() ? R32(player + kPlayerEntity) : 0;
-    bool raw = GuestOk(ent);
-    float pitch = raw ? GF(ent + kEntityAngles) : 0.0f;
-    float yaw = raw ? GF(ent + kEntityAngles + 8) : 0.0f;
+    g_local_player = uint32_t(ctx.r[3]);
     GUEST_ORIG(CPlayer_ProcessView)(ctx, base);
-    if (!raw) return;
-    uint32_t cam = R32(ent + kEntityCamera);
-    if (!GuestOk(cam)) return;
-    float turn = GF(ent + kEntityAngles + 8) - yaw;
-    turn -= 360.0f * std::round(turn / 360.0f);
-    uint32_t angles = cam + kCameraAngles;
-    WF(angles, GF(angles) + GF(ent + kEntityAngles) - pitch);
-    WF(angles + 8, GF(angles + 8) + turn);
 }
