@@ -192,6 +192,12 @@ UserManager_pointer = 0x8293A808
 
 # instruction hooks, defined in src/game/draw_distance.cpp
 
+# jump tables the scan cannot bound: the index's check is before a join 
+[[switch]]
+at = 0x826960DC  # halfword offsets at 0x8200DB50 from 0x82695D84, index checked <= 14 at 0x82696050
+targets = [0x82696120, 0x82696128, 0x82696130, 0x82696138, 0x82696140, 0x82696148, 0x82696150, 0x82696158,
+           0x82696160, 0x82696168, 0x82696170, 0x8269617C, 0x82696184, 0x8269618C, 0x82696194]
+
 [[hook]]  # the grass tile budget compare: r11 tiles, r30 renderer, r27 params
 at = 0x82373430
 call = "GrassTileBudget"
