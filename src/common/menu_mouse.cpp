@@ -163,15 +163,30 @@ uint32_t InputPage(Guest& guest, uint32_t mgr) {
     return page;
 }
 
-// the cursor in the layout's virtual screen space
-bool ToVirtual(float u, float v, int& x, int& y) {
+// the cursor: its share across the frame and its place in the layout's virtual screen space
+struct Cursor {
+    float u = 0.0f;
+    int width = 0;  // the layout's
+    int x = 0;
+    int y = 0;
+};
+
+// x in the virtual space of 2D held at anchor
+int VirtualX(const Cursor& c, float anchor) {
+    float k = fcip::Scale2D();
+    return int((c.u - anchor * (1.0f - k)) / k * float(c.width));
+}
+
+bool ToVirtual(float u, float v, Cursor& c) {
     uint32_t ui = Read32(SYM_UISystem_pointer);
     int vw = ReadS16(ui + kUiVirtualW);
     int vh = ReadS16(ui + kUiVirtualH);
     if (!GuestOk(ui) || vw <= 0 || vh <= 0) return false;
-    // pages are drawn scaled across about the centre
-    x = int(((u - 0.5f) / fcip::Scale2D() + 0.5f) * float(vw));
-    y = int(v * float(vh));
+    c.u = u;
+    c.width = vw;
+    // pages are drawn scaled across about the centre, parts held in place about their own anchor
+    c.x = VirtualX(c, 0.5f);
+    c.y = int(v * float(vh));
     return true;
 }
 
@@ -180,8 +195,8 @@ bool Inside(int x, int y, int x0, int x1, int y0, int y1) {
 }
 
 // topmost visible, enabled, focusable child under the cursor; children draw in order with no container transform,
-// so the rects are virtual screen space
-uint32_t HitTest(Guest& guest, uint32_t page, int x, int y) {
+// so the rects are virtual screen space; hit_x is the cursor's x where the hit is drawn
+uint32_t HitTest(Guest& guest, uint32_t page, const Cursor& c, int& hit_x) {
     uint32_t first = Read32(page + kPageFirst);
     uint32_t last = Read32(page + kPageLast);
     uint32_t rect = Guest::Scratch();
@@ -200,7 +215,11 @@ uint32_t HitTest(Guest& guest, uint32_t page, int x, int y) {
         int x1 = ReadS16(rect + 2);
         int y0 = ReadS16(rect + 4);
         int y1 = ReadS16(rect + 6);
-        if (x0 != x1 && y0 != y1 && Inside(x, y, x0, x1, y0, y1)) hit = widget;
+        int x = VirtualX(c, fcip::WidgetAnchor(widget));
+        if (x0 != x1 && y0 != y1 && Inside(x, c.y, x0, x1, y0, y1)) {
+            hit = widget;
+            hit_x = x;
+        }
     }
     return hit;
 }
@@ -283,18 +302,18 @@ void Release(Guest& guest, uint32_t page, uint32_t hit, uint32_t element, int ro
 }
 
 void Pointer(Guest& guest, uint32_t page, const Input& in) {
-    int x = 0;
-    int y = 0;
-    if (!(in.moved || in.left_down || in.left_up) || !ToVirtual(in.u, in.v, x, y)) return;
+    Cursor c;
+    if (!(in.moved || in.left_down || in.left_up) || !ToVirtual(in.u, in.v, c)) return;
     uint32_t focus = Read32(page + kPageFocus);
     bool list_focused = ObjectOk(focus) && IsList(Read32(focus + kWidgetElement));
-    uint32_t hit = HitTest(guest, page, x, y);
+    int hit_x = c.x;
+    uint32_t hit = HitTest(guest, page, c, hit_x);
     uint32_t element = hit ? Read32(hit + kWidgetElement) : 0;
     int row = -1;
     if (hit && IsList(element)) {
         // a list is entered the stock way, then owns hover until a click elsewhere
         if (hit == focus) {
-            row = ListRow(guest, element, x, y);
+            row = ListRow(guest, element, hit_x, c.y);
             SelectRow(guest, hit, element, row);
         }
     } else if (hit && (!list_focused || in.left_down)) {

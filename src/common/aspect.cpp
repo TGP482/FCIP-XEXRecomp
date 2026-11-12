@@ -9,6 +9,10 @@
 #include <cmath>
 #include <cstring>
 #include <iterator>
+#include <limits>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 
 #include "app/app.h"
 #include "xdk/hle.h"
@@ -29,6 +33,11 @@ constexpr uint32_t kRendererPixelAspect = 0x364;
 // UI system: the virtual size of the last loaded layout, which its draws are scaled from to the back buffer
 constexpr uint32_t kUiVirtualW = 0x58;  // s16
 constexpr uint32_t kUiVirtualH = 0x5A;
+// UI widgets: +4 name crc, +8 the element
+constexpr uint32_t kWidgetName = 0x04;
+constexpr uint32_t kWidgetElement = 0x08;
+constexpr int kMenuWidth = 640;  // every menu layout
+constexpr size_t kMaxPlaced = 4096;
 
 std::atomic<uint32_t> g_renderer{0};
 std::atomic<int> g_wide{-1};  // the mode the device started in, -1 before
@@ -36,7 +45,26 @@ std::atomic<int> g_wide{-1};  // the mode the device started in, -1 before
 thread_local float g_anchor = 0.5f;  // share of the spare width left of what is drawn
 thread_local bool g_text = false;    // a glyph is drawing
 thread_local bool g_paint = false;   // the red paint is drawing
+thread_local bool g_held = false;    // a menu part above has its place
 std::atomic<int64_t> g_world_ms{-1000};  // when the 3D world last drew
+
+// a widget's quads in the layout's virtual x, gathered while it draws
+struct Span {
+    uint32_t widget = 0;
+    float left = std::numeric_limits<float>::max();
+    float right = std::numeric_limits<float>::lowest();
+    bool text = false;  // glyphs among them
+};
+
+// a widget as drawn last frame: its span and the anchor its quads used
+struct Placed {
+    Span span;
+    float anchor = 0.5f;
+};
+
+thread_local std::vector<Span> g_open;  // the widgets drawing now, outermost first
+std::mutex g_placed_lock;
+std::unordered_map<uint32_t, Placed> g_placed;
 
 // HUD widgets that sit against a screen side, by crc32 of their name: ai_status-base, -Valerie, -Doyle, -Kade
 constexpr uint32_t kLeftWidgets[] = {0x17C753E5u, 0xA4F0EADFu, 0x4DA638F6u, 0xCF7E37C7u};
@@ -44,6 +72,8 @@ constexpr uint32_t kLeftWidgets[] = {0x17C753E5u, 0xA4F0EADFu, 0x4DA638F6u, 0xCF
 constexpr uint32_t kRightWidgets[] = {0x2909DFF7u, 0xB0008E4Du, 0xDC33DFAAu, 0x0A5255EEu};
 // the menus' red paint image, RedBar.xbt
 constexpr uint32_t kRedPaintWidget = 0xA4E1836Eu;
+// the main menu's help box stays about the middle: A_Help, A_InfoText
+constexpr uint32_t kHelpWidgets[] = {0x46740CFEu, 0xAD70BF0Fu};
 
 uint32_t Bits(float f) {
     uint32_t b;
@@ -76,7 +106,10 @@ void WriteRenderer(float aspect, uint32_t renderer) {
     W32(renderer + kRendererPixelAspect, Bits(pixel));
 }
 
-bool In(uint32_t name, const uint32_t (&list)[4]) { return std::find(std::begin(list), std::end(list), name) != std::end(list); }
+template <size_t N>
+bool In(uint32_t name, const uint32_t (&list)[N]) {
+    return std::find(std::begin(list), std::end(list), name) != std::end(list);
+}
 
 int64_t NowMs() {
     auto since = std::chrono::steady_clock::now().time_since_epoch();
@@ -120,6 +153,12 @@ static float LayoutAspect() {
 }
 
 float Scale2D() { return LayoutAspect() / DisplayAspect(); }
+
+float WidgetAnchor(uint32_t widget) {
+    std::lock_guard lock(g_placed_lock);
+    auto it = g_placed.find(widget);
+    return it == g_placed.end() ? 0.5f : it->second.anchor;
+}
 
 void Anchor2D(float side) { g_anchor = side; }
 
@@ -167,15 +206,63 @@ PPC_FUNC(GUEST(Bink_DrawFrame)) {
     GUEST_ORIG(Bink_DrawFrame)(ctx, base);
 }
 
-// r3 the widget, its name's crc at +4; children draw inside, so a side holds for the whole part
+static bool MenuLayout() {
+    uint32_t ui = R32(SYM_UISystem_pointer);
+    return ui && int16_t(R16(ui + kUiVirtualW)) == kMenuWidth;
+}
+
+// held at its nearer page side, or its middle when its gaps to the sides are within an eighth of a page
+static float HeldAnchor(const Span& span) {
+    float page = float(kMenuWidth);
+    float gap_left = span.left;
+    float gap_right = page - span.right;
+    if (std::fabs(gap_left - gap_right) < page / 8.0f) return (span.left + span.right) * 0.5f / page;
+    return (gap_left < gap_right ? span.left : span.right) / page;
+}
+
+// A menu list, or a part narrower than 60% of the page that draws text, keeps the place the stretched console layout
+// gave it, at its own shape. Its span is last frame's, as a part's size is known only once it has drawn.
+static void HoldInPlace(uint32_t widget) {
+    if (!MenuLayout() || fcip::Scale2D() >= 1.0f) return;
+    Span span;
+    {
+        std::lock_guard lock(g_placed_lock);
+        auto it = g_placed.find(widget);
+        if (it == g_placed.end()) return;
+        span = it->second.span;
+    }
+    uint32_t element = R32(widget + kWidgetElement);
+    bool list = element && R32(element) == SYM_UIList_vtable;
+    float width = span.right - span.left;
+    bool part = span.text && width < kMenuWidth * 0.6f;
+    if (width <= 0.0f || (!list && !part)) return;
+    g_anchor = HeldAnchor(span);
+    g_held = true;
+}
+
+static void Remember(const Span& span, float anchor) {
+    std::lock_guard lock(g_placed_lock);
+    if (g_placed.size() >= kMaxPlaced) g_placed.clear();
+    g_placed[span.widget] = {span, anchor};
+}
+
+// r3 the widget; children draw inside, so a side or a place holds for the whole part
 PPC_FUNC(GUEST(UIWidget_Draw)) {
-    uint32_t name = R32(uint32_t(ctx.r[3]) + 4);
+    uint32_t widget = uint32_t(ctx.r[3]);
+    uint32_t name = R32(widget + kWidgetName);
     float outer = g_anchor;
+    bool outer_held = g_held;
     if (In(name, kLeftWidgets)) g_anchor = 0.0f;
     if (In(name, kRightWidgets)) g_anchor = 1.0f;
+    if (In(name, kLeftWidgets) || In(name, kRightWidgets) || In(name, kHelpWidgets)) g_held = true;
+    if (!g_held) HoldInPlace(widget);
     g_paint = name == kRedPaintWidget;
+    g_open.push_back({widget});
     GUEST_ORIG(UIWidget_Draw)(ctx, base);
+    Remember(g_open.back(), g_anchor);
+    g_open.pop_back();
     g_paint = false;
+    g_held = outer_held;
     g_anchor = outer;
 }
 
@@ -216,6 +303,19 @@ static float PaintSide(const uint32_t (&x)[4], float width) {
     return g_anchor;
 }
 
+// the quad's x, as the game placed it, into the spans of the widgets drawing it
+static void Gather(const uint32_t (&x)[4], float width) {
+    float to_page = float(kMenuWidth) / width;
+    for (uint32_t v : x) {
+        float page_x = (Float(v) + 0.5f) * to_page;
+        for (Span& span : g_open) {
+            span.left = std::min(span.left, page_x);
+            span.right = std::max(span.right, page_x);
+            span.text = span.text || g_text;
+        }
+    }
+}
+
 // every image, rect and glyph of the UI: r4 to r7 point at the corners, {x, y} in back buffer pixels; x is scaled
 // about the anchor
 PPC_FUNC(GUEST(UI_DrawQuad)) {
@@ -229,6 +329,7 @@ PPC_FUNC(GUEST(UI_DrawQuad)) {
     uint32_t corner[4] = {uint32_t(ctx.r[4]), uint32_t(ctx.r[5]), uint32_t(ctx.r[6]), uint32_t(ctx.r[7])};
     uint32_t saved[4];
     for (int i = 0; i < 4; i++) saved[i] = R32(corner[i]);
+    Gather(saved, width);
     float anchor = g_paint ? PaintSide(saved, width) : g_anchor;
     for (int i = 0; i < 4; i++) W32(corner[i], Bits(Fit(Float(saved[i]), scale, anchor, width)));
     GUEST_ORIG(UI_DrawQuad)(ctx, base);
