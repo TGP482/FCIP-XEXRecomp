@@ -146,11 +146,11 @@ float GrassReach(int32_t cam_x, int32_t cam_y, int32_t x, int32_t y) {
 void ScaleGrassRadius(double& radius) { radius *= double(Get().grass_distance); }
 void ScaleShadowRadius(double& radius) { radius *= double(Get().shadow_distance); }
 
-void UseNearSunSlope(bool near) {
+void UseNearSunSlope(bool on, uint32_t reach) {
     uint32_t engine = R32(SYM_C3DEngine_pointer);
     if (!GuestOk(engine) || !g_sun_slope.seen) return;
-    float texel = float(kStockShadowSide) / float(SunShadowSide());
-    WF(engine + kSunSlopeScale, near ? g_sun_slope.stock + SlopeOffset(texel) : g_sun_slope.applied);
+    float texel = float(kStockShadowSide * reach) / float(SunShadowSide());
+    WF(engine + kSunSlopeScale, on ? g_sun_slope.stock + SlopeOffset(texel) : g_sun_slope.applied);
 }
 
 }  // namespace fcip

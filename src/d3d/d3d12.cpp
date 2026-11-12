@@ -30,6 +30,7 @@
 
 #include "app/app.h"
 #include "common/aspect.h"
+#include "common/render_pass.h"
 #include "common/settings.h"
 #include "d3d/occlusion.h"
 #include "d3d/readback.h"
@@ -978,6 +979,9 @@ private:
     // textures
     Resolved* FindResolved(const xenos::TextureFetch& t, const TextureBinding& b, ShaderStage stage, uint32_t slot);
     void TexFlags(const State& s, const ShaderInfo& info, ShaderStage stage, uint8_t flags[32]);
+    bool SunCascade(const State& s, const ShaderInfo& info, ShaderOptions& opt);
+    Resolved* SunMap(uint32_t base);
+    void SunMapView(Resolved& r, D3D12_CPU_DESCRIPTOR_HANDLE at);
     void FillTextureView(const TextureBinding& b, const uint32_t fetch[6], D3D12_CPU_DESCRIPTOR_HANDLE at,
                          ShaderStage stage, uint32_t slot);
     Texture* EnsureTexture(const xenos::TextureFetch& t);
@@ -1154,6 +1158,8 @@ private:
     std::unordered_map<uint64_t, Resolved> resolved_;  // by ResolvedKey
     std::unordered_map<uint32_t, uint64_t> latest_;     // the ResolvedKey of the last resolve to each address
     std::unordered_map<uint32_t, Resolved> blocks_;     // by address: a resolve with the whole blocks it writes past
+    Resolved* sun_[fcip::kSunMaps] = {};                // the sharper sun maps the draw's pixel shader reads
+    fcip::SunMaps sun_maps_;
     Resolved cpu_texels_;                               // a resolve at title size, for the CPU
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> pass_pipelines_;
     std::vector<std::unique_ptr<Shader>> shaders_;
@@ -1190,6 +1196,7 @@ private:
             uint32_t fetch[kPsTextures][6] = {};
             uint32_t table = 0;
             D3D12_GPU_DESCRIPTOR_HANDLE samplers{};
+            const Resolved* sun[fcip::kSunMaps] = {};
         } stages[2];
     } binds_;
     // true where now differs from what the last draw set, which keeps it
@@ -2179,6 +2186,48 @@ void D3D12Backend::TexFlags(const State& s, const ShaderInfo& info, ShaderStage 
     }
 }
 
+Resolved* D3D12Backend::SunMap(uint32_t base) {
+    auto map = resolved_.find(ResolvedKey(base, 0));
+    return map != resolved_.end() && map->second.res ? &map->second : nullptr;
+}
+
+// the sharper sun maps, with a flag on each pixel shader fetch of the far one; false when the draw reads no far map
+bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
+    fcip::SunMaps m = fcip::SunMapsNow();
+    if (!m.count || info.textures.size() > fcip::kSunFirstSlot) return false;
+    Resolved* maps[fcip::kSunMaps] = {};
+    bool found = false;
+    for (uint32_t i = 0; i < m.count; i++) {
+        maps[i] = SunMap(m.bases[i]);
+        found = found || maps[i];
+    }
+    if (!found) return false;
+    bool any = false;
+    for (uint32_t i = 0; i < info.textures.size(); i++) {
+        const TextureBinding& b = info.textures[i];
+        if (b.fetch != fcip::kSunFetch || b.dimension > 1) continue;
+        uint32_t fetch[6];
+        ReadFetch(s, b.fetch, fetch);
+        if (xenos::DecodeTextureFetch(fetch).base != m.far_base) continue;
+        opt.tex_flags[i] |= fcip::kSunCascade;
+        any = true;
+    }
+    if (!any) return false;
+    std::copy(std::begin(maps), std::end(maps), sun_);
+    sun_maps_ = m;
+    return true;
+}
+
+void D3D12Backend::SunMapView(Resolved& r, D3D12_CPU_DESCRIPTOR_HANDLE at) {
+    Transition(r.res.Get(), r.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    D3D12_SHADER_RESOURCE_VIEW_DESC v{};
+    v.Format = r.format;
+    v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    v.Texture2D.MipLevels = 1;
+    dev_->CreateShaderResourceView(r.res.Get(), &v, at);
+}
+
 void D3D12Backend::FillTextureView(const TextureBinding& b, const uint32_t fetch[6], D3D12_CPU_DESCRIPTOR_HANDLE at,
                                    ShaderStage stage, uint32_t slot) {
     xenos::TextureFetch t = xenos::DecodeTextureFetch(fetch);
@@ -2291,7 +2340,10 @@ uint32_t D3D12Backend::BindTextures(const State& s, const ShaderInfo& info, Shad
     size_t fetch_bytes = used * sizeof(fetch[0]);
     // the shader and fetch constants of the stage's last draw: its tables again. An extension may pick by pass.
     Binds::Stage& kept = binds_.stages[stage == ShaderStage::Vertex ? 0 : 1];
+    static Resolved* const kNoSun[fcip::kSunMaps] = {};
+    Resolved* const* sun = stage == ShaderStage::Pixel ? sun_ : kNoSun;
     bool same = !ext_ && kept.info == &info && kept.aniso == app::Get().aniso;
+    same = same && std::equal(sun, sun + fcip::kSunMaps, kept.sun);
     if (same && std::memcmp(kept.fetch, fetch, fetch_bytes) == 0) {
         samplers = kept.samplers;
         return kept.table;
@@ -2305,8 +2357,12 @@ uint32_t D3D12Backend::BindTextures(const State& s, const ShaderInfo& info, Shad
         descs.push_back(SamplerDesc(b, fetch[i]));
     }
     NullViews(table + first + used, slots - used);
+    for (uint32_t i = 0; i < fcip::kSunMaps; i++) {
+        if (sun[i]) SunMapView(*sun[i], ViewCpu(table + first + fcip::kSunFirstSlot + i));
+    }
     samplers = EnsureSamplers(descs);
     kept.info = &info;
+    std::copy(sun, sun + fcip::kSunMaps, kept.sun);
     kept.aniso = app::Get().aniso;
     std::memcpy(kept.fetch, fetch, fetch_bytes);
     kept.table = table;
@@ -2771,6 +2827,8 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         TexFlags(s, s.vs->info, ShaderStage::Vertex, vs_opt.tex_flags);
         if (s.ps) TexFlags(s, s.ps->info, ShaderStage::Pixel, ps_opt.tex_flags);
     }
+    std::fill(std::begin(sun_), std::end(sun_), nullptr);
+    bool sun = s.ps && SunCascade(s, s.ps->info, ps_opt);
     Variant* vs = EnsureVariant(s.vs, vs_opt);
     // no pixel shader: a depth only draw
     Variant* ps = s.ps ? EnsureVariant(s.ps, ps_opt) : nullptr;
@@ -2810,6 +2868,10 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
 
     DrawConstants c;
     FillDrawConstants(s, bound, c);
+    if (sun) {
+        c.ext[0] = float(sun_maps_.distance);
+        c.ext[1] = float(sun_maps_.count);
+    }
     // the source factor of colour 0, 1 without blending
     uint32_t b0 = k.blend[0];
     uint32_t src_blend = (b0 & 0x1FFF1FFF) != 0x00010001 ? Bits(b0, 0, 5) : 1;

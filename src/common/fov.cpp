@@ -47,15 +47,13 @@ bool UserFov(double fov, double setting, double& out) {
 
 }  // namespace
 
-PPC_EXTERN_FUNC(GUEST_ORIG(ShadowMaps_Update));
 PPC_EXTERN_FUNC(GUEST_ORIG(CCamera_Update));
 PPC_EXTERN_FUNC(GUEST_ORIG(PerspectiveFov));
 PPC_EXTERN_FUNC(GUEST_ORIG(COcean_Update));
 
 PPC_FUNC(GUEST(ShadowMaps_Update)) {
     g_light_cameras = true;
-    fcip::DrawNearShadow(ctx, base);
-    GUEST_ORIG(ShadowMaps_Update)(ctx, base);
+    fcip::DrawShadowMaps(ctx, base);
     g_light_cameras = false;
 }
 

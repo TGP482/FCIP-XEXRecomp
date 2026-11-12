@@ -19,7 +19,7 @@ float GrassReach(int32_t cam_x, int32_t cam_y, int32_t x, int32_t y);
 void ScaleGrassRadius(double& radius);
 void ScaleShadowRadius(double& radius);
 
-// the sun slope bias of the near map while it draws, the far map's after
-void UseNearSunSlope(bool near);
+// the sun slope bias of the near map, reach times the stock radius, while it draws, the far map's after
+void UseNearSunSlope(bool on, uint32_t reach);
 
 }  // namespace fcip

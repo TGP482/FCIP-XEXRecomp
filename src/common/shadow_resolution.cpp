@@ -12,17 +12,23 @@
 // side and reports the chosen one; while the depth is resolved its header carries the chosen size too, as the
 // renderer sizes its copy from it.
 //
-// Past 1x shadow distance a near map is drawn first: the whole update runs again with the sun camera narrowed to the
-// stock radius around the same snapped centre, at the same depth range, into a second pool surface (the pool frees
-// its surfaces after the camera pass). The far map draws last, so the receivers keep its texture and matrix.
+// Past 1x shadow distance sharper maps are drawn first, at 1x, 2x, 4x and on of the stock radius while they divide the
+// distance, each a whole run of the update into another pool surface (the pool frees its surfaces after the camera
+// pass), so detail halves from one map to the next. Every sun camera sits where the stock radius puts it, on the far
+// map's texel grid, with the far map's depth range, and is as wide as its radius. The far map draws last, so the
+// receivers keep its texture and matrix. The renderer finds the maps by their resolve addresses and reads the sharpest
+// one that covers the point.
 #include <algorithm>
+#include <atomic>
 #include <bit>
+#include <cmath>
 #include <cstring>
 
 #include "app/app.h"
 #include "common/draw_distance.h"
 #include "common/render_pass.h"
 #include "common/settings.h"
+#include "kernel/memory.h"
 #include "xdk/hle.h"
 #include "xdk/layout.h"
 
@@ -37,11 +43,19 @@ constexpr uint32_t kMaxBacked = 4096;  // the largest guest side whose maps fit 
 constexpr uint32_t kPassWidth = 0x1C;
 constexpr uint32_t kPassHeight = 0x20;
 constexpr uint32_t kPassType = 0x10;
-constexpr uint32_t kFetchSize = 8;  // fetch constant dword 2: width - 1 and height - 1, 13 bits each
+constexpr uint32_t kFetchAddress = 4;  // fetch constant dword 1: the base from bit 12
+constexpr uint32_t kFetchSize = 8;     // fetch constant dword 2: width - 1 and height - 1, 13 bits each
 constexpr uint32_t kTitleHeight = 720;  // the guest frame the render scale is taken from
-// CCamera, the orthographic projection's size
+// CCamera: position, view axes, far plane and its copy, the orthographic projection's size
+constexpr uint32_t kCameraPosition = 0x4;
+constexpr uint32_t kCameraForward = 0x1C;
+constexpr uint32_t kCameraUp = 0x28;
+constexpr uint32_t kCameraFar = 0x38;
+constexpr uint32_t kCameraFarCopy = 0x360;
 constexpr uint32_t kCameraOrthoWidth = 0x33C;
 constexpr uint32_t kCameraOrthoHeight = 0x340;
+// the view the sun camera follows: the shadow radius
+constexpr uint32_t kViewShadowRadius = 0x34;
 
 // while the surface call binds a rescaled map: the chosen side, the side the texture is backed at, and the slot the
 // pool writes the handle to
@@ -49,7 +63,21 @@ thread_local uint32_t t_side = 0;
 thread_local uint32_t t_backed = 0;
 thread_local uint32_t t_handle = 0;
 thread_local uint32_t t_pass_type = 0;  // the pass being submitted
-thread_local uint32_t t_near = 0;       // while the near map draws: the shadow distance it narrows by
+
+// which run of the shadow map update is drawing, and whether it drew the sun's camera
+// sharper maps by index, map i at 2^i times the stock radius, then the far one
+constexpr int kNoMap = -1;
+constexpr int kFarMap = int(fcip::kSunMaps);
+thread_local int t_map = kNoMap;
+thread_local bool t_sun = false;
+
+std::atomic<uint32_t> g_bases[fcip::kSunMaps];
+std::atomic<uint32_t> g_far_base{0};
+std::atomic<uint32_t> g_distance{0};  // the far map's radius over the stock one, 0 without sharper maps
+std::atomic<uint32_t> g_maps{0};      // sharper maps drawn
+
+// a map's radius over the stock one
+uint32_t Reach(int map) { return map == kFarMap ? g_distance.load() : 1u << map; }
 
 // the replacement side, 0 when this is not the shadow map or the setting keeps it
 uint32_t Wanted(uint32_t side) {
@@ -60,6 +88,30 @@ uint32_t Wanted(uint32_t side) {
     uint64_t scaled = (uint64_t(guest) + 7) & ~uint64_t(7);
     scaled = std::min<uint64_t>(scaled, kMaxSide);
     return scaled == side ? 0 : uint32_t(scaled);
+}
+
+void WF(uint32_t va, float f) { W32(va, std::bit_cast<uint32_t>(f)); }
+
+struct Vec {
+    double x = 0;
+    double y = 0;
+    double z = 0;
+};
+
+Vec GV(uint32_t va) { return {GF(va), GF(va + 4), GF(va + 8)}; }
+
+Vec Unit(Vec v) {
+    double n = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    return {v.x / n, v.y / n, v.z / n};
+}
+
+double Dot(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+// as the game's snap: the position moved down to a whole number of texels along the axis
+void SnapAlong(Vec& p, Vec axis, double texel) {
+    double d = Dot(p, axis);
+    double off = d - std::floor(d / texel) * texel;
+    p = {p.x - axis.x * off, p.y - axis.y * off, p.z - axis.z * off};
 }
 
 // four quad maps take the memory of one full map
@@ -122,16 +174,45 @@ PPC_FUNC(GUEST(Shadow_Viewport)) {
     GUEST_ORIG(Shadow_Viewport)(ctx, base);
 }
 
-// sun shadow camera, texel snapping, r7 the camera
+// sun shadow camera, texel snapping, r4 the view, r5 r6 the size, r7 the camera
 PPC_FUNC(GUEST(Shadow_Snap)) {
+    uint32_t view = uint32_t(ctx.r[4]);
     uint32_t cam = uint32_t(ctx.r[7]);
     Pair(ctx, 5, 6);
+    t_sun = true;
+    uint32_t distance = g_distance.load();
+    if (t_map == kNoMap || !distance) {
+        GUEST_ORIG(Shadow_Snap)(ctx, base);
+        return;
+    }
+    uint64_t args[6];
+    std::memcpy(args, &ctx.r[3], sizeof(args));
+    // the far map's depth range first, then the stock centre on the stock texel grid
     GUEST_ORIG(Shadow_Snap)(ctx, base);
-    if (!t_near) return;
-    // the far centre sits on the far texel grid, which the near grid divides
-    float width = GF(cam + kCameraOrthoWidth) / float(t_near);
-    W32(cam + kCameraOrthoWidth, std::bit_cast<uint32_t>(width));
-    W32(cam + kCameraOrthoHeight, std::bit_cast<uint32_t>(width));
+    float far_plane = GF(cam + kCameraFar);
+    float radius = GF(view + kViewShadowRadius);
+    WF(view + kViewShadowRadius, radius / float(distance));
+    std::memcpy(&ctx.r[3], args, sizeof(args));
+    GUEST_ORIG(Shadow_Snap)(ctx, base);
+    WF(view + kViewShadowRadius, radius);
+
+    double width = GF(cam + kCameraOrthoWidth);
+    double far_texel = width * distance / double(uint32_t(args[2]));
+    Vec forward = Unit(GV(cam + kCameraForward));
+    Vec up = Unit(GV(cam + kCameraUp));
+    Vec right = Unit({forward.y * up.z - forward.z * up.y, forward.z * up.x - forward.x * up.z,
+                      forward.x * up.y - forward.y * up.x});
+    Vec p = GV(cam + kCameraPosition);
+    SnapAlong(p, right, far_texel);
+    SnapAlong(p, up, far_texel);
+    WF(cam + kCameraPosition, float(p.x));
+    WF(cam + kCameraPosition + 4, float(p.y));
+    WF(cam + kCameraPosition + 8, float(p.z));
+    float side = float(width * Reach(t_map));
+    WF(cam + kCameraOrthoWidth, side);
+    WF(cam + kCameraOrthoHeight, side);
+    WF(cam + kCameraFar, far_plane);
+    WF(cam + kCameraFarCopy, far_plane);
     CallGuest(ctx, SYM_CCamera_Update, {cam});
 }
 
@@ -162,9 +243,9 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
     }
 }
 
-// colour and depth resolve of the bound targets, r4 the depth texture
+// pass end, resolves the bound targets: a depth only pass resolves its depth into the bound depth texture
 PPC_FUNC(GUEST(Shadow_Resolve)) {
-    uint32_t tex = uint32_t(ctx.r[4]);
+    uint32_t tex = R32(SYM_RenderTargets_Depth);
     bool ok = tex >= 0x10000u && tex < 0xC0000000u;
     uint32_t size = tex + XDK_Texture_FetchConstant + kFetchSize;
     uint32_t bits = ok ? R32(size) : 0;
@@ -175,24 +256,58 @@ PPC_FUNC(GUEST(Shadow_Resolve)) {
     if (side) W32(size, (bits & ~0x3FFFFFFu) | (side - 1) | (side - 1) << 13);
     GUEST_ORIG(Shadow_Resolve)(ctx, base);
     if (side) W32(size, bits);
+    if (!ok || w != h || !t_sun || t_map == kNoMap) return;
+    uint32_t at = mem::PhysicalFromVirtual(R32(tex + XDK_Texture_FetchConstant + kFetchAddress) & 0xFFFFF000);
+    (t_map == kFarMap ? g_far_base : g_bases[t_map]) = at;
 }
 
-uint32_t fcip::SubmittedPass() { return t_pass_type; }
+namespace {
 
-void fcip::DrawNearShadow(PPCContext& ctx, uint8_t* base) {
-    uint32_t distance = Get().shadow_distance;
-    bool quad = (ctx.r[8] & 0xFF) != 0;  // four light frustums, no sun map
-    if (distance <= 1 || quad) return;
+// one run of the update, args kept for the next
+void RunShadowMaps(PPCContext& ctx, uint8_t* base, int map) {
     uint64_t args[8];
     std::memcpy(args, &ctx.r[3], sizeof(args));
     double f1 = ctx.f[1];
-    t_near = distance;
-    UseNearSunSlope(true);
+    double f2 = ctx.f[2];
+    t_map = map;
+    t_sun = false;
     GUEST_ORIG(ShadowMaps_Update)(ctx, base);
-    UseNearSunSlope(false);
-    t_near = 0;
+    t_map = kNoMap;
     std::memcpy(&ctx.r[3], args, sizeof(args));
     ctx.f[1] = f1;
+    ctx.f[2] = f2;
+}
+
+// a sharper map before the far one, with its own slope bias
+void RunCascade(PPCContext& ctx, uint8_t* base, int map) {
+    fcip::UseNearSunSlope(true, Reach(map));
+    RunShadowMaps(ctx, base, map);
+    fcip::UseNearSunSlope(false, Reach(map));
+}
+
+}  // namespace
+
+uint32_t fcip::SubmittedPass() { return t_pass_type; }
+
+void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
+    uint32_t distance = Get().shadow_distance;
+    bool quad = (ctx.r[6] & 0xFF) != 0;  // four light frustums, no sun map
+    // the far map's texel grid must hold whole texels of each sharper map
+    uint32_t maps = 0;
+    while (!quad && maps < kSunMaps && (1u << maps) < distance && distance % (1u << maps) == 0) maps++;
+    g_distance = maps ? distance : 0;
+    g_maps = maps;
+    for (uint32_t i = 0; i < maps; i++) RunCascade(ctx, base, int(i));
+    RunShadowMaps(ctx, base, kFarMap);
+}
+
+fcip::SunMaps fcip::SunMapsNow() {
+    SunMaps m;
+    m.far_base = g_far_base;
+    m.count = g_maps;
+    m.distance = g_distance;
+    for (uint32_t i = 0; i < m.count; i++) m.bases[i] = g_bases[i];
+    return m;
 }
 
 uint32_t fcip::SunShadowSide() {

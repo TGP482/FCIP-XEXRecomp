@@ -125,7 +125,7 @@ Renderer_Init = 0x8247DC18
 ShadowMaps_Update = 0x823425C0
 Shadow_Extent = 0x8235EAC0
 Shadow_Pass = 0x8235BB30
-Shadow_Resolve = 0x823700B0
+Shadow_Resolve = 0x82371578
 Shadow_Size = 0x8247B850
 Shadow_Snap = 0x82339438
 Shadow_Surface = 0x8235A0E8
@@ -163,10 +163,11 @@ IntroMovie_return = 0
 LogoScreen_return = 0x8231393C
 UbisoftMovie_return = 0x82313608
 
-# CryRender and Cry3DEngine: the display block and the engine, object manager and renderer objects
+# CryRender and Cry3DEngine: the display block, the engine, object manager and renderer objects and the bound depth texture
 C3DEngine_pointer = 0x828C7208
 DisplayBlock = 0x82908790
 ObjManager_pointer = 0x828C7990
+RenderTargets_Depth = 0x828C7B4C
 Renderer_pointer = 0x828C7A34
 
 # instruction hooks, defined in src/editor/draw_distance.cpp

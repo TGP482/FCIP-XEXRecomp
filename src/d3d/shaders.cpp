@@ -1,5 +1,7 @@
 #include "gpu/shaders.h"
 
+#include "common/render_pass.h"
+
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
@@ -435,6 +437,7 @@ private:
     void EmitAlu(const Alu& a);
     void EmitVertexFetch(const Fetch& f, uint32_t address);
     void EmitTextureFetch(const Fetch& f);
+    void EmitSunMaps(uint32_t t, bool weights);
     void EmitExport(const Alu& a, bool vector, bool scalar);
     void EmitWrite(const std::string& dst, uint32_t swizzle, const char* src);
 
@@ -453,6 +456,7 @@ private:
     ShaderInfo& info_;
     std::string body_;
     int indent_ = 0;
+    bool sun_maps_ = false;  // t_sun declared
 };
 
 std::string Translator::Reg(uint32_t index, bool rel) const {
@@ -766,12 +770,36 @@ void Translator::EmitTextureFetch(const Fetch& f) {
             fetch = F("t%u.Sample(s%u, %s)", t, t, at.c_str());
         }
         Line("float4 ft = " + fetch + ";");
+        bool sun_op = op == kTextureFetch || op == kGetWeights;
+        bool sun_fetch = Pixel() && dim == kDim2D && !f.Unnormalized() && (opt_.tex_flags[t & 31] & fcip::kSunCascade);
+        if (sun_op && sun_fetch) EmitSunMaps(t, op == kGetWeights);
         std::string fetched = op == kTextureFetch ? Hooks().Fetched(t, opt_.tex_flags[t & 31]) : std::string();
         if (!fetched.empty()) Line(fetched);
         EmitWrite(Reg(f.Dst(), f.DstRel()), f.DstSwizzle(), "ft");
     } else {
         info_.unknown++;
     }
+    Close();
+}
+
+// a fetch of the far sun map reads the sharper maps over it, coarsest first, each where it covers the point: g_ext.x
+// is the far map's radius over the stock one, g_ext.y the sharper map count, map sk at 2^sk the stock radius. Scaled
+// about the centre, the fetch's own offset kept in texels, a texel and a half inside its edge for the taps around it
+void Translator::EmitSunMaps(uint32_t t, bool weights) {
+    sun_maps_ = true;
+    Open(F("[unroll] for (int sk = %u; sk >= 0; sk--)", fcip::kSunMaps - 1));
+    Open("if (sk < g_ext.y)");
+    Line("float2 ns; t_sun[sk].GetDimensions(ns.x, ns.y);");
+    // ShadowMatrix maps to 0.5 + 0.5 / side at the centre
+    Line("float2 un = (tc.xy - 0.5 - 0.5 / size) * (g_ext.x / exp2(sk)) + 0.5 + 0.5 / ns;");
+    // the outer fifth hands over to the next coarser map: depths and weights blended, so shadow edges morph across it
+    Line("float2 ne = abs(un - 0.5) * 2 + 3 / ns;");
+    Line("float nw = 1 - saturate((max(ne.x, ne.y) - 0.8) / 0.2);");
+    Open("if (nw > 0)");
+    if (weights) Line("ft = lerp(ft, float4(frac(un * ns - 0.5), 0, 0), nw);");
+    else Line(F("ft = lerp(ft, t_sun[sk].SampleLevel(s%u, un + (uv - tc.xy) * size / ns, 0), nw);", t));
+    Close();
+    Close();
     Close();
 }
 
@@ -946,6 +974,7 @@ void CommitAlu() {
         s += F("%s<float4> t%u : register(t%u);\nSamplerState s%u : register(s%u);\n",
                kTypes[info_.textures[i].dimension & 3], i, i, i, i);
     }
+    if (sun_maps_) s += F("Texture2D<float4> t_sun[%u] : register(t%u);\n", fcip::kSunMaps, fcip::kSunFirstSlot);
     return s;
 }
 
