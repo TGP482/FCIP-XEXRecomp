@@ -75,6 +75,7 @@ std::atomic<uint32_t> g_bases[fcip::kSunMaps];
 std::atomic<uint32_t> g_far_base{0};
 std::atomic<uint32_t> g_distance{0};  // the far map's radius over the stock one, 0 without sharper maps
 std::atomic<uint32_t> g_maps{0};      // sharper maps drawn
+std::atomic<uint32_t> g_side{0};      // the sun map's guest side, as ShadowMatrix takes it
 
 // a map's radius over the stock one
 uint32_t Reach(int map) { return map == kFarMap ? g_distance.load() : 1u << map; }
@@ -180,6 +181,7 @@ PPC_FUNC(GUEST(Shadow_Snap)) {
     uint32_t cam = uint32_t(ctx.r[7]);
     Pair(ctx, 5, 6);
     t_sun = true;
+    g_side = uint32_t(ctx.r[5]);
     uint32_t distance = g_distance.load();
     if (t_map == kNoMap || !distance) {
         GUEST_ORIG(Shadow_Snap)(ctx, base);
@@ -306,6 +308,7 @@ fcip::SunMaps fcip::SunMapsNow() {
     m.far_base = g_far_base;
     m.count = g_maps;
     m.distance = g_distance;
+    m.side = g_side;
     for (uint32_t i = 0; i < m.count; i++) m.bases[i] = g_bases[i];
     return m;
 }

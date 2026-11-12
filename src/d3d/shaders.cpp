@@ -783,15 +783,16 @@ void Translator::EmitTextureFetch(const Fetch& f) {
 }
 
 // a fetch of the far sun map reads the sharper maps over it, coarsest first, each where it covers the point: g_ext.x
-// is the far map's radius over the stock one, g_ext.y the sharper map count, map sk at 2^sk the stock radius. Scaled
-// about the centre, the fetch's own offset kept in texels, a texel and a half inside its edge for the taps around it
+// is the far map's radius over the stock one, g_ext.y the sharper map count, g_ext.z the maps' guest side, map sk at
+// 2^sk the stock radius. Scaled about the centre, the fetch's own offset kept in texels, a texel and a half inside its
+// edge for the taps around it
 void Translator::EmitSunMaps(uint32_t t, bool weights) {
     sun_maps_ = true;
     Open(F("[unroll] for (int sk = %u; sk >= 0; sk--)", fcip::kSunMaps - 1));
     Open("if (sk < g_ext.y)");
     Line("float2 ns; t_sun[sk].GetDimensions(ns.x, ns.y);");
-    // ShadowMatrix maps to 0.5 + 0.5 / side at the centre
-    Line("float2 un = (tc.xy - 0.5 - 0.5 / size) * (g_ext.x / exp2(sk)) + 0.5 + 0.5 / ns;");
+    // ShadowMatrix maps the centre to 0.5 + 0.5 / side, the guest side, not the host's
+    Line("float2 un = (tc.xy - 0.5 - 0.5 / g_ext.z) * (g_ext.x / exp2(sk)) + 0.5 + 0.5 / g_ext.z;");
     // the outer fifth hands over to the next coarser map: depths and weights blended, so shadow edges morph across it
     Line("float2 ne = abs(un - 0.5) * 2 + 3 / ns;");
     Line("float nw = 1 - saturate((max(ne.x, ne.y) - 0.8) / 0.2);");

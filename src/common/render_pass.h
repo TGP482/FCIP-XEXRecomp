@@ -28,6 +28,7 @@ struct SunMaps {
     uint32_t bases[kSunMaps] = {};
     uint32_t count = 0;
     uint32_t distance = 0;
+    uint32_t side = 0;  // guest side of every map
 };
 SunMaps SunMapsNow();
 constexpr uint8_t kSunCascade = 1;     // ShaderOptions::tex_flags on a fetch of the far map
