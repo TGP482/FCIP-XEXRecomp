@@ -1,8 +1,9 @@
-// default.xex's debug page. Invincibility sets the GodMode cvar, which Game:GetGodMode hands to GameRulesLib's
-// ApplyDamage. A level starts at once from the menus; in a level it goes through the game's own level change, which
-// relaunches the title with "-map <level>" and the story's state. A level starting without a story gets one as PLAY A
-// GAME WITHOUT SAVING makes, else it crashes on its first save.
+// default.xex's debug page. Invincibility keeps script writes from lowering the player's health. A level starts at
+// once from the menus; in a level it goes through the game's own level change, which relaunches the title with
+// "-map <level>" and the story's state. A level starting without a story gets one as PLAY A GAME WITHOUT SAVING makes,
+// else it crashes on its first save.
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstring>
 #include <string>
@@ -18,7 +19,7 @@ using namespace kernel;
 
 namespace {
 
-constexpr uint32_t kCvarValue = 16;     // the cvar's pointer to its int
+constexpr uint32_t kPlayerHealth = 0xE8;  // CPlayer, the script's cnt.health
 constexpr uint32_t kStorySlot = 0x30;   // save manager: the running story, null outside one
 constexpr uint32_t kProfile = 8;        // user manager: the player's profile
 constexpr uint32_t kProfileActive = 0x254;  // set once START picks a pad
@@ -44,16 +45,6 @@ bool QueueLevel(const char* folder) {
 }
 
 const bool g_registered = (fcip::g_load_level = QueueLevel, true);
-
-// written each update while on, as a level change starts a new process; turning it off writes 0 once
-void ApplyInvincibility() {
-    static bool was_on = false;
-    uint32_t cvar = R32(SYM_GodMode_cvar);
-    if (!cvar) return;
-    bool on = fcip::Get().invincible;
-    if (on || was_on) W32(R32(cvar + kCvarValue), on ? 1 : 0);
-    was_on = on;
-}
 
 constexpr std::string_view kStartLevel = "StartLevel level=";
 
@@ -100,6 +91,7 @@ void NoteLevelStart(PPCContext& ctx, const std::string& command) {
 PPC_EXTERN_FUNC(GUEST_ORIG(Game_Command));
 PPC_EXTERN_FUNC(GUEST_ORIG(LoadingScreen_Wait));
 PPC_EXTERN_FUNC(GUEST_ORIG(Game_Update));
+PPC_EXTERN_FUNC(GUEST_ORIG(Player_SetProperty));
 
 // (game, command text): queues a command for the next update
 PPC_FUNC(GUEST(Game_Command)) {
@@ -114,7 +106,16 @@ PPC_FUNC(GUEST(LoadingScreen_Wait)) {
 
 // once a frame on the main thread, before the game runs its queued commands; r3 the game
 PPC_FUNC(GUEST(Game_Update)) {
-    ApplyInvincibility();
     IssueLevel(ctx, uint32_t(ctx.r[3]));
     GUEST_ORIG(Game_Update)(ctx, base);
+}
+
+// a script write to a player's cnt property; every health loss goes through here
+PPC_FUNC(GUEST(Player_SetProperty)) {
+    uint32_t player = fcip::LocalPlayer();
+    uint32_t before = player ? R32(player + kPlayerHealth) : 0;
+    GUEST_ORIG(Player_SetProperty)(ctx, base);
+    if (!player || !fcip::Get().invincible) return;
+    bool lowered = GF(player + kPlayerHealth) < std::bit_cast<float>(before);
+    if (lowered) W32(player + kPlayerHealth, before);
 }
