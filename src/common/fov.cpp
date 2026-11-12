@@ -7,6 +7,7 @@
 
 #include "common/aspect.h"
 #include "common/input.h"
+#include "common/render_pass.h"
 #include "common/settings.h"
 #include "xdk/hle.h"
 
@@ -53,6 +54,7 @@ PPC_EXTERN_FUNC(GUEST_ORIG(COcean_Update));
 
 PPC_FUNC(GUEST(ShadowMaps_Update)) {
     g_light_cameras = true;
+    fcip::DrawNearShadow(ctx, base);
     GUEST_ORIG(ShadowMaps_Update)(ctx, base);
     g_light_cameras = false;
 }

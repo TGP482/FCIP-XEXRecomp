@@ -11,9 +11,16 @@
 // sun pass is skipped and receivers keep the last map under a new matrix. There the texture is backed at the stock
 // side and reports the chosen one; while the depth is resolved its header carries the chosen size too, as the
 // renderer sizes its copy from it.
+//
+// Past 1x shadow distance a near map is drawn first: the whole update runs again with the sun camera narrowed to the
+// stock radius around the same snapped centre, at the same depth range, into a second pool surface (the pool frees
+// its surfaces after the camera pass). The far map draws last, so the receivers keep its texture and matrix.
 #include <algorithm>
+#include <bit>
+#include <cstring>
 
 #include "app/app.h"
+#include "common/draw_distance.h"
 #include "common/render_pass.h"
 #include "common/settings.h"
 #include "xdk/hle.h"
@@ -32,6 +39,9 @@ constexpr uint32_t kPassHeight = 0x20;
 constexpr uint32_t kPassType = 0x10;
 constexpr uint32_t kFetchSize = 8;  // fetch constant dword 2: width - 1 and height - 1, 13 bits each
 constexpr uint32_t kTitleHeight = 720;  // the guest frame the render scale is taken from
+// CCamera, the orthographic projection's size
+constexpr uint32_t kCameraOrthoWidth = 0x33C;
+constexpr uint32_t kCameraOrthoHeight = 0x340;
 
 // while the surface call binds a rescaled map: the chosen side, the side the texture is backed at, and the slot the
 // pool writes the handle to
@@ -39,6 +49,7 @@ thread_local uint32_t t_side = 0;
 thread_local uint32_t t_backed = 0;
 thread_local uint32_t t_handle = 0;
 thread_local uint32_t t_pass_type = 0;  // the pass being submitted
+thread_local uint32_t t_near = 0;       // while the near map draws: the shadow distance it narrows by
 
 // the replacement side, 0 when this is not the shadow map or the setting keeps it
 uint32_t Wanted(uint32_t side) {
@@ -71,6 +82,7 @@ PPC_EXTERN_FUNC(GUEST_ORIG(Shadow_Snap));
 PPC_EXTERN_FUNC(GUEST_ORIG(Shadow_Extent));
 PPC_EXTERN_FUNC(GUEST_ORIG(Shadow_Pass));
 PPC_EXTERN_FUNC(GUEST_ORIG(Shadow_Resolve));
+PPC_EXTERN_FUNC(GUEST_ORIG(ShadowMaps_Update));
 
 // depth surface create or fetch, vtable +0x1E0, r7 r8 the size
 PPC_FUNC(GUEST(Shadow_Surface)) {
@@ -110,10 +122,17 @@ PPC_FUNC(GUEST(Shadow_Viewport)) {
     GUEST_ORIG(Shadow_Viewport)(ctx, base);
 }
 
-// sun shadow camera, texel snapping
+// sun shadow camera, texel snapping, r7 the camera
 PPC_FUNC(GUEST(Shadow_Snap)) {
+    uint32_t cam = uint32_t(ctx.r[7]);
     Pair(ctx, 5, 6);
     GUEST_ORIG(Shadow_Snap)(ctx, base);
+    if (!t_near) return;
+    // the far centre sits on the far texel grid, which the near grid divides
+    float width = GF(cam + kCameraOrthoWidth) / float(t_near);
+    W32(cam + kCameraOrthoWidth, std::bit_cast<uint32_t>(width));
+    W32(cam + kCameraOrthoHeight, std::bit_cast<uint32_t>(width));
+    CallGuest(ctx, SYM_CCamera_Update, {cam});
 }
 
 // draw extent, vtable +0x1E8
@@ -159,6 +178,22 @@ PPC_FUNC(GUEST(Shadow_Resolve)) {
 }
 
 uint32_t fcip::SubmittedPass() { return t_pass_type; }
+
+void fcip::DrawNearShadow(PPCContext& ctx, uint8_t* base) {
+    uint32_t distance = Get().shadow_distance;
+    bool quad = (ctx.r[8] & 0xFF) != 0;  // four light frustums, no sun map
+    if (distance <= 1 || quad) return;
+    uint64_t args[8];
+    std::memcpy(args, &ctx.r[3], sizeof(args));
+    double f1 = ctx.f[1];
+    t_near = distance;
+    UseNearSunSlope(true);
+    GUEST_ORIG(ShadowMaps_Update)(ctx, base);
+    UseNearSunSlope(false);
+    t_near = 0;
+    std::memcpy(&ctx.r[3], args, sizeof(args));
+    ctx.f[1] = f1;
+}
 
 uint32_t fcip::SunShadowSide() {
     uint32_t side = Wanted(kStockSide);

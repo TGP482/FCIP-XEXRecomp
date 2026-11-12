@@ -89,6 +89,10 @@ Field g_sun_slope;
 std::atomic<float> g_level_radius{0.0f};
 std::atomic<float> g_level_detail{0.0f};
 
+// the sun slope bias added for a texel this many times the stock one: the value is over 2^24, 0 at the stock texel,
+// nearing 2 texels, the reach of the 4 tap compare
+float SlopeOffset(float texel) { return texel > 1.0f ? 2.0f * (1.0f - 1.0f / texel) * 16777216.0f : 0.0f; }
+
 void ApplyEngine(uint32_t engine) {
     const fcip::Settings& s = fcip::Get();
     // checkpoint loads restore an engine snapshot: the level's values stand
@@ -99,11 +103,8 @@ void ApplyEngine(uint32_t engine) {
     // the radius lands the same frame; finite, the speed is multiplied by a frame time that is 0 while paused.
     WF(engine + kShadowRadiusSpeed, 1.0e6f);
     W8(engine + kShadowSectorRadius, s.shadow_distance == 1);
-    // the sun texel size over stock: the slope bias is the value over 2^24, 0 at the stock texel, nearing 2 texels,
-    // the reach of the 4 tap compare
     float texel = float(s.shadow_distance) * float(kStockShadowSide) / float(fcip::SunShadowSide());
-    float slope = texel > 1.0f ? 2.0f * (1.0f - 1.0f / texel) : 0.0f;
-    Offset(engine + kSunSlopeScale, slope * 16777216.0f, g_sun_slope);
+    Offset(engine + kSunSlopeScale, SlopeOffset(texel), g_sun_slope);
     // past the grass distance with room for a tile's height, stock at 1x; engine+0xB30 stays stock, split screen
     // code reads it too
     uint32_t renderer = R32(SYM_Renderer_pointer);
@@ -144,6 +145,13 @@ float GrassReach(int32_t cam_x, int32_t cam_y, int32_t x, int32_t y) {
 
 void ScaleGrassRadius(double& radius) { radius *= double(Get().grass_distance); }
 void ScaleShadowRadius(double& radius) { radius *= double(Get().shadow_distance); }
+
+void UseNearSunSlope(bool near) {
+    uint32_t engine = R32(SYM_C3DEngine_pointer);
+    if (!GuestOk(engine) || !g_sun_slope.seen) return;
+    float texel = float(kStockShadowSide) / float(SunShadowSide());
+    WF(engine + kSunSlopeScale, near ? g_sun_slope.stock + SlopeOffset(texel) : g_sun_slope.applied);
+}
 
 }  // namespace fcip
 
