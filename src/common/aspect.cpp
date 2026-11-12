@@ -1,5 +1,5 @@
-// The frame takes the output's shape. The game's own mode, 16:9 or 4:3, only picks its 2D set, which keeps its shape:
-// narrower by as much as the frame is wider than that mode, shorter by as much as it is narrower.
+// The frame takes the output's shape. The game's own mode, 16:9 or 4:3, only picks its 2D set. Each layout keeps the
+// shape it was made for: narrower by as much as the frame is wider than it, shorter by as much as it is narrower.
 #include "common/aspect.h"
 
 #include <algorithm>
@@ -24,6 +24,9 @@ constexpr uint32_t kBlockFlags = 0x44;
 // the renderer copies the block at init: +0x35C mode (2 wide), +0x360 aspect, +0x364 pixel aspect
 constexpr uint32_t kRendererAspect = 0x360;
 constexpr uint32_t kRendererPixelAspect = 0x364;
+// UI system: the virtual size of the last loaded layout, which its draws are scaled from to the back buffer
+constexpr uint32_t kUiVirtualW = 0x58;  // s16
+constexpr uint32_t kUiVirtualH = 0x5A;
 
 std::atomic<uint32_t> g_renderer{0};
 std::atomic<int> g_wide{-1};  // the mode the device started in, -1 before
@@ -97,11 +100,18 @@ bool DisplayWide() {
     return app::Widescreen();
 }
 
-static float SetAspect() { return DisplayWide() ? 16.0f / 9.0f : 4.0f / 3.0f; }
+// menus are 640x480 in both modes, the 16:9 HUD and loading screens 854x480
+static float LayoutAspect() {
+    uint32_t ui = R32(SYM_UISystem_pointer);
+    int w = ui ? int16_t(R16(ui + kUiVirtualW)) : 0;
+    int h = ui ? int16_t(R16(ui + kUiVirtualH)) : 0;
+    if (w > 0 && h > 0) return float(w) / float(h);
+    return DisplayWide() ? 16.0f / 9.0f : 4.0f / 3.0f;
+}
 
-float Narrow2D() { return std::min(1.0f, SetAspect() / DisplayAspect()); }
+float Narrow2D() { return std::min(1.0f, LayoutAspect() / DisplayAspect()); }
 
-float Short2D() { return std::min(1.0f, DisplayAspect() / SetAspect()); }
+float Short2D() { return std::min(1.0f, DisplayAspect() / LayoutAspect()); }
 
 void Anchor2D(float side) { g_anchor = side; }
 
