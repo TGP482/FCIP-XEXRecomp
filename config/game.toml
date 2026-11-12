@@ -144,8 +144,9 @@ UIRect_Draw = 0x823C8410
 UIWidget_Draw = 0x82479130
 UI_DrawQuad = 0x823809D8
 
-# CryGame, the debug page: the game's update, command queue, story start, loading screen minimum and the player
-# script's property writes
+# CryGame, the debug page: the game's update, command queue, story start, loading screen minimum, the player
+# script's property writes and an entity's EnablePhysics
+Entity_EnablePhysics = 0x820B7E90
 Game_Command = 0x820EA4F8
 Game_Update = 0x8220D008
 LoadingScreen_Wait = 0x82156AB0

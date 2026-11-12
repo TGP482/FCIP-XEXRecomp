@@ -36,6 +36,7 @@ struct Settings {
     bool skip_intros = true;       // the logo, the branding plate and the intro movie
     gyro::Settings gyro;           // the controller's gyro turns the view, beside the right stick
     bool invincible = false;
+    bool noclip = false;  // the noclip key flies the player
 };
 
 Settings& Get();

@@ -49,6 +49,7 @@ void LoadSettings(const void* table) {
     s.gyro.button = std::min(t["gyro_button"].value_or(s.gyro.button), uint32_t(std::size(gyro::kButtonNames) - 1));
     s.gyro.button_mode = std::min(t["gyro_button_mode"].value_or(s.gyro.button_mode), uint32_t(gyro::kToggle));
     s.invincible = t["invincibility"].value_or(s.invincible);
+    s.noclip = t["noclip"].value_or(s.noclip);
     keys::Load(table);
 }
 
@@ -89,6 +90,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("gyro_button", int64_t(s.gyro.button));
     t.insert_or_assign("gyro_button_mode", int64_t(s.gyro.button_mode));
     t.insert_or_assign("invincibility", s.invincible);
+    t.insert_or_assign("noclip", s.noclip);
     keys::Save(table);
 }
 

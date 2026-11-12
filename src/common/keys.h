@@ -10,7 +10,7 @@ namespace fcip::keys {
 enum Action : int {
     kMoveForward, kMoveBack, kStrafeLeft, kStrafeRight, kWalk, kJump, kCrouch, kFire, kAim, kMelee, kReload,
     kInteract, kFeralRun, kFeralVision, kThrow, kGrenades, kWeapons, kBinoculars, kPistol, kRifle, kHeavy,
-    kNextWeapon, kPreviousWeapon, kObjectives, kToggleHud, kPause, kSettings, kLookUp, kLookDown, kLookLeft,
+    kNextWeapon, kPreviousWeapon, kObjectives, kToggleHud, kPause, kSettings, kNoclip, kLookUp, kLookDown, kLookLeft,
     kLookRight, kActionCount
 };
 

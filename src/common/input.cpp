@@ -445,6 +445,7 @@ void GamePad(int port, input::Pad& pad) {
     pad.rx = Larger(pad.rx, kb.rx);
     pad.ry = Larger(pad.ry, kb.ry);
     if (start) pad.buttons |= input::kStart;
+    if (g_noclip_pad) g_noclip_pad(pad);
 }
 
 void GameRumble(int, uint16_t& left, uint16_t& right) {
@@ -497,8 +498,11 @@ PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_ProcessView));
 
 // (this, cmd): clamps the move vector and applies the walk key
 PPC_FUNC(GUEST(CPlayer_ProcessMovements)) {
-    if (uint32_t cmd = uint32_t(ctx.r[4])) OnMovement(uint32_t(ctx.r[3]), cmd);
+    uint32_t player = uint32_t(ctx.r[3]);
+    uint32_t cmd = uint32_t(ctx.r[4]);
+    if (cmd) OnMovement(player, cmd);
     GUEST_ORIG(CPlayer_ProcessMovements)(ctx, base);
+    if (fcip::g_noclip_move && Local(player, cmd)) fcip::g_noclip_move(ctx, player, cmd);
 }
 
 // (player, cmd, u8 avail[3]), before ProcessMovements: NEXT and PREVIOUS WEAPON press the next slot the game can
@@ -558,7 +562,7 @@ PPC_FUNC(GUEST(CPlayer_Zoom)) {
     if (Local(player, cmd) && AkimboKeys(player)) {
         // the aim key fires the second gun, a zoom would also drop akimbo
         W32(cmd + kCmdActions, R32(cmd + kCmdActions) & ~kZoomBit);
-    } else if (Local(player, cmd) && fcip::Get().hold_aim && K::KbmActive() && !K::PadRecent()) {
+    } else if (Local(player, cmd) && fcip::Get().hold_aim && K::KbmActive() && !K::PadRecent() && !InCutscene(player)) {
         HoldToAim(player, cmd);
     }
     // zoom steps set the scope blur; the lock keeps it off

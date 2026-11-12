@@ -2,6 +2,8 @@
 #pragma once
 #include <cstdint>
 
+struct PPCContext;
+
 namespace input {
 struct Pad;
 }
@@ -25,5 +27,9 @@ void NoteMenu(bool menu, bool title);
 bool InMenu();
 bool OnTitle();
 uint32_t LocalPlayer();  // the CPlayer ProcessView last ran for
+
+// default.xex's noclip: port 0 after the keys merged in, then the local player after its movement
+inline void (*g_noclip_pad)(input::Pad& pad) = nullptr;
+inline void (*g_noclip_move)(PPCContext& ctx, uint32_t player, uint32_t cmd) = nullptr;
 
 }  // namespace fcip

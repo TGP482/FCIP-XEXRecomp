@@ -113,7 +113,7 @@ enum RowId {
     kAimSensitivityX, kAimSensitivityY, kInvertX, kInvertY, kHoldAim, kHoldSprint, kSkipIntros, kFov, kViewmodelFov,
     kFpsCounter, kHdrOutput, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
-    kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
+    kInvincible, kNoclip, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kMsaa, kSmaa, kAmbientOcclusion, kAudioOutput
 };
 
@@ -189,10 +189,13 @@ const std::vector<Row>& DebugRows() {
         std::vector<Row> out = {
             {Kind::Heading, -1, "CHEATS", nullptr},
             {Kind::Value, kInvincible, "INVINCIBILITY", "Makes the player take no damage"},
+            {Kind::Value, kNoclip, "NOCLIP",
+             "Lets the noclip key fly the player through walls, jump and crouch rise and sink"},
+            {Kind::Bind, keys::kNoclip, keys::Label(keys::kNoclip), "Accept rebinds the key, Delete unbinds it"},
             {Kind::Heading, -1, "LOAD LEVEL", nullptr},
         };
         for (int i = 0; i < int(std::size(kLevels)); i++) out.push_back({Kind::Level, i, kLevels[i].label, nullptr});
-        out.push_back({Kind::Defaults, -1, "RESTORE DEFAULTS", "Turns invincibility off"});
+        out.push_back({Kind::Defaults, -1, "RESTORE DEFAULTS", "Turns invincibility and noclip off"});
         return out;
     }();
     return list;
@@ -215,6 +218,7 @@ const std::vector<Row>& KeyboardRows() {
             {Kind::Heading, -1, "KEYBOARD", "Key bindings"},
         };
         for (int i = 0; i < keys::kActionCount; i++) {
+            if (i == keys::kNoclip) continue;  // on the debug page
             out.push_back({Kind::Bind, i, keys::Label(i), "Accept rebinds the key, Delete unbinds it"});
         }
         out.push_back({Kind::Defaults, -1, "RESTORE DEFAULTS", "Puts the mouse settings and every key back to its default"});
@@ -323,6 +327,7 @@ bool* ToggleFlag(int id) {
         case kGyroAiming: return &g.gyro.enabled;
         case kBlur: return &g.blur;
         case kInvincible: return &g.invincible;
+        case kNoclip: return &g.noclip;
         default: return nullptr;
     }
 }
@@ -512,6 +517,7 @@ void CopyMouseSettings(Settings& to, const Settings& from) {
 void RestoreDefaults(int page) {
     if (page == kDebugPage) {
         Get().invincible = false;
+        Get().noclip = false;
         Changed(false);
         return;
     }
@@ -540,6 +546,7 @@ void RestoreDefaults(int page) {
     Get() = Settings{};
     CopyMouseSettings(Get(), keep);
     Get().invincible = keep.invincible;
+    Get().noclip = keep.noclip;
     Changed(true);
 }
 

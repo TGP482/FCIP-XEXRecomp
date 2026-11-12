@@ -58,6 +58,7 @@ constexpr ActionInfo kActions[kActionCount] = {
     {"TOGGLE HUD", "toggle_hud", 0, 0},
     {"PAUSE MENU", "pause_menu", VK_ESCAPE, 0},
     {"SETTINGS PANEL", "settings_panel", VK_F10, 0},
+    {"NOCLIP KEY", "noclip", VK_F1, 0},
     {"LOOK UP", "look_up", VK_UP, 0},
     {"LOOK DOWN", "look_down", VK_DOWN, 0},
     {"LOOK LEFT", "look_left", VK_LEFT, 0},
