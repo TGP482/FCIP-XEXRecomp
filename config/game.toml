@@ -267,3 +267,18 @@ call = "WholeFrameMsF10"
 [[hook]]  # f10 = the same for the UI update at the end of sub_822248F8
 at = 0x822250F8
 call = "WholeFrameMsF10"
+
+# instruction hooks, defined in src/game/step_up.cpp
+[[hook]]  # f12 = 0.075, the least rise per call of a living entity's shown height stepping up
+at = 0x8254D6B4
+call = "StepUpRate"
+after = true
+
+# instruction hooks, defined in src/game/particles.cpp
+[[hook]]  # the continuous emitters' spawn call: r3 the emitter, f1 the frame time
+at = 0x825D88A4
+call = "ScaleEmitterCount"
+
+[[hook]]  # after it, also the out of view branch's target
+at = 0x825D88A8
+call = "RestoreEmitterCount"

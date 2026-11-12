@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "game/frame_time.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -27,6 +28,8 @@ double GuestDouble(uint32_t va) {
 
 }  // namespace
 
+double fcip::FrameTime() { return GuestDouble(SYM_Timer + kTimerFrame); }
+
 PPC_EXTERN_FUNC(GUEST_ORIG(Timer_Update));
 
 // the timer's time source, seconds since start
@@ -44,7 +47,7 @@ PPC_FUNC(GUEST(Timer_Now)) {
 PPC_FUNC(GUEST(Timer_Update)) {
     GUEST_ORIG(Timer_Update)(ctx, base);
     static double carry = 0.0;
-    double ms = GuestDouble(SYM_Timer + kTimerFrame) * 1000.0 + carry;
+    double ms = fcip::FrameTime() * 1000.0 + carry;
     double whole = std::floor(ms);
     carry = ms - whole;
     g_frame_ms = float(whole);
