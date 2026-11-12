@@ -56,8 +56,18 @@ constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, 360, app::k
 constexpr uint32_t kShadowSizes[] = {0, 512, 1024, 1344, 2048, 3072, 4096, 6144, 8192};
 constexpr uint32_t kDistances[] = {1, 2, 4, 6, 8, 12, 16, 32};
 
+// rows::Choices reads a row's values by picking each index in turn; -1 steps as usual
+int g_pick = -1;
+int g_picks = 0;
+int g_picked = 0;
+
 int StepIndex(int index, int step, int count) {
     if (count <= 0) return 0;
+    if (g_pick >= 0) {
+        g_picks = count;
+        g_picked = index;
+        return std::min(g_pick, count - 1);
+    }
     index = (index + step) % count;
     return index < 0 ? index + count : index;
 }
@@ -99,8 +109,8 @@ void Flip(bool& on, int step) {
 
 enum RowId {
     kMonitor, kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivityX, kSensitivityY,
-    kAimSensitivityX, kAimSensitivityY, kInvertX, kInvertY, kSmoothing,
-    kHoldAim, kHoldSprint, kAutoHelpers, kSkipIntros, kFov, kViewmodelFov, kFpsCounter, kHdrOutput, kShadowResolution,
+    kAimSensitivityX, kAimSensitivityY, kInvertX, kInvertY, kHoldAim, kHoldSprint, kSkipIntros, kFov, kViewmodelFov,
+    kFpsCounter, kHdrOutput, kShadowResolution,
     kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
     kInvincible, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kMsaa, kSmaa, kAmbientOcclusion, kAudioOutput
@@ -199,11 +209,8 @@ const std::vector<Row>& KeyboardRows() {
              "Adjusts vertical mouse look sensitivity while aiming"},
             {Kind::Value, kInvertX, "INVERT X-AXIS", "Inverts the horizontal mouse look axis"},
             {Kind::Value, kInvertY, "INVERT Y-AXIS", "Inverts the vertical mouse look axis"},
-            {Kind::Value, kSmoothing, "MOUSE SMOOTHING", "The game's weapon lag behind the view and one frame of camera delay"},
             {Kind::Value, kHoldAim, "HOLD TO AIM", "Aim only while the aim key is held instead of toggling"},
             {Kind::Value, kHoldSprint, "HOLD TO SPRINT", "Feral run only while the feral run key is held instead of toggling"},
-            {Kind::Value, kAutoHelpers, "AUTO DISABLE HELPERS",
-             "Turns the aiming helper off while the keyboard or mouse is in use"},
             {Kind::Heading, -1, "KEYBOARD", nullptr},
         };
         for (int i = 0; i < keys::kActionCount; i++) {
@@ -306,10 +313,8 @@ bool* ToggleFlag(int id) {
     switch (id) {
         case kInvertX: return &g.invert_x;
         case kInvertY: return &g.invert_y;
-        case kSmoothing: return &g.mouse_smoothing;
         case kHoldAim: return &g.hold_aim;
         case kHoldSprint: return &g.hold_sprint;
-        case kAutoHelpers: return &g.auto_helpers;
         case kSkipIntros: return &g.skip_intros;
         case kFpsCounter: return &g.fps_counter;
         case kHdrOutput: return &g.hdr_output;
@@ -498,10 +503,8 @@ void CopyMouseSettings(Settings& to, const Settings& from) {
     to.aim_sensitivity_y = from.aim_sensitivity_y;
     to.invert_x = from.invert_x;
     to.invert_y = from.invert_y;
-    to.mouse_smoothing = from.mouse_smoothing;
     to.hold_aim = from.hold_aim;
     to.hold_sprint = from.hold_sprint;
-    to.auto_helpers = from.auto_helpers;
 }
 
 void RestoreDefaults(int page) {
@@ -906,6 +909,37 @@ void ClearBind(int action) {
     keys::Bind(action, 0, 0);
     keys::Bind(action, 0, 1);
     Changed(false);
+}
+
+std::vector<std::string> Choices(const Row& row, int* current) {
+    std::lock_guard lock(app::UiLock());
+    std::vector<std::string> out;
+    *current = 0;
+    // calibrating has no values, a step starts it
+    if (row.kind != Kind::Value || row.id == kGyroCalibrate) return out;
+    const Settings keep = Get();
+    const std::string monitor = g_display_monitor;
+    g_picks = 0;
+    for (g_pick = 0; g_pick < std::max(g_picks, 1); g_pick++) {
+        g_display_monitor = Get().monitor;  // a copy of the settings reads its monitor from here
+        app::Settings copy = app::Get();
+        char text[64] = "";
+        StepRow(row.id, 1, copy, text);
+        Get() = keep;
+        out.push_back(text);
+    }
+    g_pick = -1;
+    g_display_monitor = monitor;
+    *current = g_picked;
+    if (g_picks < 2) out.clear();
+    return out;
+}
+
+void Choose(const Row& row, int index) {
+    std::lock_guard lock(app::UiLock());
+    g_pick = index;
+    RowText(row.id, 1);
+    g_pick = -1;
 }
 
 void Defaults(int page) {

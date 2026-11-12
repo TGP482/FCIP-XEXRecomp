@@ -31,10 +31,8 @@ struct Settings {
     float aim_sensitivity_y = 1.0f;
     bool invert_x = false;
     bool invert_y = false;
-    bool mouse_smoothing = false;  // the game's pitch lag on the body and weapon
     bool hold_aim = true;          // aim while the key is held, not a toggle
     bool hold_sprint = true;       // feral run while its key is held, not a toggle
-    bool auto_helpers = true;      // the aiming helper off while the keyboard or mouse is in use
     bool skip_intros = true;       // the logo, the branding plate and the intro movie
     gyro::Settings gyro;           // the controller's gyro turns the view, beside the right stick
     bool invincible = false;

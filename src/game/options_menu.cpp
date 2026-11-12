@@ -2,12 +2,14 @@
 // CONTROLLER OPTIONS, EXIT on the main menu and the main menu watermark
 #include <iterator>
 #include <string>
+#include <vector>
 
 #include "common/keys.h"
 #include "common/menu.h"
 #include "common/widgets.h"
 #include "core/log.h"
 #include "kernel/kernel.h"
+#include "kernel/memory.h"
 
 using namespace fcip;
 using namespace fcip::ui;
@@ -93,7 +95,8 @@ void SetHelp(PPCContext& ctx, uint32_t self, uint32_t help_offset, uint32_t send
 }
 
 // Native pages: CONTROLLER OPTIONS (P_Controller) hosts our rows. Its list has L_Name and L_Value columns and scrolls;
-// Left and Right step a value, A steps it or rebinds a key.
+// A opens the list of a row's values (an on / off row flips) or rebinds a key, a row without a list steps on Left,
+// Right and A.
 
 constexpr uint32_t kCrcController = 0x4CCDB8BDu;         // P_Controller
 constexpr uint32_t kCrcControllerOptions = 0xA3EDB04Fu;  // LST_ControllerOptions
@@ -117,6 +120,8 @@ constexpr uint32_t kListClear = 0x82471F18u;    // (list), keeps the columns
 constexpr uint32_t kListAddRow = 0x82471CA0u;   // (list, text, 0)
 constexpr uint32_t kListUpdateRow = 0x82472248u;  // (list, row)
 constexpr uint32_t kListSelect = 0x82471970u;   // (list, row, 1, 1)
+constexpr uint32_t kListAddColumn = 0x8246F500u;  // (list, name crc)
+constexpr uint32_t kTextSetString = 0x821557A8u;  // (text element, UTF-16)
 
 constexpr uint32_t kSoundSystem = 0x82912824u;
 constexpr uint32_t kSoundPlay = 0x823BAD40u;  // (system, sound)
@@ -127,6 +132,7 @@ constexpr uint32_t kKeyEnter = 0x0Du;
 constexpr uint32_t kKeyLeft = 0x25u;
 constexpr uint32_t kKeyRight = 0x27u;
 constexpr uint32_t kKeyA = 0x2Fu;
+constexpr uint32_t kKeyB = 0x30u;
 
 struct Native {
     int mode = -1;  // the panel page shown, -1 while the stock page is up
@@ -152,10 +158,73 @@ struct Saved {
     uint8_t map_enabled = 0;
 };
 
+// The value list: P_PopupValues as the stock rows open it for an option with more than two values (0x821BB360),
+// listing one of our rows' values; its key up (0x821BAEA0) is ours while it does
+
+// the controller page's option helper: +0x08 L_Description, +0x10 P_PopupValues, +0x28 its LST_Values,
+// +0x2C B_TitleButton
+constexpr uint32_t kHelper = 0x68u;
+constexpr uint32_t kHelperDescription = 0x08u;
+constexpr uint32_t kHelperPopup = 0x10u;
+constexpr uint32_t kHelperValues = 0x28u;
+constexpr uint32_t kHelperTitle = 0x2Cu;
+constexpr uint32_t kHelperRowIcon = 0x821BB968u;  // (helper, row, const u32* colour), the colour hides the rating
+constexpr uint32_t kIconHidden = 0x00FFFFFFu;
+constexpr uint32_t kCrcName = 0xAC4E3D8Au;        // L_Name
+constexpr uint32_t kCrcRating = 0x23D9A6A4u;      // i_icon_rating
+// a listener as the stock open builds it: +0x04 references, +0x08 enabled, +0x10 the helper
+constexpr uint32_t kVtValuesListener = 0x8205A79Cu;
+constexpr uint32_t kVtValuesListenerBase = 0x8205A7D4u;
+constexpr uint32_t kVtSoundListener = 0x82056974u;
+constexpr uint32_t kVtSoundListenerBase = 0x8205638Cu;
+constexpr uint32_t kListenerBase = 0x0Cu;
+constexpr uint32_t kListenerRefs = 0x04u;
+constexpr uint32_t kListenerEnabled = 0x08u;
+constexpr uint32_t kListenerHelper = 0x10u;
+constexpr uint32_t kListenerBytes = 0x14u;
+constexpr uint32_t kAddListener = 0x8246CCA0u;      // (page, listener**) to each widget, drops the passed reference
+constexpr uint32_t kRemoveListeners = 0x8246CD68u;  // (page)
+// the help bar: (bar, page, const std::string* buttons, const std::string* text, 1)
+constexpr uint32_t kHelpBar = 0x8293A878u;
+constexpr uint32_t kSetHelpBar = 0x821BBA70u;
+constexpr uint32_t kPopupButtons = 0x8205A6A0u;  // "Y,Empty_Y,B,Default_B,A,Default_A"
+constexpr uint32_t kPopupText = 0x82056B88u;     // " "
+constexpr uint32_t kStringInit = 0x820C0DB8u;    // (std::string*, const char*)
+constexpr uint32_t kStringFree = 0x820C0518u;    // (std::string*, 1, 0)
+constexpr uint32_t kStringBytes = 0x1Cu;
+// the UI manager: +0x340 its draw stack, whose +0x18 holds the input stack at +0xB8
+constexpr uint32_t kUiManager = 0x8291234Cu;
+constexpr uint32_t kUiDraw = 0x340u;
+constexpr uint32_t kDrawInput = 0x18u;
+constexpr uint32_t kInputStack = 0xB8u;
+constexpr uint32_t kPushDraw = 0x821303B0u;      // (draw, page, 1, 0, 0, 0)
+constexpr uint32_t kPopDraw = 0x821304D8u;       // (draw, 0, 0, 0, 0)
+constexpr uint32_t kInputTop = 0x8246B608u;      // (stack, 0, 0)
+constexpr uint32_t kPushInput = 0x8246B158u;     // (stack, page, 1, 0)
+constexpr uint32_t kPopInput = 0x8246B318u;      // (stack, 0, 0)
+constexpr uint32_t kDefaultFocus = 0x8246BB58u;  // (page)
+
+// our block: the two listeners, the help bar's strings, the icon colour and the listener argument
+constexpr uint32_t kBlockValuesListener = 0x00u;
+constexpr uint32_t kBlockSoundListener = kListenerBytes;
+constexpr uint32_t kBlockButtons = kListenerBytes * 2;
+constexpr uint32_t kBlockText = kBlockButtons + kStringBytes;
+constexpr uint32_t kBlockIcon = kBlockText + kStringBytes;
+constexpr uint32_t kBlockArgument = kBlockIcon + 4;
+constexpr uint32_t kBlockBytes = kBlockArgument + 4;
+
+struct Popup {
+    uint32_t block = 0;
+    uint32_t helper = 0;
+    int row = -1;  // our row whose values it lists
+    int current = 0;
+};
+
 // guest menu thread only
 Native g_native;
 Saved g_saved[4];
 int g_pending = -1;
+Popup g_popup;
 
 const rows::Row& NativeRow(int row) { return rows::Page(g_native.mode)[size_t(row)]; }
 int NativeCount() { return int(rows::Page(g_native.mode).size()); }
@@ -263,6 +332,106 @@ void Customise(PPCContext& ctx, uint32_t obj, int mode) {
     NativeHelp(ctx);
 }
 
+// the listeners keep our reference, so the page dropping its own never frees them
+bool EnsureBlock() {
+    if (g_popup.block) return true;
+    uint32_t block = mem::AllocSystem(kBlockBytes);
+    if (!block) return false;
+    uint32_t values = block + kBlockValuesListener;
+    uint32_t sound = block + kBlockSoundListener;
+    Write32(values, kVtValuesListener);
+    Write32(values + kListenerBase, kVtValuesListenerBase);
+    Write32(sound, kVtSoundListener);
+    Write32(sound + kListenerBase, kVtSoundListenerBase);
+    for (uint32_t listener : {values, sound}) {
+        Write32(listener + kListenerRefs, 1);
+        Write8(listener + kListenerEnabled, 1);
+    }
+    g_popup.block = block;
+    return true;
+}
+
+uint32_t DrawStack() { return Read32(Read32(kUiManager) + kUiDraw); }
+uint32_t InputStack() { return Read32(DrawStack() + kDrawInput) + kInputStack; }
+
+void AddListener(PPCContext& ctx, uint32_t page, uint32_t listener) {
+    uint32_t argument = g_popup.block + kBlockArgument;
+    Write32(listener + kListenerRefs, Read32(listener + kListenerRefs) + 1);
+    Write32(argument, listener);
+    kernel::CallGuest(ctx, kAddListener, {page, argument});
+}
+
+void SetPopupHelpBar(PPCContext& ctx, uint32_t page) {
+    uint32_t buttons = g_popup.block + kBlockButtons;
+    uint32_t text = g_popup.block + kBlockText;
+    kernel::CallGuest(ctx, kStringInit, {buttons, kPopupButtons});
+    kernel::CallGuest(ctx, kStringInit, {text, kPopupText});
+    kernel::CallGuest(ctx, kSetHelpBar, {Read32(kHelpBar), page, buttons, text, 1});
+    kernel::CallGuest(ctx, kStringFree, {buttons, 1, 0});
+    kernel::CallGuest(ctx, kStringFree, {text, 1, 0});
+}
+
+// as 0x821BAFF8 fills it for an option
+void FillValues(PPCContext& ctx, uint32_t values, const std::vector<std::string>& choices) {
+    kernel::CallGuest(ctx, kListAddColumn, {values, kCrcName});
+    kernel::CallGuest(ctx, kListAddColumn, {values, kCrcRating});
+    kernel::CallGuest(ctx, kListClear, {values});
+    for (const std::string& choice : choices) {
+        uint32_t row = uint32_t(kernel::CallGuest(ctx, kListAddRow, {values, Text(""), 0}));
+        if (uint32_t view = View(choice.c_str())) kernel::CallGuest(ctx, kListSetCell, {values, row, 0, view});
+    }
+    uint32_t icon = g_popup.block + kBlockIcon;
+    Write32(icon, kIconHidden);
+    for (uint32_t row = 0; row < uint32_t(choices.size()); row++) {
+        kernel::CallGuest(ctx, kHelperRowIcon, {g_popup.helper, row, icon});
+    }
+    // scrolled to, the long lists (sensitivity, field of view) start far down
+    kernel::CallGuest(ctx, kListSelect, {values, uint32_t(g_popup.current), 0, 1});
+    uint32_t description = Read32(g_popup.helper + kHelperDescription);
+    const char* help = NativeRow(g_popup.row).help;
+    if (description && help) kernel::CallGuest(ctx, kTextSetString, {description, Text(help)});
+}
+
+// as 0x821BB360 opens it
+void OpenPopup(PPCContext& ctx, int row, const std::vector<std::string>& choices, int current) {
+    uint32_t helper = g_native.obj + kHelper;
+    uint32_t page = Read32(helper + kHelperPopup);
+    uint32_t values = Read32(helper + kHelperValues);
+    if (!page || Read32(values) != kVtList || !EnsureBlock()) {
+        LOGE("options menu: value list %08X not as expected", page);
+        return;
+    }
+    g_popup.helper = helper;
+    g_popup.row = row;
+    g_popup.current = current;
+    Write32(g_popup.block + kBlockValuesListener + kListenerHelper, helper);
+    AddListener(ctx, page, g_popup.block + kBlockValuesListener);
+    AddListener(ctx, page, g_popup.block + kBlockSoundListener);
+    SetPopupHelpBar(ctx, page);
+    FillValues(ctx, values, choices);
+    kernel::CallGuest(ctx, kPushDraw, {DrawStack(), page, 1, 0, 0, 0});
+    uint32_t stack = InputStack();
+    if (uint32_t(kernel::CallGuest(ctx, kInputTop, {stack, 0, 0})) != page) {
+        kernel::CallGuest(ctx, kPushInput, {stack, page, 1, 0});
+    }
+    kernel::CallGuest(ctx, kDefaultFocus, {page});
+    SetCaption(ctx, Read32(helper + kHelperTitle), "");
+}
+
+// a row with a list changes only through it, an on / off one flips on A; false when nothing changed
+bool StepValue(PPCContext& ctx, int row, int step) {
+    const rows::Row& r = NativeRow(row);
+    int current = 0;
+    std::vector<std::string> choices = rows::Choices(r, &current);
+    bool flip = choices.size() == 2 && choices[0] == "OFF" && choices[1] == "ON";
+    if (choices.size() > 1 && (!flip || step)) {
+        if (!step) OpenPopup(ctx, row, choices, current);
+        return false;
+    }
+    rows::Text(r, step ? step : 1);
+    return true;
+}
+
 void StartCapture(PPCContext& ctx, int row) {
     g_native.capture = row;
     keys::BeginCapture();
@@ -275,18 +444,23 @@ void NativeKey(PPCContext& ctx, uint32_t code) {
     if (row < 0 || g_native.capture >= 0) return;
     const rows::Row& r = NativeRow(row);
     bool accept = code == kKeyA || code == kKeyEnter;
-    int step = code == kKeyLeft ? -1 : (code == kKeyRight || accept) ? 1 : 0;
-    if (!step) return;
-    if (r.kind == rows::Kind::Value) rows::Text(r, step);
-    else if (r.kind == rows::Kind::Defaults && accept) rows::Defaults(g_native.mode);
-    else if (r.kind == rows::Kind::Bind && accept) return StartCapture(ctx, row);
-    else return;
+    int step = 0;
+    if (code == kKeyLeft) step = -1;
+    if (code == kKeyRight) step = 1;
+    if (!accept && !step) return;
+    if (r.kind == rows::Kind::Bind) {
+        if (accept) StartCapture(ctx, row);
+        return;
+    }
+    if (r.kind == rows::Kind::Defaults && accept) rows::Defaults(g_native.mode);
+    else if (r.kind != rows::Kind::Value || !StepValue(ctx, row, step)) return;
     RefreshValues(ctx);
     kernel::CallGuest(ctx, kSoundPlay, {Read32(kSoundSystem), kSoundChange});
 }
 
 void Leave() {
     g_native.mode = -1;
+    g_popup.row = -1;
     if (g_native.capture >= 0 && keys::Capturing()) keys::Captured();
     g_native.capture = -1;
 }
@@ -296,6 +470,22 @@ bool ListOk() {
     uint32_t first = Read32(g_native.list + kListItems);
     uint32_t last = Read32(g_native.list + kListItems + 4);
     return Read32(g_native.list) == kVtList && last >= first && (last - first) / kListItemBytes == uint32_t(NativeCount());
+}
+
+// A picks the value, B keeps the one set; closed as 0x821BAEA0 does, where only A drops the listeners
+void PopupKey(PPCContext& ctx, uint32_t code) {
+    bool accept = code == kKeyA || code == kKeyEnter;
+    if (!accept && code != kKeyB) return;
+    int row = g_popup.row;
+    int pick = ReadS16(Read32(g_popup.helper + kHelperValues) + kListSelected);
+    g_popup.row = -1;
+    kernel::CallGuest(ctx, kPopDraw, {DrawStack(), 0, 0, 0, 0});
+    kernel::CallGuest(ctx, kPopInput, {InputStack(), 0, 0});
+    if (!accept) return;
+    kernel::CallGuest(ctx, kRemoveListeners, {Read32(g_popup.helper + kHelperPopup)});
+    if (pick < 0 || pick == g_popup.current || !ListOk()) return;
+    rows::Choose(NativeRow(row), pick);
+    RefreshValues(ctx);
 }
 
 // Delete on a bind row unbinds it
@@ -349,7 +539,6 @@ constexpr uint32_t kCrcBackText = 0xF3EC853Bu;    // B_Text, empty on P_Main
 constexpr uint32_t kVtTextElement = 0x82078CC8u;  // element type 8
 constexpr uint32_t kElementArea = 0x2Cu;
 constexpr uint32_t kElementAreaShown = 0x30u;
-constexpr uint32_t kTextSetString = 0x821557A8u;  // (text element, UTF-16)
 constexpr const char* kWatermark = "XEX Recomp V1";
 
 void SetWatermark(PPCContext& ctx, uint32_t page) {
@@ -377,6 +566,7 @@ PPC_EXTERN_FUNC(__imp__sub_821D63D0);
 PPC_EXTERN_FUNC(__imp__sub_821D6200);
 PPC_EXTERN_FUNC(__imp__sub_821D65F0);
 PPC_EXTERN_FUNC(__imp__sub_821BBA70);
+PPC_EXTERN_FUNC(__imp__sub_821BAEA0);
 
 // base menu init: resolves the pages, attaches listeners and widgets; the pages exist from here on
 PPC_FUNC(sub_8216FA60) {
@@ -485,4 +675,15 @@ PPC_FUNC(sub_821BBA70) {
     uint32_t page = uint32_t(ctx.r[4]);
     __imp__sub_821BBA70(ctx, base);
     SetWatermark(ctx, page);
+}
+
+// the value list's key up (helper, widget, event)
+PPC_FUNC(sub_821BAEA0) {
+    bool ours = g_popup.row >= 0 && g_native.mode >= 0 && uint32_t(ctx.r[3]) == g_popup.helper;
+    if (!ours) {
+        __imp__sub_821BAEA0(ctx, base);
+        return;
+    }
+    PopupKey(ctx, Read32(uint32_t(ctx.r[5])));
+    ctx.r[3] = 1;
 }

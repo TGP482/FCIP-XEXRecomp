@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 struct PPCContext;
 
@@ -43,6 +44,9 @@ struct Row {
 std::span<const Row> Page(int page);
 // any thread: the value as shown, stepped first when step is not zero
 std::string Text(const Row& row, int step = 0);
+// any thread: the row's values as a list, empty when it only steps; current is the one set
+std::vector<std::string> Choices(const Row& row, int* current);
+void Choose(const Row& row, int index);
 void Defaults(int page);
 void SetBind(int action, uint8_t vk);  // the action's key, its alternate kept
 void ClearBind(int action);            // both keys

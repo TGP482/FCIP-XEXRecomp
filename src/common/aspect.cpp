@@ -48,12 +48,13 @@ thread_local bool g_paint = false;   // the red paint is drawing
 thread_local bool g_held = false;    // a menu part above has its place
 std::atomic<int64_t> g_world_ms{-1000};  // when the 3D world last drew
 
-// a widget's quads in the layout's virtual x, gathered while it draws
+// a widget's quads in the layout's virtual x, gathered while it draws, and its glyphs alone
 struct Span {
     uint32_t widget = 0;
     float left = std::numeric_limits<float>::max();
     float right = std::numeric_limits<float>::lowest();
-    bool text = false;  // glyphs among them
+    float text_left = std::numeric_limits<float>::max();
+    float text_right = std::numeric_limits<float>::lowest();
 };
 
 // a widget as drawn last frame: its span and the anchor its quads used
@@ -213,17 +214,17 @@ static bool MenuLayout() {
 }
 
 // held at its nearer page side, or its middle when its gaps to the sides are within an eighth of a page
-static float HeldAnchor(const Span& span) {
+static float HeldAnchor(float left, float right) {
     float page = float(kMenuWidth);
-    float gap_left = span.left;
-    float gap_right = page - span.right;
-    if (std::fabs(gap_left - gap_right) < page / 8.0f) return (span.left + span.right) * 0.5f / page;
-    return (gap_left < gap_right ? span.left : span.right) / page;
+    float gap_left = left;
+    float gap_right = page - right;
+    if (std::fabs(gap_left - gap_right) < page / 8.0f) return (left + right) * 0.5f / page;
+    return (gap_left < gap_right ? left : right) / page;
 }
 
-// A menu control (button, slider, list), or a part narrower than 60% of the page that draws text, keeps the place the
-// stretched console layout gave it, at its own shape; parts reaching a page side are frames and stay as they are. Its
-// span is last frame's, as a part's size is known only once it has drawn.
+// A menu control (button, slider, list), or a part whose text spans under 60% of the page, keeps the place the
+// stretched console layout gave it, at its own shape. A part reaching a page side is held by its text, so the frame
+// around it does not move it. Its span is last frame's, as a part's size is known only once it has drawn.
 static void HoldInPlace(uint32_t widget) {
     if (!MenuLayout() || fcip::Scale2D() >= 1.0f) return;
     Span span;
@@ -235,11 +236,15 @@ static void HoldInPlace(uint32_t widget) {
     }
     uint32_t element = R32(widget + kWidgetElement);
     bool control = R32(widget) == SYM_UIWidgetFocus_vtable || (element && R32(element) == SYM_UIList_vtable);
-    float width = span.right - span.left;
-    bool part = span.text && width < kMenuWidth * 0.6f;
+    bool text = span.text_right > span.text_left;
+    bool part = text && span.text_right - span.text_left < kMenuWidth * 0.6f;
     bool frame = span.left <= 0.5f || span.right >= kMenuWidth - 0.5f;
-    if (width <= 0.0f || frame || (!control && !part)) return;
-    g_anchor = HeldAnchor(span);
+    if (span.right <= span.left || (!control && !part) || (frame && !part)) return;
+    if (frame) {
+        g_anchor = HeldAnchor(span.text_left, span.text_right);
+    } else {
+        g_anchor = HeldAnchor(span.left, span.right);
+    }
     g_held = true;
 }
 
@@ -314,7 +319,9 @@ static void Gather(const uint32_t (&x)[4], float width) {
         for (Span& span : g_open) {
             span.left = std::min(span.left, page_x);
             span.right = std::max(span.right, page_x);
-            span.text = span.text || g_text;
+            if (!g_text) continue;
+            span.text_left = std::min(span.text_left, page_x);
+            span.text_right = std::max(span.text_right, page_x);
         }
     }
 }

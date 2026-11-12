@@ -57,7 +57,7 @@ constexpr uint32_t kPlayerInventory = 0xC0;  // 16 byte entries [+0x20, +0x24), 
 constexpr uint32_t kPlayerWeaponObject = 0x2CC;
 constexpr uint32_t kPlayerWeapon = 0x2D8;  // current weapon id
 constexpr uint32_t kPlayerStance = 0x428;  // 1 stands
-constexpr uint32_t kPlayerAutoAim = 0x55C;  // u8, script SetAutoAimActive, not gated by cl_aimingHelper
+constexpr uint32_t kPlayerAutoAim = 0x55C;  // u8, the profile's shooting helper and script SetAutoAimActive
 constexpr uint32_t kPlayerLean = 0x7A8;
 constexpr uint32_t kPlayerYawDelta = 0x7B8;
 constexpr uint32_t kPlayerPitchLag = 0x7BC;  // up to 2 degrees, 4 per second
@@ -180,7 +180,7 @@ struct HelperOverride {
 };
 
 HelperOverride SuppressAimingHelper() {
-    if (!fcip::Get().auto_helpers || !K::KbmActive()) return {};
+    if (!K::KbmActive()) return {};
     uint32_t game = R32(SYM_Game_pointer);
     uint32_t cvar = game ? R32(game + SYM_Game_AimingHelper) : 0;
     uint32_t slot = cvar ? R32(cvar + kCVarValuePtr) : 0;
@@ -188,6 +188,23 @@ HelperOverride SuppressAimingHelper() {
     if (!saved) return {};
     W32(slot, 0);
     return {slot, saved};
+}
+
+// the auto aim flag, cleared for one call while the keyboard or mouse is in use
+struct AutoAimOverride {
+    uint32_t player = 0;
+    uint8_t saved = 0;
+};
+
+AutoAimOverride SuppressAutoAim(uint32_t player) {
+    if (!K::KbmActive() || !GuestOk(player)) return {};
+    AutoAimOverride over{player, R8(player + kPlayerAutoAim)};
+    W8(player + kPlayerAutoAim, 0);
+    return over;
+}
+
+void RestoreAutoAim(const AutoAimOverride& over) {
+    if (over.player) W8(over.player + kPlayerAutoAim, over.saved);
 }
 
 // cl_display_hud flips on each press of the toggle key; the editor has no offset for it
@@ -205,8 +222,8 @@ void ToggleHud() {
 #endif
 }
 
-// smoothing off and looking with the mouse
-bool RawLook() { return !fcip::Get().mouse_smoothing && fcip::MouseLookActive() && K::KbmActive(); }
+// looking with the mouse
+bool RawLook() { return fcip::MouseLookActive() && K::KbmActive(); }
 
 // aiming down the sights or a scope
 bool Zoomed(uint32_t player) {
@@ -427,6 +444,7 @@ PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_SelectWeaponSlot));
 PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_ReloadUse));
 PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_Zoom));
 PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_Fire));
+PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_FireWeapon));
 PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_Feral));
 PPC_EXTERN_FUNC(GUEST_ORIG(CAimHelper_AutoAim));
 PPC_EXTERN_FUNC(GUEST_ORIG(CAimHelper_Update));
@@ -552,12 +570,17 @@ PPC_FUNC(GUEST(CPlayer_Feral)) {
 
 // (helper, player, ...): turns the weapon toward the target; with the flag clear it takes its reset path
 PPC_FUNC(GUEST(CAimHelper_AutoAim)) {
-    uint32_t player = uint32_t(ctx.r[4]);
-    bool off = fcip::Get().auto_helpers && K::KbmActive() && GuestOk(player);
-    uint8_t saved = off ? R8(player + kPlayerAutoAim) : 0;
-    if (off) W8(player + kPlayerAutoAim, 0);
+    AutoAimOverride over = SuppressAutoAim(uint32_t(ctx.r[4]));
     GUEST_ORIG(CAimHelper_AutoAim)(ctx, base);
-    if (off) W8(player + kPlayerAutoAim, saved);
+    RestoreAutoAim(over);
+}
+
+// (this): fires the weapon, which the auto aim flag helps onto the target; local player only
+PPC_FUNC(GUEST(CPlayer_FireWeapon)) {
+    uint32_t player = uint32_t(ctx.r[3]);
+    AutoAimOverride over = player == g_local_player ? SuppressAutoAim(player) : AutoAimOverride{};
+    GUEST_ORIG(CPlayer_FireWeapon)(ctx, base);
+    RestoreAutoAim(over);
 }
 
 // (helper, cmd): mouse look and the gyro add this frame's turn to the look the pad produced; the aiming helper is off
@@ -572,8 +595,8 @@ PPC_FUNC(GUEST(CAimHelper_Update)) {
     GyroLook(cmd);
 }
 
-// (this), local player only: with smoothing off on the mouse, a second pass sees no pitch change, so the lag stays
-// zero and the lean steps once
+// (this), local player only: looking with the mouse, a second pass sees no pitch change, so the lag stays zero and
+// the lean steps once
 PPC_FUNC(GUEST(CPlayer_UpdateLookBones)) {
     uint32_t player = uint32_t(ctx.r[3]);
     bool raw = player && RawLook();

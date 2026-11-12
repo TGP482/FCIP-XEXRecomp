@@ -74,6 +74,7 @@ CAimHelper_AutoAim = 0x82256A48
 CAimHelper_Update = 0x82257300
 CPlayer_Feral = 0x8216DA08
 CPlayer_Fire = 0x8216CAA8
+CPlayer_FireWeapon = 0x8215DD08
 CPlayer_ProcessMovements = 0x82165828
 CPlayer_ProcessView = 0x82174B80
 CPlayer_ReloadUse = 0x8216BEA0
