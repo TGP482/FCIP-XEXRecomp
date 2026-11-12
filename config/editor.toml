@@ -125,6 +125,7 @@ Renderer_Init = 0x8247DC18
 ShadowMaps_Update = 0x823425C0
 Shadow_Extent = 0x8235EAC0
 Shadow_Pass = 0x8235BB30
+Shadow_Resolve = 0x823700B0
 Shadow_Size = 0x8247B850
 Shadow_Snap = 0x82339438
 Shadow_Surface = 0x8235A0E8

@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "common/aspect.h"
+#include "common/render_pass.h"
 #include "common/settings.h"
 #include "xdk/hle.h"
 
@@ -100,8 +101,7 @@ void ApplyEngine(uint32_t engine) {
     W8(engine + kShadowSectorRadius, s.shadow_distance == 1);
     // the sun texel size over stock: the slope bias is the value over 2^24, 0 at the stock texel, nearing 2 texels,
     // the reach of the 4 tap compare
-    uint32_t side = std::min<uint32_t>(s.shadow_resolution, 8192);
-    float texel = float(s.shadow_distance) * float(kStockShadowSide) / float(side);
+    float texel = float(s.shadow_distance) * float(kStockShadowSide) / float(fcip::SunShadowSide());
     float slope = texel > 1.0f ? 2.0f * (1.0f - 1.0f / texel) : 0.0f;
     Offset(engine + kSunSlopeScale, slope * 16777216.0f, g_sun_slope);
     // past the grass distance with room for a tile's height, stock at 1x; engine+0xB30 stays stock, split screen

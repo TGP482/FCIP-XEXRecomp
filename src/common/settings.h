@@ -16,7 +16,7 @@ struct Settings {
     uint32_t colour_blind = 0;  // 0 off, 1 protanopia, 2 deuteranopia, 3 tritanopia
     bool smaa = false;          // over the finished frame, HUD included; combines with MSAA
     uint32_t ambient_occlusion = 0;  // 0 off, 1 SSAO, 2 GTAO; the world only, under the fog
-    uint32_t shadow_resolution = 1344;  // sun shadow map side, 1344 is stock
+    uint32_t shadow_resolution = 1344;  // sun shadow map edge, 0 follows the render scale; 1344 is stock
     uint32_t shadow_distance = 1;       // multipliers on the level's own values, 1 is stock
     uint32_t object_distance = 1;
     uint32_t detail_distance = 1;

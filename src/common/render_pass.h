@@ -9,4 +9,7 @@ constexpr uint32_t kPassCamera = 5;  // the camera's view; 2 is the sun's shadow
 // the type of the pass being submitted on this thread, 0 outside one
 uint32_t SubmittedPass();
 
+// the sun shadow map's guest side, 1344 at stock
+uint32_t SunShadowSide();
+
 }  // namespace fcip

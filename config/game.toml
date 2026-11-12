@@ -133,6 +133,7 @@ Scene_Sort = 0x82502B88
 ShadowMaps_Update = 0x825EF248
 Shadow_Extent = 0x8236A680
 Shadow_Pass = 0x82367D68
+Shadow_Resolve = 0x823B15D0
 Shadow_Size = 0x82370A80
 Shadow_Snap = 0x825D2220
 Shadow_Surface = 0x8236A448

@@ -26,7 +26,7 @@ void LoadSettings(const void* table) {
     s.colour_blind = std::min(t["colour_blind"].value_or(s.colour_blind), 3u);
     s.smaa = t["smaa"].value_or(s.smaa);
     s.ambient_occlusion = std::min(t["ambient_occlusion"].value_or(s.ambient_occlusion), 2u);
-    s.shadow_resolution = std::clamp(t["shadow_resolution"].value_or(s.shadow_resolution), 512u, 8192u);
+    s.shadow_resolution = std::min(t["shadow_resolution"].value_or(s.shadow_resolution), 8192u);
     for (auto [key, value] : {std::pair{"shadow_distance", &s.shadow_distance}, {"object_distance", &s.object_distance},
                               {"detail_distance", &s.detail_distance}, {"grass_distance", &s.grass_distance},
                               {"vegetation_detail", &s.vegetation_detail}, {"model_detail", &s.model_detail}})
