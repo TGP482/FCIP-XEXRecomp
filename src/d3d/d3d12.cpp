@@ -425,6 +425,7 @@ O vs(uint id : SV_VertexID) {
 Texture2DMS<float4> img : register(t0);
 #else
 Texture2D<float4> img : register(t0);
+SamplerState ls : register(s0);
 #endif
 float4 ps(O i) : SV_Target {
     int2 at = int2(i.uv);
@@ -432,6 +433,10 @@ float4 ps(O i) : SV_Target {
     float4 c = 0;
     for (uint s = 0; s < uint(opts.x); s++) c += img.Load(at, s);
     c /= opts.x;
+#elif FILTER
+    float2 size;
+    img.GetDimensions(size.x, size.y);
+    float4 c = img.SampleLevel(ls, i.uv / size, 0);
 #else
     float4 c = img.Load(int3(at, 0));
 #endif
@@ -973,7 +978,7 @@ private:
     ID3D12PipelineState* EnsurePipeline(const PipelineKey& k, const Variant& vs, const Variant* ps);
     ID3D12PipelineState* FindPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps);
     void FillPipelineDesc(const PipelineKey& k, D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
-    ID3D12PipelineState* EnsureResolvePipeline(DXGI_FORMAT rtv, bool ms);
+    ID3D12PipelineState* EnsureResolvePipeline(DXGI_FORMAT rtv, bool ms, bool filter = false);
     uint32_t Samples(uint32_t want);
     uint32_t HostSamples(uint32_t title) const { return title > 1 ? msaa_ : title; }
 
@@ -997,6 +1002,7 @@ private:
     void ReleasePackTextures();
     D3D12_SAMPLER_DESC SamplerDesc(const TextureBinding& b, const uint32_t fetch[6]) const;
     D3D12_GPU_DESCRIPTOR_HANDLE EnsureSamplers(const std::vector<D3D12_SAMPLER_DESC>& descs);
+    D3D12_GPU_DESCRIPTOR_HANDLE LinearSamplers();
     uint32_t BindTextures(const State& s, const ShaderInfo& info, ShaderStage stage, uint32_t first, uint32_t slots,
                           D3D12_GPU_DESCRIPTOR_HANDLE& samplers);
     void NullViews(uint32_t first, uint32_t count);
@@ -1890,11 +1896,12 @@ ID3D12PipelineState* D3D12Backend::FindPipeline(const PipelineKey& k, const Vari
     return pso.Get();
 }
 
-ID3D12PipelineState* D3D12Backend::EnsureResolvePipeline(DXGI_FORMAT rtv, bool ms) {
-    uint64_t key = uint64_t(rtv) << 1 | ms;
+ID3D12PipelineState* D3D12Backend::EnsureResolvePipeline(DXGI_FORMAT rtv, bool ms, bool filter) {
+    uint64_t key = uint64_t(rtv) << 2 | uint64_t(filter) << 1 | ms;
     auto& pso = resolve_pipelines_[key];
     if (pso) return pso.Get();
-    std::string src = std::string("#define MS ") + (ms ? "1" : "0") + "\n" + kResolveHlsl;
+    std::string src = std::string("#define MS ") + (ms ? "1" : "0") + "\n#define FILTER " + (filter ? "1" : "0") + "\n" +
+                      kResolveHlsl;
     std::vector<uint8_t> vs;
     std::vector<uint8_t> ps;
     if (!CompileHlsl("#define vs main\n" + src, L"vs_6_0", vs)) return nullptr;
@@ -3500,7 +3507,7 @@ std::array<float, 9> ColourBlindMatrix(uint32_t mode) {
 // the frame over the window at the output's aspect, 4:3 at the narrowest, bars around it
 void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, DXGI_FORMAT rtv,
                               D3D12_CPU_DESCRIPTOR_HANDLE target, UINT mapping, uint32_t w, uint32_t h) {
-    ID3D12PipelineState* pso = EnsureResolvePipeline(rtv, false);
+    ID3D12PipelineState* pso = EnsureResolvePipeline(rtv, false, true);
     if (!pso) return;
     D3D12_RESOURCE_STATES* src_state = &state;
     if (fcip::Get().smaa) {
@@ -3538,8 +3545,10 @@ void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state,
     cl_->SetGraphicsRootConstantBufferView(kRootVsConsts, addr);
     cl_->SetGraphicsRootConstantBufferView(kRootPsConsts, addr);
     cl_->SetGraphicsRootDescriptorTable(kRootPsViews, ViewGuest(views));
+    cl_->SetGraphicsRootDescriptorTable(kRootPsSamplers, LinearSamplers());
     cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cl_->DrawInstanced(4, 1, 0, 0);
+    Unbind();
 }
 
 // src readable: SMAA's blend of it, null when it can't run
@@ -3837,14 +3846,19 @@ void D3D12Backend::ShaderView(ID3D12Resource* res, DXGI_FORMAT fmt, uint32_t slo
 }
 
 // one triangle over the viewport: p in b1, the views table from t0, s0 linear and s1 point, both clamped
-void D3D12Backend::FullScreen(ID3D12PipelineState* pso, uint32_t views, const float p[8]) {
+// s0 linear, s1 point, both clamped
+D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::LinearSamplers() {
     D3D12_SAMPLER_DESC linear{};
     linear.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     linear.AddressU = linear.AddressV = linear.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     linear.MaxLOD = D3D12_FLOAT32_MAX;
     D3D12_SAMPLER_DESC point = linear;
     point.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    D3D12_GPU_DESCRIPTOR_HANDLE samplers = EnsureSamplers({linear, point});
+    return EnsureSamplers({linear, point});
+}
+
+void D3D12Backend::FullScreen(ID3D12PipelineState* pso, uint32_t views, const float p[8]) {
+    D3D12_GPU_DESCRIPTOR_HANDLE samplers = LinearSamplers();
     cl_->SetPipelineState(pso);
     cl_->SetGraphicsRootConstantBufferView(kRootFlow, UploadConstants(p, 8 * sizeof(float)));
     cl_->SetGraphicsRootDescriptorTable(kRootPsViews, ViewGuest(views));
