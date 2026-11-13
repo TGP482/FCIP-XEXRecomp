@@ -17,9 +17,11 @@ uint32_t SunShadowSide();
 // ShadowMaps_Update: past 1x shadow distance sharper sun maps first, then the game's own
 void DrawShadowMaps(PPCContext& ctx, uint8_t* base);
 
-constexpr uint32_t kSunMaps = 5;        // sharper maps at most, map i at 2^i times the stock radius
+// sharper maps at most, map i at 2^i times the stock radius; a 16x map would redraw nearly the far map's casters, as
+// object draw distance already cuts most past it
+constexpr uint32_t kSunMaps = 4;
 constexpr uint32_t kSunFetch = 8;       // SunShadowSampler in every receiver
-constexpr uint32_t kSunFirstSlot = 27;  // the pixel shader views the sharper maps are bound to, through 31
+constexpr uint32_t kSunFirstSlot = 27;  // the pixel shader views the sharper maps are bound to, through 30
 
 // the sun maps as the renderer reads them: receivers fetch the far one with kSunFetch, distance is its radius over the
 // stock one

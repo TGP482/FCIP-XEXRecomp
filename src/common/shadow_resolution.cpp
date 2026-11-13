@@ -13,7 +13,7 @@
 // receivers take their texel offsets from it and the renderer sizes its copy from it. A new side leaves the old
 // surfaces in the pool, which frees unused ones only when the screen size changes, so it is told the screen changed.
 //
-// Past 1x shadow distance sharper maps are drawn first, at 1x, 2x, 4x and on of the stock radius while they divide the
+// Past 1x shadow distance sharper maps are drawn first, at 1x, 2x, 4x and 8x of the stock radius while they divide the
 // distance, each a whole run of the update into another pool surface (the pool frees its surfaces after the camera
 // pass), so detail halves from one map to the next. Every sun camera sits where the stock radius puts it, on the far
 // map's texel grid, with the far map's depth range, and is as wide as its radius. The far map draws last, so the
