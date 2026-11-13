@@ -32,6 +32,7 @@
 #include "common/aspect.h"
 #include "common/render_pass.h"
 #include "common/settings.h"
+#include "d3d/dlss.h"
 #include "d3d/occlusion.h"
 #include "d3d/readback.h"
 #include "d3d/smaa_shader.h"
@@ -1419,6 +1420,7 @@ D3D12Backend::~D3D12Backend() {
     if (!dev_) return;
     Submit(true);
     ImGui_ImplDX12_Shutdown();
+    dlss::Shutdown();
     if (event_) CloseHandle(event_);
 }
 
@@ -1450,6 +1452,7 @@ bool D3D12Backend::CreateDevice() {
         ComPtr<ID3D12Debug> dbg;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) dbg->EnableDebugLayer();
     }
+    dlss::Load();
     if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory_)))) return false;
     // the dedicated GPU first on hybrid laptops
     ComPtr<IDXGIFactory6> f6;
@@ -1465,6 +1468,7 @@ bool D3D12Backend::CreateDevice() {
     DXGI_ADAPTER_DESC1 ad{};
     if (adapter) adapter->GetDesc1(&ad);
     LOGR("D3D12 adapter: %ls", adapter ? ad.Description : L"default");
+    dlss::SetDevice(dev_.Get());
     D3D12_COMMAND_QUEUE_DESC qd{};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     dev_->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue_));
