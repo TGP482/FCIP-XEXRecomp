@@ -217,12 +217,8 @@ DXGI_FORMAT ColorResourceFormat(uint32_t f) { return f <= 1 ? DXGI_FORMAT_R8G8B8
 DXGI_FORMAT ColorReadFormat(uint32_t f) { return f <= 1 ? DXGI_FORMAT_R8G8B8A8_UNORM : ColorFormat(f); }
 bool WideColor(uint32_t f) { return f == 5 || f == 7 || f == 12 || f == 15; }
 
-// D3D12 compare functions are the console's plus one; depth is stored reversed
+// D3D12 compare functions are the console's plus one
 D3D12_COMPARISON_FUNC Compare(uint32_t f) { return D3D12_COMPARISON_FUNC(f + 1); }
-D3D12_COMPARISON_FUNC ReversedCompare(uint32_t f) {
-    static const uint8_t kSwap[8] = {0, 4, 2, 6, 1, 5, 3, 7};
-    return Compare(kSwap[f & 7]);
-}
 
 D3D12_BLEND BlendFactor(uint32_t f, bool alpha) {
     switch (f) {
@@ -351,14 +347,15 @@ struct PipelineKey {
     uint32_t depth_control = 0;
     uint32_t stencil = 0;  // read and write masks
     uint32_t su_mode = 0;
-    float poly_offset[2] = {};
+    float poly_scale = 0;
     uint32_t topology = 0;
     uint32_t strip_cut = 0;
-    uint32_t stream_out = 0;  // RTAO's; no padding: the key is hashed and compared as bytes
+    uint32_t stream_out = 0;  // RTAO's
+    uint32_t unused = 0;      // no padding: the key is hashed and compared as bytes
 };
 
 // cache/pipelines.bin: the header, then per pipeline its record, the shaders' DXIL and the driver's blob
-constexpr uint32_t kPipelineCacheMagic = 0x31505358;
+constexpr uint32_t kPipelineCacheMagic = 0x32505358;
 struct PipelineRecord {
     PipelineKey key;
     uint32_t vs_size = 0;
@@ -469,8 +466,7 @@ float4 ps(O i) : SV_Target {
 #else
     float4 c = img.Load(int3(at, 0));
 #endif
-    // depth is held reversed
-    c = opts.y != 0 ? 1 - c.xxxx : c;
+    c = opts.y != 0 ? c.xxxx : c;
     c.rgb *= opts.z != 0 ? opts.z : 1;
     // opts.w: the rows hold a colour matrix, applied to linear colour
     if (opts.w > 0) {
@@ -594,7 +590,7 @@ float4 vs(uint id : SV_VertexID) : SV_Position {
     return float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
 }
 // view space position of a pixel, z the view distance. proj: 1 / scale xy, centre xy; zp: z = x / (raw - y) of the
-// host's reversed depth; ndc: a pixel centre to the title's ndc; vp: the scissor in pixels
+// host's depth; ndc: a pixel centre to the title's ndc; vp: the scissor in pixels
 float3 View(float2 px) {
     int2 p = clamp(int2(px), int2(vp.xy), int2(vp.xy + vp.zw) - 1);
     float z = zp.x / (Raw(p) - zp.y);
@@ -789,13 +785,13 @@ void OcclusionConstants(const OcclusionArgs& a, const DrawConstants& d, const D3
     float ny = -2.0f / float(h) / d.ndc_scale[1];
     float ox = (-1 - d.ndc_offset[0]) / d.ndc_scale[0];
     float oy = (1 - d.ndc_offset[1]) / d.ndc_scale[1];
-    // the host holds 1 - (ndc depth * zs + zo)
+    // the host holds ndc depth * zs + zo
     float zs = d.ndc_scale[2];
     float zo = d.ndc_offset[2];
     float vw = float(rect.right - rect.left);
     float vh = float(rect.bottom - rect.top);
     const float out[kAoConstants] = {a.proj[0], a.proj[1], a.proj[2], a.proj[3],
-                                     -a.m32 * zs, 1 - zo + a.m22 * zs, 0, 0,
+                                     a.m32 * zs, zo - a.m22 * zs, 0, 0,
                                      nx, ny, ox, oy,
                                      float(rect.left), float(rect.top), vw, vh,
                                      kAoRadius, kAoMaxSpan * vh, 0, 0,
@@ -826,8 +822,8 @@ struct RayDraw {
 // a draw's host clip x, y and z to the view space kAoHlsl's View() makes: the title's z is m32 - m22 * w (823B0580
 // flips it to w - z), so the distance w comes back from z alone
 void RayTransform(const OcclusionArgs& a, const RayDraw& d, uint8_t* out) {
-    float q = 1 / (1 - d.ndc_offset[2] + d.ndc_scale[2] * a.m22);
-    float w0 = q * d.ndc_scale[2] * a.m32;  // w = q * z + w0
+    float q = 1 / (d.ndc_offset[2] - d.ndc_scale[2] * a.m22);
+    float w0 = -q * d.ndc_scale[2] * a.m32;  // w = q * z + w0
     float bx = -a.proj[0] * (d.ndc_offset[0] / d.ndc_scale[0] + a.proj[2]);
     float by = -a.proj[1] * (d.ndc_offset[1] / d.ndc_scale[1] + a.proj[3]);
     const float rows[12] = {a.proj[0] / d.ndc_scale[0], 0, bx * q, bx * w0,
@@ -1990,8 +1986,7 @@ void D3D12Backend::ClearTarget(Target& t, uint32_t flags, const float color[4], 
                                                 ((flags & kClearStencil) ? D3D12_CLEAR_FLAG_STENCIL : 0));
         if (!f) return;
         Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        // depth is held reversed
-        cl_->ClearDepthStencilView(Dsv(t.view), f, 1 - z, stencil, count, rects);
+        cl_->ClearDepthStencilView(Dsv(t.view), f, z, stencil, count, rects);
     } else if (flags & kClearColors) {
         Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
         cl_->ClearRenderTargetView(Rtv(t.view), color, count, rects);
@@ -2086,7 +2081,7 @@ void FillDepthStencil(const PipelineKey& k, D3D12_DEPTH_STENCIL_DESC& d) {
     uint32_t c = k.depth_control;
     d.DepthEnable = Bits(c, 1, 1);
     d.DepthWriteMask = Bits(c, 2, 1) ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
-    d.DepthFunc = ReversedCompare(Bits(c, 4, 3));
+    d.DepthFunc = Compare(Bits(c, 4, 3));
     d.StencilEnable = Bits(c, 0, 1);
     d.StencilReadMask = UINT8(Bits(k.stencil, 0, 8));
     d.StencilWriteMask = UINT8(Bits(k.stencil, 8, 8));
@@ -2107,11 +2102,8 @@ void FillRasterizer(const PipelineKey& k, D3D12_RASTERIZER_DESC& d) {
     d.FillMode = Bits(m, 3, 2) && Bits(m, 5, 3) == 1 ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
     d.CullMode = Bits(m, 0, 1) ? D3D12_CULL_MODE_FRONT : (Bits(m, 1, 1) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE);
     d.FrontCounterClockwise = !Bits(m, 2, 1);
-    if (Bits(m, 11, 2)) {
-        // the console's offset is in 24 bit depth units; negated for reversed depth
-        d.DepthBias = -int32_t(k.poly_offset[1] * 16777216.0f);
-        d.SlopeScaledDepthBias = -k.poly_offset[0];
-    }
+    // the constant offset rides in the draw's depth offset
+    if (Bits(m, 11, 2)) d.SlopeScaledDepthBias = k.poly_scale;
     d.DepthClipEnable = TRUE;
     d.MultisampleEnable = Bits(m, 15, 1);
 }
@@ -2695,10 +2687,7 @@ void D3D12Backend::FillKeyStates(const State& s, PipelineKey& k) const {
     uint32_t sr = s.Reg(kRbStencilRefMask);
     k.stencil = Bits(sr, 8, 8) | Bits(sr, 16, 8) << 8;
     k.su_mode = s.Reg(kPaSuScModeCntl) & 0x9FFF;
-    if (Bits(k.su_mode, 11, 2)) {
-        k.poly_offset[0] = s.RegF(kPaSuPolyOffsetFrontScale);
-        k.poly_offset[1] = s.RegF(kPaSuPolyOffsetFrontScale + 1);
-    }
+    if (Bits(k.su_mode, 11, 2)) k.poly_scale = s.RegF(kPaSuPolyOffsetFrontScale);
 }
 
 // the colour targets the pixel shader writes and the mask lets through, and the depth target when tested
@@ -3185,6 +3174,8 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
 
     DrawConstants c;
     FillDrawConstants(s, bound, c);
+    // the console's offset is in depth units, D3D12's constant bias on float depth scales with the depth
+    if (Bits(k.su_mode, 11, 2)) c.ndc_offset[2] += s.RegF(kPaSuPolyOffsetFrontScale + 1);
     if (sun) {
         c.ext[0] = float(sun_maps_.distance);
         c.ext[1] = float(sun_maps_.count);

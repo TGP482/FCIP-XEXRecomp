@@ -1003,8 +1003,6 @@ VOut main(uint id : SV_VertexID) {
     v.clip0 = float4(dot(pos, g_clip[0]), dot(pos, g_clip[1]), dot(pos, g_clip[2]), dot(pos, g_clip[3]));
     v.clip1 = float2(dot(pos, g_clip[4]), dot(pos, g_clip[5]));
     pos.xyz = pos.xyz * g_ndc_scale.xyz + g_ndc_offset.xyz * pos.w;
-    // depth stored reversed
-    pos.z = pos.w - pos.z;
     v.pos = pos;
     v.o = o;
     return v;
@@ -1056,7 +1054,7 @@ POut main(PIn i) {
     for (uint32_t i = 0; i < kColorTargets; i++) {
         if (info_.exports >> i & 1) s += F("    o.c%u = oC[%u];\n", i, i);
     }
-    if (info_.writes_depth) s += "    o.depth = 1 - oDepth;\n";
+    if (info_.writes_depth) s += "    o.depth = oDepth;\n";
     if (!info_.exports && !info_.writes_depth) s += "    o.c0 = 0;\n";
     s += "    return o;\n}\n";
     return s;
