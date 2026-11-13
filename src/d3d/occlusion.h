@@ -13,6 +13,8 @@ constexpr uint32_t kClearOcclusionScene = 0x200;  // RTAO traces the world drawn
 
 // the ambient occlusion setting
 enum : uint32_t { kAoSsao = 1, kAoGtao = 2, kAoRtao = 3 };
+// inline ray tracing for RTAO, known once the renderer made its device
+bool RayTracing();
 
 struct OcclusionArgs {
     float proj[4] = {};  // 1 / x scale, 1 / y scale, x and y centre: view x = (ndc x - centre) / scale * distance

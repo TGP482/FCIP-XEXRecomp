@@ -31,6 +31,7 @@
 #include "common/settings.h"
 #include "core/input.h"
 #include "d3d/dlss.h"
+#include "d3d/occlusion.h"
 
 namespace fcip {
 
@@ -374,32 +375,39 @@ void StepRenderResolution(app::Settings& s, int step, char (&text)[64]) {
 // MSAA's sample counts, then DLAA where DLSS runs
 void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
     constexpr int kMsaaCount = int(std::size(kMsaaValues));
-    int count = kMsaaCount + (dlss::SuperResolution() ? 1 : 0);
-    int i = DlaaOn() ? kMsaaCount : NearestIndex(kMsaaValues, kMsaaCount, s.msaa);
+    int i = Get().dlaa ? kMsaaCount : NearestIndex(kMsaaValues, kMsaaCount, s.msaa);
     if (step) {
-        i = StepIndex(i, step, count);
+        i = StepIndex(i, step, kMsaaCount + 1);
         Get().dlaa = i == kMsaaCount;
         s.msaa = Get().dlaa ? 0 : kMsaaValues[i];
     }
-    std::snprintf(text, sizeof(text), "%s", i < kMsaaCount ? kMsaaNames[i] : "DLAA");
+    if (i < kMsaaCount) std::snprintf(text, sizeof(text), "%s", kMsaaNames[i]);
+    else std::snprintf(text, sizeof(text), "DLAA%s", dlss::StatusNote(dlss::UpscalingStatus()));
 }
 
-// off, the multipliers this GPU generates, then dynamic where it runs
+// off, 2X to 6X, dynamic; noted where the DLLs are missing or this GPU lacks it
+constexpr uint32_t kGenerations[] = {dlss::kGenerationOff, 2, 3, 4, 5, 6, dlss::kGenerationDynamic};
+
+const char* GenerationNote(uint32_t v) {
+    dlss::Status status = dlss::GenerationStatus();
+    if (status != dlss::Status::Ready) return dlss::StatusNote(status);
+    bool runs = v == dlss::kGenerationDynamic ? dlss::DynamicFrameGeneration() : v <= dlss::MaxMultiplier();
+    return dlss::StatusNote(runs ? dlss::Status::Ready : dlss::Status::NotSupported);
+}
+
 void StepFrameGeneration(int step, char (&text)[64]) {
-    std::vector<uint32_t> values = {dlss::kGenerationOff};
-    for (uint32_t m = 2; m <= dlss::MaxMultiplier(); m++) values.push_back(m);
-    if (dlss::DynamicFrameGeneration()) values.push_back(dlss::kGenerationDynamic);
     uint32_t& setting = Get().frame_generation;
-    auto it = std::find(values.begin(), values.end(), setting);
-    int i = it == values.end() ? 0 : int(it - values.begin());
+    const uint32_t* end = std::end(kGenerations);
+    const uint32_t* it = std::find(std::begin(kGenerations), end, setting);
+    int i = it == end ? 0 : int(it - std::begin(kGenerations));
     if (step) {
-        i = StepIndex(i, step, int(values.size()));
-        setting = values[size_t(i)];
+        i = StepIndex(i, step, int(std::size(kGenerations)));
+        setting = kGenerations[i];
     }
-    uint32_t v = values[size_t(i)];
+    uint32_t v = kGenerations[i];
     if (v == dlss::kGenerationOff) std::snprintf(text, sizeof(text), "OFF");
-    else if (v == dlss::kGenerationDynamic) std::snprintf(text, sizeof(text), "DYNAMIC");
-    else std::snprintf(text, sizeof(text), "%uX", v);
+    else if (v == dlss::kGenerationDynamic) std::snprintf(text, sizeof(text), "DYNAMIC%s", GenerationNote(v));
+    else std::snprintf(text, sizeof(text), "%uX%s", v, GenerationNote(v));
 }
 
 void StepGyroRow(int id, int step, char (&text)[64]) {
@@ -499,6 +507,9 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             break;
         case kAmbientOcclusion:
             StepName(Get().ambient_occlusion, kAmbientOcclusionNames, step, text);
+            if (Get().ambient_occlusion == gpu::kAoRtao && !gpu::RayTracing()) {
+                std::snprintf(text, sizeof(text), "RTAO (NOT SUPPORTED)");
+            }
             break;
         case kTextureReplacement:
             Flip(s.custom_textures, step);

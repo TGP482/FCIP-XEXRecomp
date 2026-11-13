@@ -48,6 +48,10 @@
 
 namespace gpu {
 
+std::atomic<bool> g_ray_tracing{false};
+
+bool RayTracing() { return g_ray_tracing; }
+
 // a translation of the title's microcode for one set of options
 struct Variant {
     ShaderInfo info;
@@ -1590,6 +1594,7 @@ bool D3D12Backend::CreateDevice() {
     D3D12_FEATURE_DATA_D3D12_OPTIONS5 o5{};
     dev_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &o5, sizeof(o5));
     if (o5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1) dev_.As(&dev5_);
+    g_ray_tracing = dev5_ != nullptr;
     LOGR("D3D12: RTAO %s", dev5_ ? "available" : "unavailable, GTAO in its place");
     return true;
 }

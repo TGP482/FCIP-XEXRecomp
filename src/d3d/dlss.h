@@ -21,6 +21,13 @@ void Shutdown();
 
 bool SuperResolution();
 bool FrameGeneration();
+
+// why a DLSS feature does not run: its DLLs are not beside the exe, or this GPU or driver lacks it
+enum class Status { Ready, MissingDll, NotSupported };
+Status UpscalingStatus();
+Status GenerationStatus();
+// the menu's note after a value, empty when ready
+const char* StatusNote(Status s);
 uint32_t MaxMultiplier();  // frames presented per rendered one, 1 without frame generation
 bool DynamicFrameGeneration();
 

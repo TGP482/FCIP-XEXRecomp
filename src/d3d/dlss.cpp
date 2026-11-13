@@ -34,6 +34,9 @@ namespace {
 // Frame Generation needs Reflex and PCL loaded beside it
 constexpr sl::Feature kFeatures[] = {sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
 constexpr char kProjectId[] = "3afb89d7-853e-41e7-b84e-83a34cef2d84";
+// the DLLs from NVIDIA's Streamline release each feature needs beside the exe
+constexpr const wchar_t* kUpscalingDlls[] = {L"sl.interposer.dll", L"sl.common.dll", L"sl.dlss.dll", L"nvngx_dlss.dll"};
+constexpr const wchar_t* kGenerationDlls[] = {L"sl.dlss_g.dll", L"sl.reflex.dll", L"sl.pcl.dll", L"nvngx_dlssg.dll"};
 // kModes in order, as DLSS names them
 constexpr sl::DLSSMode kModeEnums[] = {sl::DLSSMode::eUltraPerformance, sl::DLSSMode::eMaxPerformance,
                                        sl::DLSSMode::eBalanced, sl::DLSSMode::eMaxQuality, sl::DLSSMode::eDLAA};
@@ -57,6 +60,8 @@ PFun_slReflexSleep* g_reflex_sleep = nullptr;
 PFun_slPCLSetMarker* g_marker = nullptr;
 
 bool g_loaded = false;
+bool g_sr_dlls = false;
+bool g_fg_dlls = false;
 bool g_sr = false;
 bool g_fg = false;
 uint32_t g_fg_max = 1;  // multiplier
@@ -67,6 +72,14 @@ uint32_t g_fg_frames = 0;  // generated per rendered frame
 
 void StreamlineLog(sl::LogType type, const char* msg) {
     if (type == sl::LogType::eError) LOGE("Streamline: %s", msg);
+}
+
+template <size_t N>
+bool Beside(const std::filesystem::path& dir, const wchar_t* const (&names)[N]) {
+    for (const wchar_t* name : names) {
+        if (!std::filesystem::exists(dir / name)) return false;
+    }
+    return true;
 }
 
 template <typename F>
@@ -183,6 +196,8 @@ void Load() {
     wchar_t exe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::filesystem::path dir = std::filesystem::path(exe).parent_path();
+    g_sr_dlls = Beside(dir, kUpscalingDlls);
+    g_fg_dlls = g_sr_dlls && Beside(dir, kGenerationDlls);
     std::wstring interposer = (dir / L"sl.interposer.dll").wstring();
     if (!std::filesystem::exists(interposer)) {
         LOGR("DLSS: no sl.interposer.dll beside the exe");
@@ -255,6 +270,24 @@ void UpgradeFactory(void** factory) {
     if (r != sl::Result::eOk) LOGE("DLSS: no Streamline factory (result %d)", int(r));
 }
 
+Status UpscalingStatus() {
+    if (g_sr) return Status::Ready;
+    return g_sr_dlls ? Status::NotSupported : Status::MissingDll;
+}
+
+Status GenerationStatus() {
+    if (g_fg) return Status::Ready;
+    return g_fg_dlls ? Status::NotSupported : Status::MissingDll;
+}
+
+const char* StatusNote(Status s) {
+    switch (s) {
+        case Status::MissingDll: return " (MISSING DLL)";
+        case Status::NotSupported: return " (NOT SUPPORTED)";
+        default: return "";
+    }
+}
+
 bool SuperResolution() { return g_sr; }
 bool FrameGeneration() { return g_fg; }
 uint32_t MaxMultiplier() { return g_fg ? g_fg_max : 1; }
@@ -275,9 +308,9 @@ void Generate(uint32_t frame, uint32_t setting, bool gameplay, const uint32_t re
     sl::DLSSGMode mode = sl::DLSSGMode::eOff;
     uint32_t frames = 1;
     if (gameplay && setting == kGenerationDynamic && g_fg_dynamic) mode = sl::DLSSGMode::eDynamic;
-    if (gameplay && setting >= 2) {
+    if (gameplay && setting >= 2 && setting <= g_fg_max) {
         mode = sl::DLSSGMode::eOn;
-        frames = std::min(setting, g_fg_max) - 1;
+        frames = setting - 1;
     }
     sl::ViewportHandle viewport(0u);
     // the rest of the back buffer, the bars around a narrower frame, is copied as it is
