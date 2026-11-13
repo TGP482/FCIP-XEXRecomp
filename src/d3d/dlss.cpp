@@ -11,6 +11,7 @@
 #include <d3d12.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -70,8 +71,11 @@ std::mutex g_token_lock;  // tokens are asked for on the title and the render th
 sl::DLSSGMode g_fg_mode = sl::DLSSGMode::eOff;
 uint32_t g_fg_frames = 0;  // generated per rendered frame
 
+// the first errors only: one that repeats each frame would flood the log
 void StreamlineLog(sl::LogType type, const char* msg) {
-    if (type == sl::LogType::eError) LOGE("Streamline: %s", msg);
+    constexpr int kMaxErrors = 16;
+    static std::atomic<int> errors{0};
+    if (type == sl::LogType::eError && errors++ < kMaxErrors) LOGE("Streamline: %s", msg);
 }
 
 template <size_t N>
@@ -80,6 +84,15 @@ bool Beside(const std::filesystem::path& dir, const wchar_t* const (&names)[N]) 
         if (!std::filesystem::exists(dir / name)) return false;
     }
     return true;
+}
+
+// the DLLs loose in DLSS beside the exe, or in the Streamline release's x64 or bin\x64 extracted into it
+std::filesystem::path DllFolder(const std::filesystem::path& exe_dir) {
+    std::filesystem::path base = exe_dir / L"DLSS";
+    for (const wchar_t* sub : {L"x64", L"bin\\x64"}) {
+        if (std::filesystem::exists(base / sub / L"sl.interposer.dll")) return base / sub;
+    }
+    return base;
 }
 
 template <typename F>
@@ -195,7 +208,7 @@ void FillConstants(const Frame& f, sl::Constants& c) {
 void Load() {
     wchar_t exe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::filesystem::path dir = std::filesystem::path(exe).parent_path() / L"DLSS";
+    std::filesystem::path dir = DllFolder(std::filesystem::path(exe).parent_path());
     g_sr_dlls = Beside(dir, kUpscalingDlls);
     g_fg_dlls = g_sr_dlls && Beside(dir, kGenerationDlls);
     std::wstring interposer = (dir / L"sl.interposer.dll").wstring();
@@ -225,7 +238,8 @@ void Load() {
     p.logMessageCallback = StreamlineLog;
     p.pathsToPlugins = paths;
     p.numPathsToPlugins = 1;
-    p.flags |= sl::PreferenceFlags::eUseManualHooking;
+    // tags go with a frame token, slSetTagForFrame
+    p.flags |= sl::PreferenceFlags::eUseManualHooking | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
     p.featuresToLoad = kFeatures;
     p.numFeaturesToLoad = uint32_t(std::size(kFeatures));
     p.engine = sl::EngineType::eCustom;
