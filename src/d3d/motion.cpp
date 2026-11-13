@@ -28,8 +28,17 @@ void Multiply(const float a[16], const float b[16], float out[16]) {
     }
 }
 
+float Distance2(const float a[3], const float b[3]) {
+    float x = a[0] - b[0];
+    float y = a[1] - b[1];
+    float z = a[2] - b[2];
+    return x * x + y * y + z * z;
+}
+
+}  // namespace
+
 // Gauss Jordan with partial pivoting
-bool Invert(const float m[16], float out[16]) {
+bool InvertMatrix(const float m[16], float out[16]) {
     double a[4][8];
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 4; c++) {
@@ -58,15 +67,6 @@ bool Invert(const float m[16], float out[16]) {
     return true;
 }
 
-float Distance2(const float a[3], const float b[3]) {
-    float x = a[0] - b[0];
-    float y = a[1] - b[1];
-    float z = a[2] - b[2];
-    return x * x + y * y + z * z;
-}
-
-}  // namespace
-
 void PushMotionCamera(const MotionCamera& c) {
     std::lock_guard lock(g_cameras_lock);
     if (g_cameras.size() == kMaxCameras) g_cameras.pop_front();
@@ -88,7 +88,7 @@ void ClipMatrix(const MotionCamera& c, float out[16]) {
 
 bool Reprojection(const float now[16], const float last[16], float out[16]) {
     float inv[16];
-    if (!Invert(now, inv)) return false;
+    if (!InvertMatrix(now, inv)) return false;
     Multiply(inv, last, out);
     return true;
 }

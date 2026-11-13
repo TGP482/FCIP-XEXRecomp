@@ -12,6 +12,7 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 - Put your game files in the `assets` folder. This can be an ISO, or the extracted data files.
 - Run `FCIP.exe`. The first start compiles the game's code for your PC, this only happens once.
 - Recomp settings can be adjusted in the in-game options menu while the game is running, or through the Settings overlay, which is opened with F10 by default.
+- NVIDIA DLSS is optional and its files are not included. Download the latest Streamline SDK release from [NVIDIA's official GitHub](https://github.com/NVIDIA-RTX/Streamline/releases), then copy `sl.interposer.dll`, `sl.common.dll`, `sl.dlss.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll`, `nvngx_dlss.dll` and `nvngx_dlssg.dll` from its `bin\x64` folder beside `FCIP.exe`.
 
 ## Features
 
@@ -30,7 +31,7 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 
 ### Graphics
 - **Ambient Occlusion** - Adds screen space ambient occlusion, creating soft contact shadows where surfaces meet. Choose between SSAO, GTAO and hardware ray traced RTAO.
-- **Anti Aliasing** - Enables 2x, 4x or 8x MSAA to smooth jagged edges while preserving a sharp image.
+- **Anti Aliasing** - Enables 2x, 4x or 8x MSAA to smooth jagged edges while preserving a sharp image, or NVIDIA DLAA, which also upscales with DLSS when the render resolution is lowered.
 - **Subpixel Morphological Antialiasing (SMAA)** - Enables SMAA to smooth jagged edges across the whole frame with a softer image. SMAA also smooths alpha-tested edges such as fences and foliage, and can be combined with MSAA.
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures.
 - **Shadow Resolution** - Sets the sun shadow resolution from 1024x1024 up to 8192x8192.
@@ -86,3 +87,7 @@ Install Visual Studio 2022 with **Desktop development with C++**, **C++ Clang to
 
 ### 4. Build the Project
 Run `build.bat`. The first build recompiles the game and takes a while. The exe is written to `out\build\release`.
+
+## Credits
+
+- NVIDIA DLSS through the [NVIDIA Streamline SDK](https://github.com/NVIDIA-RTX/Streamline). NVIDIA and DLSS are trademarks of NVIDIA Corporation.

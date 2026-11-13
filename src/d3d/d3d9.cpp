@@ -628,13 +628,22 @@ void MotionBegin(uint32_t dev, const gpu::MotionCamera& c) {
     Backend()->Clear(s, gpu::kClearMotionBegin, color, 0, 0, nullptr);
 }
 
-void MotionEnd(uint32_t dev) {
+namespace {
+
+// a marker clear, kept in order with the draws
+void Mark(uint32_t dev, uint32_t flag) {
     const float color[4] = {};
     std::lock_guard lock(g_lock);
     gpu::State s;
     ReadRegisters(dev, s);
-    Backend()->Clear(s, gpu::kClearMotionEnd, color, 0, 0, nullptr);
+    Backend()->Clear(s, flag, color, 0, 0, nullptr);
 }
+
+}  // namespace
+
+void MotionEnd(uint32_t dev) { Mark(dev, gpu::kClearMotionEnd); }
+void SceneBegin(uint32_t dev) { Mark(dev, gpu::kClearSceneBegin); }
+void SceneEnd(uint32_t dev) { Mark(dev, gpu::kClearSceneEnd); }
 
 // Shaders: the library makes its object, the host translates the container's microcode as created
 HLE_AFTER(D3DDevice_CreateVertexShader) { CreateShader(a[0], uint32_t(ctx.r[3]), true); }

@@ -9,6 +9,8 @@ namespace gpu {
 
 constexpr uint32_t kClearMotionBegin = 0x400;
 constexpr uint32_t kClearMotionEnd = 0x800;
+constexpr uint32_t kClearSceneBegin = 0x1000;  // the camera's pass, for DLSS
+constexpr uint32_t kClearSceneEnd = 0x2000;
 
 // a camera's matrices as the title keeps them, row major, before its pass flips depth
 struct MotionCamera {
@@ -22,6 +24,7 @@ bool TakeMotionCamera(MotionCamera& c);
 
 // the title's clip space of a camera: its view times projection with the pass's depth flip, z = w - z (823B0580)
 void ClipMatrix(const MotionCamera& c, float out[16]);
+bool InvertMatrix(const float m[16], float out[16]);
 // a clip position this frame to last frame's, for what stood still
 bool Reprojection(const float now[16], const float last[16], float out[16]);
 
@@ -61,4 +64,7 @@ namespace d3d {
 // on the title's thread at the start and end of the camera pass's world
 void MotionBegin(uint32_t dev, const gpu::MotionCamera& c);
 void MotionEnd(uint32_t dev);
+// on the title's thread at the start and end of the camera's pass
+void SceneBegin(uint32_t dev);
+void SceneEnd(uint32_t dev);
 }  // namespace d3d

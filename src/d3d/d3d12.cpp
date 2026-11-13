@@ -105,6 +105,8 @@ constexpr uint32_t kAoRtv = kSmaaRtv + kSmaaTargets;  // ambient occlusion's raw
 constexpr uint32_t kMotionRtv = kAoRtv + kAoTargets;  // motion vectors as the draws wrote them, then completed
 constexpr DXGI_FORMAT kMotionFormat = DXGI_FORMAT_R16G16_FLOAT;
 constexpr float kNoMotion = 32768;  // the drawn motion's clear: no world draw wrote the pixel
+constexpr uint64_t kSceneTarget = 1ull << 62;  // targets_ key bit of a target at the scene's scale, before DLSS
+constexpr DXGI_FORMAT kUpscaledFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
 enum : uint32_t {
     kRootVsConsts,
@@ -878,6 +880,17 @@ float2 motion(float4 pos : SV_Position) : SV_Target {
 }
 )";
 
+// the radical inverse of i in base b, 0 to 1
+float Halton(uint32_t i, uint32_t b) {
+    float f = 1;
+    float r = 0;
+    for (; i; i /= b) {
+        f /= float(b);
+        r += f * float(i % b);
+    }
+    return r;
+}
+
 // b5 of a motion draw
 struct MotionConstants {
     float reproject[16];
@@ -1243,6 +1256,17 @@ private:
     bool MotionWanted(const State& s, const ShaderInfo& ps) const;
     void BindMotion(const State& s, const DrawArgs& a, const ShaderInfo& vs);
     void CompleteMotion(Target& depth, const DrawConstants& d);
+
+    // DLSS: the camera's pass at the scene scale, upscaled at its end into its target at the render scale
+    bool Dlaa() const { return fcip::Get().dlaa && dlss::SuperResolution(); }
+    bool SceneScaled(uint32_t width) const { return upscale_.scene && width == guest_w_; }
+    uint64_t MapKey(const Target& t) const;
+    float SceneScale() const;
+    float BaseScale() const;
+    void BeginScene();
+    void EndScene();
+    bool EnsureUpscaled(uint32_t w, uint32_t h);
+    void DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, Target& out);
     uint32_t RayVertices(const DrawArgs& a, const PipelineKey& k, D3D12_PRIMITIVE_TOPOLOGY topo, uint32_t count,
                          bool alpha_test) const;
     void StreamOut(const DrawConstants& c, uint32_t vertices);
@@ -1331,6 +1355,7 @@ private:
         D3D12_RESOURCE_STATES done_state = D3D12_RESOURCE_STATE_COMMON;
         uint32_t w = 0;
         uint32_t h = 0;
+        MotionCamera camera;
         float last_clip[16] = {};
         bool has_last = false;
         float reproject[16] = {};
@@ -1339,6 +1364,22 @@ private:
         uint32_t matched = 0;
     } motion_;
     MotionHistory motion_history_;
+    // DLSS: the scene's targets and camera as EndMotion left them, the upscaled frame
+    struct Upscale {
+        bool scene = false;   // between kClearSceneBegin and kClearSceneEnd
+        bool motion = false;  // EndMotion completed this scene's motion
+        bool reset = true;    // nothing to carry over from the last upscale
+        uint64_t color = 0;   // targets_ keys
+        uint64_t depth = 0;
+        MotionCamera camera;
+        uint32_t jitters = 0;
+        ComPtr<ID3D12Resource> out;
+        D3D12_RESOURCE_STATES out_state = D3D12_RESOURCE_STATE_COMMON;
+        uint32_t w = 0;
+        uint32_t h = 0;
+    } upscale_;
+    float scene_scale_ = 1;
+    float jitter_[2] = {};  // host pixels the scene's draws are offset by
     // RTAO: inline ray tracing, null without; the world's streamed out triangles and their scene
     ComPtr<ID3D12Device5> dev5_;
     bool ray_capture_ = false;  // between OcclusionScene and Occlusion
@@ -1499,7 +1540,8 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
     LoadPipelineCache();
     ImGui_ImplDX12_Init(dev_.Get(), kFrames, kSwapFormat, ui_heap_.Get(),
                         ui_heap_->GetCPUDescriptorHandleForHeapStart(), ui_heap_->GetGPUDescriptorHandleForHeapStart());
-    scale_ = app::RenderScale(guest_h_);
+    scale_ = BaseScale();
+    scene_scale_ = SceneScale();
     msaa_set_ = app::Get().msaa;
     msaa_ = Samples(msaa_set_);
     ext_ = g_extension.get();
@@ -1534,6 +1576,7 @@ bool D3D12Backend::CreateDevice() {
     if (adapter) adapter->GetDesc1(&ad);
     LOGR("D3D12 adapter: %ls", adapter ? ad.Description : L"default");
     dlss::SetDevice(dev_.Get());
+    dlss::UpgradeFactory(reinterpret_cast<void**>(factory_.GetAddressOf()));
     D3D12_COMMAND_QUEUE_DESC qd{};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     dev_->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue_));
@@ -1913,7 +1956,7 @@ DXGI_FORMAT ReadFormat(const Target& t) {
 bool D3D12Backend::TargetKeyOf(const Surface& sf, bool depth, uint32_t width, uint64_t& map_key) const {
     uint64_t key = 0;
     if (ext_ && !ext_->TargetKey(sf, depth, key)) return false;
-    map_key = TargetMapKey(sf, depth, width, key);
+    map_key = TargetMapKey(sf, depth, width, key) | (SceneScaled(width) ? kSceneTarget : 0);
     return true;
 }
 
@@ -1921,7 +1964,8 @@ Target* D3D12Backend::EnsureTarget(const Surface& sf, bool depth, uint32_t width
     if (width == 0) return nullptr;
     uint64_t key = 0;
     if (ext_ && !ext_->TargetKey(sf, depth, key)) return nullptr;
-    uint64_t map_key = TargetMapKey(sf, depth, width, key);
+    bool scene = SceneScaled(width);
+    uint64_t map_key = TargetMapKey(sf, depth, width, key) | (scene ? kSceneTarget : 0);
     Target& t = targets_[map_key];
     if (t.res && t.height >= height) return &t;
     Target old = std::move(t);
@@ -1934,7 +1978,7 @@ Target* D3D12Backend::EnsureTarget(const Surface& sf, bool depth, uint32_t width
     t.height = std::max(height, old.height);
     // the render scale, less where the target would pass the host's largest texture edge
     float edge = float(D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION);
-    t.scale = std::min(scale_, edge / float(std::max(t.width, t.height)));
+    t.scale = std::min(scene ? scene_scale_ : scale_, edge / float(std::max(t.width, t.height)));
     t.fmt = depth ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : ColorFormat(sf.format);
     if (ext_) ext_->MakeTarget(sf, depth, t.width, t.height, t.scale, t.fmt);
     t.w = uint32_t(std::ceil(t.width * t.scale));
@@ -2801,7 +2845,7 @@ bool D3D12Backend::BindTargets(const State& s, const ShaderInfo& ps, PipelineKey
     if (!count && !ds) return false;
     b.ds = ds;
     b.scale = b.rt ? b.rt->scale : ds->scale;
-    if (motion && ds && b.rt && b.rt->key == motion_.rt_key && b.rt->samples == 1) {
+    if (motion && ds && b.rt && MapKey(*b.rt) == motion_.rt_key && b.rt->samples == 1) {
         while (count < kMotionTarget) {
             k.rt_formats[count] = kNullRtvFormat;
             rtv[count++] = Rtv(kNullRtv);
@@ -2853,6 +2897,10 @@ void D3D12Backend::FillDrawConstants(const State& s, const Bound& b, DrawConstan
     c.alpha_ref = s.RegF(kRbAlphaRef);
     c.vpos_scale = 1 / b.scale;
     c.vtx_fmt = Bits(vte, 8, 3);
+    if (SceneScaled(b.w)) {
+        c.ndc_offset[0] += 2 * jitter_[0] / (b.w * b.scale);
+        c.ndc_offset[1] -= 2 * jitter_[1] / (b.h * b.scale);
+    }
     // bits 0 to 5 enable the user planes, 16 turns clipping off
     uint32_t clip = s.Reg(kPaClClipCntl);
     for (uint32_t i = 0; i < 6; i++) {
@@ -3339,6 +3387,14 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         EndMotion(s);
         return;
     }
+    if (flags & kClearSceneBegin) {
+        BeginScene();
+        return;
+    }
+    if (flags & kClearSceneEnd) {
+        EndScene();
+        return;
+    }
     g_perf.clears++;
     uint32_t height = TargetHeight(s);
     uint32_t width = TargetWidth(s);
@@ -3509,6 +3565,7 @@ void D3D12Backend::BeginMotion(const State& s) {
         motion_.has_last = false;
         return;
     }
+    motion_.camera = camera;
     float clip[16];
     ClipMatrix(camera, clip);
     MotionConstants c{};
@@ -3516,6 +3573,7 @@ void D3D12Backend::BeginMotion(const State& s) {
         std::fill(std::begin(c.reproject), std::end(c.reproject), 0.0f);
         for (int i = 0; i < 4; i++) c.reproject[i * 5] = 1;
     }
+    if (!motion_.has_last) upscale_.reset = true;
     std::memcpy(motion_.last_clip, clip, sizeof(clip));
     std::memcpy(motion_.reproject, c.reproject, sizeof(c.reproject));
     motion_.has_last = true;
@@ -3527,7 +3585,8 @@ void D3D12Backend::BeginMotion(const State& s) {
     Transition(motion_.drawn.Get(), motion_.drawn_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
     const float none[4] = {kNoMotion, kNoMotion, 0, 0};
     cl_->ClearRenderTargetView(Rtv(kMotionRtv), none, 0, nullptr);
-    motion_.rt_key = rt->key;
+    motion_.rt_key = MapKey(*rt);
+    upscale_.color = motion_.rt_key;
     motion_.draws = 0;
     motion_.matched = 0;
     motion_.active = true;
@@ -3538,12 +3597,15 @@ void D3D12Backend::EndMotion(const State& s) {
     uint32_t height = TargetHeight(s);
     Target* rt = ColorTarget(s, 0, height);
     Target* ds = DepthTarget(s, height);
-    if (!rt || !ds || rt->key != motion_.rt_key || ds->samples != 1) return;
+    if (!rt || !ds || MapKey(*rt) != motion_.rt_key || ds->samples != 1) return;
     if (ds->w != motion_.w || ds->h != motion_.h) return;
+    upscale_.depth = MapKey(*ds);
+    upscale_.camera = motion_.camera;
     Bound b{TargetWidth(s), height, rt->scale};
     DrawConstants d;
     FillDrawConstants(s, b, d);
     CompleteMotion(*ds, d);
+    upscale_.motion = true;
     if (cap_) {
         std::fprintf(cap_, "motion: %u world draws, %u matched to last frame\n", motion_.draws, motion_.matched);
         char name[32];
@@ -3647,6 +3709,100 @@ void D3D12Backend::CompleteMotion(Target& depth, const DrawConstants& d) {
     cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cl_->DrawInstanced(3, 1, 0, 0);
     Unbind();
+}
+
+// DLSS
+
+uint64_t D3D12Backend::MapKey(const Target& t) const {
+    return TargetMapKey(t.surface, t.depth, t.width, t.key) | (SceneScaled(t.width) ? kSceneTarget : 0);
+}
+
+// the render scale without DLAA; with it the output's, as the scene alone is drawn at the render resolution
+float D3D12Backend::BaseScale() const {
+    float scale = app::RenderScale(guest_h_);
+    return Dlaa() ? scale * 100.0f / float(app::Get().render_percent) : scale;
+}
+
+float D3D12Backend::SceneScale() const {
+    uint32_t percent = std::clamp(app::Get().render_percent, dlss::kMinPercent, dlss::kMaxPercent);
+    return Dlaa() ? BaseScale() * float(percent) / 100.0f : BaseScale();
+}
+
+// the camera's pass begins: its full screen targets at the scene's scale, its draws offset by the next jitter
+void D3D12Backend::BeginScene() {
+    upscale_.scene = Dlaa();
+    upscale_.motion = false;
+    if (!upscale_.scene) return;
+    // Halton 2 and 3, eight phases for each output pixel a scene pixel covers
+    float ratio = scale_ / scene_scale_;
+    uint32_t phases = uint32_t(std::ceil(8 * ratio * ratio));
+    uint32_t i = upscale_.jitters++ % phases + 1;
+    jitter_[0] = Halton(i, 2) - 0.5f;
+    jitter_[1] = Halton(i, 3) - 0.5f;
+}
+
+// the camera's pass ends: its colour upscaled into the same surface at the render scale, which the title draws on
+void D3D12Backend::EndScene() {
+    if (!std::exchange(upscale_.scene, false)) return;
+    auto color = targets_.find(upscale_.color);
+    if (color == targets_.end()) return;
+    Target& in = color->second;
+    Target* out = EnsureTarget(in.surface, false, in.width, in.height);
+    if (!out || !EnsureUpscaled(out->w, out->h)) return;
+    auto depth = targets_.find(upscale_.depth);
+    bool ok = false;
+    if (upscale_.motion && depth != targets_.end()) {
+        Target& ds = depth->second;
+        dlss::Frame f;
+        f.color = {in.res.Get(), uint32_t(in.state), uint32_t(ReadFormat(in)), in.w, in.h};
+        f.depth = {ds.res.Get(), uint32_t(ds.state), uint32_t(DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS), ds.w, ds.h};
+        f.motion = {motion_.done.Get(), uint32_t(motion_.done_state), 0, motion_.w, motion_.h};
+        f.output = {upscale_.out.Get(), uint32_t(upscale_.out_state), 0, upscale_.w, upscale_.h};
+        f.camera = upscale_.camera;
+        std::memcpy(f.clip_to_prev, motion_.reproject, sizeof(f.clip_to_prev));
+        f.jitter[0] = jitter_[0];
+        f.jitter[1] = jitter_[1];
+        f.reset = upscale_.reset;
+        f.index = uint32_t(presents_);
+        ok = dlss::Upscale(cl_.Get(), f);
+        Begin();  // Streamline's passes left their heaps and root signature bound
+    }
+    upscale_.reset = !ok;
+    if (ok) DrawUpscaled(upscale_.out.Get(), upscale_.out_state, kUpscaledFormat, *out);
+    else DrawUpscaled(in.res.Get(), in.state, ReadFormat(in), *out);
+}
+
+bool D3D12Backend::EnsureUpscaled(uint32_t w, uint32_t h) {
+    if (upscale_.out && upscale_.w == w && upscale_.h == h) return true;
+    if (upscale_.out) Release(std::move(upscale_.out));
+    upscale_.w = 0;
+    upscale_.h = 0;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(kUpscaledFormat, w, h);
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    upscale_.out_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, upscale_.out_state, nullptr,
+                                             IID_PPV_ARGS(&upscale_.out)))) {
+        LOGE("D3D12: no %ux%u DLSS output", w, h);
+        return false;
+    }
+    upscale_.w = w;
+    upscale_.h = h;
+    return true;
+}
+
+// src over the whole of out
+void D3D12Backend::DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, Target& out) {
+    Transition(src, state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(out.res.Get(), out.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    D3D12_CPU_DESCRIPTOR_HANDLE rh = Rtv(out.view);
+    cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
+    D3D12_VIEWPORT vp{0, 0, float(out.w), float(out.h), 0, 1};
+    D3D12_RECT sc{0, 0, LONG(out.w), LONG(out.h)};
+    cl_->RSSetViewports(1, &vp);
+    cl_->RSSetScissorRects(1, &sc);
+    const float whole[4] = {0, 0, 1, 1};
+    Blit(src, fmt, whole, false, true, 1, 1, out.fmt);
 }
 
 // RTAO
@@ -4516,10 +4672,12 @@ void D3D12Backend::Present(const uint32_t front[6]) {
         }
     }
     if (diag::Perf()) LogPerf();
-    if (float scale = app::RenderScale(guest_h_); scale != scale_) {
+    if (BaseScale() != scale_ || SceneScale() != scene_scale_) {
         Submit(true);
         DropTargets();
-        scale_ = scale;
+        scale_ = BaseScale();
+        scene_scale_ = SceneScale();
+        upscale_.reset = true;
         if (ext_) ext_->Reset(*this);
         LOGR("D3D12: render scale %.3f", scale_);
     }

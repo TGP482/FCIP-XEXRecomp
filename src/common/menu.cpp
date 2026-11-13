@@ -124,7 +124,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kDisplayMode, "DISPLAY MODE", "Switch between fullscreen, borderless and windowed"},
     {Kind::Value, kResolution, "RESOLUTION", "Every mode your monitor reports, defaulting to your desktop resolution"},
     {Kind::Value, kRenderResolution, "RENDER RESOLUTION",
-     "Renders the game at 20% to 200% of the output resolution, independent of the window size"},
+     "Renders the game at 20% to 200% of the output resolution, independent of the window size, or 33% to 100% upscaled by DLSS with DLAA on"},
     {Kind::Value, kFov, "FIELD OF VIEW", "Sets the horizontal field of view during gameplay, cutscenes keep their own"},
     {Kind::Value, kViewmodelFov, "VIEWMODEL FIELD OF VIEW", "Sets the field of view of the weapon and arms"},
     {Kind::Value, kVsync, "VERTICAL SYNC", "Reduces screen tearing"},
@@ -346,11 +346,33 @@ void StepName(uint32_t& value, const char* const (&names)[N], int step, char (&t
     std::snprintf(text, sizeof(text), "%s", names[value]);
 }
 
+// with DLAA, DLSS's range in fives and its modes' percentages, named
+constexpr uint32_t kDlssPercents[] = {33, 35, 40, 45, 50, 55, 58, 60, 65, 67, 70, 75, 80, 85, 90, 95, 100};
+
+bool DlaaOn() { return Get().dlaa && dlss::SuperResolution(); }
+
+void StepRenderResolution(app::Settings& s, int step, char (&text)[64]) {
+    uint32_t percent = s.render_percent;
+    if (DlaaOn()) {
+        percent = kDlssPercents[StepTable(kDlssPercents, s.render_percent, step)];
+        for (const dlss::ModePoint& m : dlss::kModes) {
+            if (m.percent != percent) continue;
+            std::snprintf(text, sizeof(text), "%u%% %s", percent, m.name);
+            return;
+        }
+    } else if (step) {
+        s.render_percent = uint32_t(StepRange(int(s.render_percent), 20, 200, 5, step));
+        percent = s.render_percent;
+    }
+    app::Mode out = StepResolution(s, 0);
+    std::snprintf(text, sizeof(text), "%u%% (%ux%u)", percent, out.width * percent / 100, out.height * percent / 100);
+}
+
 // MSAA's sample counts, then DLAA where DLSS runs
 void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
     constexpr int kMsaaCount = int(std::size(kMsaaValues));
     int count = kMsaaCount + (dlss::SuperResolution() ? 1 : 0);
-    int i = Get().dlaa && dlss::SuperResolution() ? kMsaaCount : NearestIndex(kMsaaValues, kMsaaCount, s.msaa);
+    int i = DlaaOn() ? kMsaaCount : NearestIndex(kMsaaValues, kMsaaCount, s.msaa);
     if (step) {
         i = StepIndex(i, step, count);
         Get().dlaa = i == kMsaaCount;
@@ -425,13 +447,9 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             std::snprintf(text, sizeof(text), "%ux%u", m.width, m.height);
             break;
         }
-        case kRenderResolution: {
-            if (step) s.render_percent = uint32_t(StepRange(int(s.render_percent), 20, 200, 5, step));
-            app::Mode out = StepResolution(s, 0);
-            std::snprintf(text, sizeof(text), "%u%% (%ux%u)", s.render_percent, out.width * s.render_percent / 100,
-                          out.height * s.render_percent / 100);
+        case kRenderResolution:
+            StepRenderResolution(s, step, text);
             break;
-        }
         case kVsync:
             Flip(s.vsync, step);
             std::snprintf(text, sizeof(text), "%s", OnOff(s.vsync));
