@@ -1,8 +1,9 @@
 // Ambient occlusion over the world only. The renderer's pass submit draws one list, radix sorted on key bits 0 to 19:
 // the layer in bits 16 to 19, then the pipeline in bits 11 to 15, or the depth in the layers drawn far to near (5, 6,
-// 9, 10 and 13 by table 0x8204AEB8; the ocean is on 7 and 11). In the camera's pass the characters' pipeline moves to
-// the end of layer 4 and occlusion goes in before the first item past the world, so the characters, the blended
-// layers and the ocean land on top. The fog is linear over view distance, from the renderer's constant block.
+// 9, 10 and 13 by table 0x8204AEB8; the ocean is on 7 and 11). In the camera's pass the characters (skinned items and
+// the characters' pipeline) move to the end of layer 4 and occlusion goes in before the first item past the world, so
+// the characters, the blended layers and the ocean land on top. The fog is linear over view distance, from the
+// renderer's constant block.
 #include <cmath>
 
 #include "common/render_pass.h"
@@ -28,7 +29,14 @@ constexpr uint32_t kRegistryFirst = 0x8;
 constexpr uint32_t kRegistryEnd = 0xC;
 constexpr uint32_t kEntrySize = 0x18;
 constexpr uint32_t kEntryName = 0x4;
+constexpr uint32_t kEntryPipeline = 0x8;
 constexpr uint32_t kCharactersName = 0x82070D10;  // "PerPixel Phong Color (Characters)"
+// pipeline: vtable first, the item draw at +0xC; the PerPixel Phong draws all end in 8250DF28
+constexpr uint32_t kPipelineDraw = 0xC;
+constexpr uint32_t kPhongDraws[] = {0x8250DF28, 0x82504FB8, 0x825050F0, 0x825052B0};
+// render item: its mesh, which 8250DF28 draws SKINNED when the byte at +0x40 is set
+constexpr uint32_t kItemMesh = 0x18;
+constexpr uint32_t kMeshSkinned = 0x40;
 // camera: PerspectiveFov's right handed projection, row major, before the pass flips its depth
 constexpr uint32_t kCameraProjection = 0x23C;
 // draw list 825091A0: the count first, entries {key, item, next} of 0xC bytes at +8, the bucket being popped
@@ -45,23 +53,49 @@ constexpr uint32_t kLayerAndPipeline = 0xFF800;  // key bits 11 to 19
 constexpr uint32_t kMovedKey = kLastWorldLayer << kLayerShift | kLastPipeline << kPipelineShift;
 constexpr uint32_t kGtao = 2;  // the setting, 1 SSAO
 
+// the registry's pipelines whose items may be characters
+struct Pipelines {
+    uint32_t characters = kLastPipeline;
+    uint32_t phong = 0;  // a bit per pipeline
+};
+
 thread_local uint32_t t_sort_list = 0;  // the camera pass's list while its keys go in
-thread_local uint32_t t_characters = kLastPipeline;
+thread_local Pipelines t_pipelines;
 thread_local uint32_t t_draw_list = 0;  // the camera pass's list while it is drawn, until occlusion went in
 
 bool Enabled() { return fcip::Get().ambient_occlusion && fcip::SubmittedPass() == fcip::kPassCamera; }
 
-// the characters' pipeline, kLastPipeline when none has a number below it
-uint32_t CharactersPipeline() {
+bool PhongDraw(uint32_t draw) {
+    for (uint32_t d : kPhongDraws) {
+        if (draw == d) return true;
+    }
+    return false;
+}
+
+// the characters' pipeline and the PerPixel Phong ones among the first kLastPipeline
+Pipelines FindPipelines() {
+    Pipelines p;
     uint32_t renderer = R32(SYM_Renderer_pointer);
     uint32_t registry = renderer ? R32(renderer + kRendererPipelines) : 0;
-    if (!registry) return kLastPipeline;
+    if (!registry) return p;
     uint32_t first = R32(registry + kRegistryFirst);
     uint32_t end = R32(registry + kRegistryEnd);
     for (uint32_t i = 0; i < kLastPipeline && first + i * kEntrySize < end; i++) {
-        if (R32(first + i * kEntrySize + kEntryName) == kCharactersName) return i;
+        uint32_t entry = first + i * kEntrySize;
+        if (R32(entry + kEntryName) == kCharactersName) p.characters = i;
+        uint32_t pipeline = R32(entry + kEntryPipeline);
+        uint32_t vtable = pipeline ? R32(pipeline) : 0;
+        if (vtable && PhongDraw(R32(vtable + kPipelineDraw))) p.phong |= 1u << i;
     }
-    return kLastPipeline;
+    return p;
+}
+
+// the item drawn with this pipeline is a character
+bool Character(uint32_t pipeline, uint32_t item) {
+    if (pipeline == t_pipelines.characters) return true;
+    if (!(t_pipelines.phong >> pipeline & 1)) return false;
+    uint32_t mesh = R32(item + kItemMesh);
+    return mesh && R8(mesh + kMeshSkinned);
 }
 
 // the item about to be popped lies past the world
@@ -122,7 +156,7 @@ PPC_EXTERN_FUNC(GUEST_ORIG(Scene_Pop));
 PPC_FUNC(GUEST(Scene_Sort)) {
     if (Enabled()) {
         t_sort_list = uint32_t(ctx.r[3]) + kBlockList;
-        t_characters = CharactersPipeline();
+        t_pipelines = FindPipelines();
     }
     GUEST_ORIG(Scene_Sort)(ctx, base);
     t_sort_list = 0;
@@ -132,8 +166,9 @@ PPC_FUNC(GUEST(Scene_Sort)) {
 PPC_FUNC(GUEST(Scene_Push)) {
     uint32_t key = uint32_t(ctx.r[4]);
     bool world = (key >> kLayerShift & kLayerMask) <= kLastWorldLayer;
-    bool character = t_characters < kLastPipeline && (key >> kPipelineShift & kLastPipeline) == t_characters;
-    if (t_sort_list == uint32_t(ctx.r[3]) && world && character) ctx.r[4] = (key & ~kLayerAndPipeline) | kMovedKey;
+    uint32_t pipeline = key >> kPipelineShift & kLastPipeline;
+    bool sorting = t_sort_list == uint32_t(ctx.r[3]);
+    if (sorting && world && Character(pipeline, uint32_t(ctx.r[5]))) ctx.r[4] = (key & ~kLayerAndPipeline) | kMovedKey;
     GUEST_ORIG(Scene_Push)(ctx, base);
 }
 
