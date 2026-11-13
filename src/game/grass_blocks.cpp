@@ -471,7 +471,7 @@ uint32_t LevelOf(const Sector& s, uint32_t params, uint32_t x, uint32_t y, uint3
 // a far tile in view marks its block instead of being added
 bool Divert(uint32_t renderer, uint32_t params) {
     Sector& s = g_sector;
-    uint32_t mult = fcip::Get().grass_distance;
+    uint32_t mult = fcip::WorldDistance();
     if (!s.object || !g_params || g_desc || mult <= 1) return false;
     if (s.grid.empty()) BuildGrid(s);
     uint32_t tile = R32(params + kParamTile);

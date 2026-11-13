@@ -20,11 +20,16 @@
 // receivers keep its texture and matrix. The renderer finds the maps by their resolve addresses and reads the sharpest
 // one that covers the point. Inside a vis area the far run draws the game's four light frustums, the sun among them;
 // the sharper runs draw one frustum, the top scored light, normally the sun. Only the sun's resolves are recorded.
+//
+// Each sun camera culls its casters to the part of its map a receiver can read: receivers lie in the view frustum, or
+// with water in its reflection, and a caster only shades what it covers along the sun. The camera's side planes are
+// pulled in to that span; its matrices keep the whole map, so only the engine's culling sees the narrower box.
 #include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 #include "common/draw_distance.h"
 #include "common/render_pass.h"
@@ -43,18 +48,30 @@ constexpr uint32_t kMaxSide = 8192;
 constexpr uint32_t kPassWidth = 0x1C;
 constexpr uint32_t kPassHeight = 0x20;
 constexpr uint32_t kPassType = 0x10;
+constexpr uint32_t kPassReflection = 1;      // types 0 and 1 draw the water's reflections
+constexpr uint32_t kPassWaterHeight = 0x30;  // the height a reflection clips at
 constexpr uint32_t kFetchAddress = 4;  // fetch constant dword 1: the base from bit 12
 constexpr uint32_t kFetchSize = 8;     // fetch constant dword 2: width - 1 and height - 1, 13 bits each
 // CCamera: position, view axes, far plane and its copy, the orthographic projection's size
 constexpr uint32_t kCameraPosition = 0x4;
 constexpr uint32_t kCameraForward = 0x1C;
 constexpr uint32_t kCameraUp = 0x28;
+constexpr uint32_t kCameraNear = 0x34;
 constexpr uint32_t kCameraFar = 0x38;
 constexpr uint32_t kCameraFarCopy = 0x360;
 constexpr uint32_t kCameraOrthoWidth = 0x33C;
 constexpr uint32_t kCameraOrthoHeight = 0x340;
 constexpr uint32_t kCameraFov = 0x3C;  // horizontal radians, narrower while zoomed
 constexpr float kHipFov = 1.5707964f;  // the stock 90 degrees outside zoom
+constexpr uint32_t kCameraProjection = 0x23C;  // row major: x and y scale at 0 and 5, centre offsets at 8 and 9
+// six frustum planes {n, d}, a point inside where n.x + d <= 0, then the same six with d negated for the box tests
+constexpr uint32_t kCameraPlanes = 0x44;
+constexpr uint32_t kCameraPlanesNegated = 0xB4;
+constexpr uint32_t kPlaneCount = 6;
+constexpr uint32_t kPlaneSize = 0x10;
+constexpr uint32_t kPlaneD = 0xC;
+constexpr double kSideCos = 0.99;      // a side plane's normal lies along the map's right or up
+constexpr double kReceiverTexels = 3;  // the receivers' taps reach past the texel they fall on
 // the view the sun camera follows: its camera and the shadow radius
 constexpr uint32_t kViewCamera = 0x0;
 constexpr uint32_t kViewShadowRadius = 0x34;
@@ -82,6 +99,7 @@ std::atomic<uint32_t> g_distance{0};  // the far map's radius over the stock one
 std::atomic<uint32_t> g_maps{0};      // sharper maps drawn
 std::atomic<uint32_t> g_side{0};      // the sun map's guest side, as ShadowMatrix takes it
 uint32_t g_pool_side = 0;             // the sun map side the pool's surfaces were made for
+std::atomic<float> g_water{std::numeric_limits<float>::quiet_NaN()};  // the last reflection's water height
 
 // sun map resolves in the order the title issues them; the render thread runs up to a frame behind, so it matches each
 // of its own resolves to the first unmatched record of that address and reads the maps as they were drawn
@@ -128,6 +146,22 @@ Vec Unit(Vec v) {
 
 double Dot(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 
+Vec Cross(Vec a, Vec b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+
+// a + b * s
+Vec Madd(Vec a, Vec b, double s) { return {a.x + b.x * s, a.y + b.y * s, a.z + b.z * s}; }
+
+// an interval along one of the sun map's axes
+struct Span {
+    double lo = std::numeric_limits<double>::max();
+    double hi = -std::numeric_limits<double>::max();
+
+    void Add(double t) {
+        lo = std::min(lo, t);
+        hi = std::max(hi, t);
+    }
+};
+
 // as the game's snap: the position moved down to a whole number of texels along the axis
 void SnapAlong(Vec& p, Vec axis, double texel) {
     double d = Dot(p, axis);
@@ -140,6 +174,72 @@ void Pair(PPCContext& ctx, int a, int b) {
     uint32_t w = uint32_t(ctx.r[a]);
     if (w != uint32_t(ctx.r[b])) return;
     if (uint32_t side = Wanted(w)) ctx.r[a] = ctx.r[b] = side;
+}
+
+// the view frustum's eight corners
+bool ViewCorners(uint32_t eye, Vec (&at)[8]) {
+    uint32_t proj = eye + kCameraProjection;
+    double scale_x = std::abs(GF(proj));
+    double scale_y = std::abs(GF(proj + 5 * 4));
+    double near_plane = GF(eye + kCameraNear);
+    double far_plane = GF(eye + kCameraFar);
+    if (!(scale_x > 0 && scale_y > 0 && near_plane >= 0 && far_plane > 0)) return false;
+    // an off centre projection widens either side
+    double tan_x = (1 + std::abs(GF(proj + 8 * 4))) / scale_x;
+    double tan_y = (1 + std::abs(GF(proj + 9 * 4))) / scale_y;
+    Vec forward = Unit(GV(eye + kCameraForward));
+    Vec right = Unit(Cross(forward, GV(eye + kCameraUp)));
+    Vec up = Cross(right, forward);
+    Vec p = GV(eye + kCameraPosition);
+    for (int i = 0; i < 4; i++) {
+        Vec dir = Madd(Madd(forward, right, i & 1 ? tan_x : -tan_x), up, i & 2 ? tan_y : -tan_y);
+        at[i] = Madd(p, dir, near_plane);
+        at[i + 4] = Madd(p, dir, far_plane);
+    }
+    return true;
+}
+
+// the sun camera's side planes pulled in to the view's span, see the top of the file
+void CullToView(uint32_t view, uint32_t cam, uint32_t map_side) {
+    Vec corners[8];
+    if (!map_side || !ViewCorners(R32(view + kViewCamera), corners)) return;
+    Vec forward = Unit(GV(cam + kCameraForward));
+    Vec right = Unit(Cross(forward, GV(cam + kCameraUp)));
+    Vec up = Cross(right, forward);
+    Vec centre = GV(cam + kCameraPosition);
+    Span across;
+    Span down;
+    auto add = [&](Vec point) {
+        Vec offset = Madd(point, centre, -1);
+        across.Add(Dot(right, offset));
+        down.Add(Dot(up, offset));
+    };
+    float water = g_water;
+    for (Vec c : corners) {
+        add(c);
+        if (!std::isnan(water)) add({c.x, c.y, 2.0 * water - c.z});
+    }
+    double margin = kReceiverTexels * GF(cam + kCameraOrthoWidth) / map_side;
+    for (Span* s : {&across, &down}) {
+        s->lo -= margin;
+        s->hi += margin;
+    }
+    for (uint32_t i = 0; i < kPlaneCount; i++) {
+        uint32_t at = cam + kCameraPlanes + i * kPlaneSize;
+        Vec n = GV(at);
+        double k_right = Dot(n, right);
+        double k_up = Dot(n, up);
+        bool on_right = std::abs(k_right) > std::abs(k_up);
+        double k = on_right ? k_right : k_up;
+        // the near and far planes face the sun
+        if (std::abs(k) < kSideCos * std::sqrt(Dot(n, n))) continue;
+        const Span& s = on_right ? across : down;
+        double edge = -(Dot(n, centre) + GF(at + kPlaneD)) / k;
+        double want = k > 0 ? std::min(edge, s.hi) : std::max(edge, s.lo);
+        double d = -k * want - Dot(n, centre);
+        WF(at + kPlaneD, float(d));
+        WF(cam + kCameraPlanesNegated + i * kPlaneSize + kPlaneD, float(-d));
+    }
 }
 
 }  // namespace
@@ -211,7 +311,9 @@ PPC_FUNC(GUEST(Shadow_Snap)) {
     g_side = uint32_t(ctx.r[5]);
     uint32_t distance = g_distance.load();
     if (t_map == kNoMap || !distance) {
+        uint32_t map_side = uint32_t(ctx.r[5]);
         GUEST_ORIG(Shadow_Snap)(ctx, base);
+        CullToView(view, cam, map_side);
         return;
     }
     uint64_t args[6];
@@ -234,8 +336,7 @@ PPC_FUNC(GUEST(Shadow_Snap)) {
     double far_texel = width * distance / double(uint32_t(args[2]));
     Vec forward = Unit(GV(cam + kCameraForward));
     Vec up = Unit(GV(cam + kCameraUp));
-    Vec right = Unit({forward.y * up.z - forward.z * up.y, forward.z * up.x - forward.x * up.z,
-                      forward.x * up.y - forward.y * up.x});
+    Vec right = Unit(Cross(forward, up));
     Vec p = GV(cam + kCameraPosition);
     SnapAlong(p, right, far_texel);
     SnapAlong(p, up, far_texel);
@@ -248,6 +349,7 @@ PPC_FUNC(GUEST(Shadow_Snap)) {
     WF(cam + kCameraFar, far_plane);
     WF(cam + kCameraFarCopy, far_plane);
     CallGuest(ctx, SYM_CCamera_Update, {cam});
+    CullToView(view, cam, uint32_t(args[2]));
 }
 
 // draw extent, vtable +0x1E8
@@ -262,6 +364,7 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
     bool ok = pass >= 0x10000u && pass < 0xC0000000u;
     uint32_t outer = t_pass_type;
     t_pass_type = ok ? R32(pass + kPassType) : 0;
+    if (ok && t_pass_type <= kPassReflection) g_water = GF(pass + kPassWaterHeight);
     uint32_t w = ok ? R32(pass + kPassWidth) : 0;
     uint32_t h = ok ? R32(pass + kPassHeight) : 0;
     uint32_t side = ok && w == h ? Wanted(w) : 0;
@@ -325,7 +428,7 @@ void RunCascade(PPCContext& ctx, uint8_t* base, int map) {
 uint32_t fcip::SubmittedPass() { return t_pass_type; }
 
 void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
-    uint32_t distance = Get().shadow_distance;
+    uint32_t distance = Get().draw_distance;
     // the far map's texel grid must hold whole texels of each sharper map
     uint32_t maps = 0;
     while (maps < kSunMaps && (1u << maps) < distance && distance % (1u << maps) == 0) maps++;

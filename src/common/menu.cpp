@@ -112,7 +112,7 @@ enum RowId {
     kMonitor, kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivityX, kSensitivityY,
     kAimSensitivityX, kAimSensitivityY, kInvertX, kInvertY, kHoldAim, kHoldSprint, kSkipIntros, kFov, kViewmodelFov,
     kFpsCounter, kHdrOutput, kShadowResolution,
-    kShadowDistance, kBlur, kObjectDistance, kDetailDistance, kGrassDistance, kVegetationDetail, kModelDetail,
+    kBlur, kDrawDistance,
     kInvincible, kNoclip, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kMsaa, kSmaa, kAmbientOcclusion, kAudioOutput
 };
@@ -132,23 +132,16 @@ constexpr Row kSettingsRows[] = {
      "Caps the frame rate to your monitor's refresh rate or a custom value, or removes the cap"},
     {Kind::Value, kFpsCounter, "FPS COUNTER", "Displays the frame rate on screen"},
     {Kind::Value, kColourBlind, "COLOUR BLIND MODE", "Adjusts the colours for protanopia, deuteranopia or tritanopia"},
-    {Kind::Heading, -1, "GRAPHICS", "Antialiasing, ambient occlusion, texture filtering and shadows"},
+    {Kind::Heading, -1, "GRAPHICS", "Antialiasing, ambient occlusion, texture filtering, shadows and draw distance"},
     {Kind::Value, kAmbientOcclusion, "AMBIENT OCCLUSION",
      "Shades the world's creases and corners, SSAO, the more accurate GTAO or ray traced RTAO, characters and fog left alone"},
     {Kind::Value, kMsaa, "MSAA", "Smooths jagged edges with 2x, 4x or 8x MSAA in place of the game's own 2x"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},
-    {Kind::Value, kShadowDistance, "SHADOW DISTANCE", "Scales the area around the player that casts sun shadows"},
+    {Kind::Value, kDrawDistance, "DRAW DISTANCE",
+     "Scales how far objects, grass and vegetation are drawn up to 8x and the area casting sun shadows up to 32x"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
-    {Kind::Heading, -1, "DRAW DISTANCE", "How far objects, grass and detail are drawn"},
-    {Kind::Value, kObjectDistance, "OBJECT DISTANCE", "Scales how far trees, buildings, props and characters are drawn"},
-    {Kind::Value, kDetailDistance, "DETAIL OBJECTS", "Scales how far small detail objects are drawn"},
-    {Kind::Value, kGrassDistance, "GRASS DISTANCE",
-     "Scales the grass radius, far grass drawn in blocks that thin out with distance"},
-    {Kind::Value, kVegetationDetail, "VEGETATION DETAIL",
-     "Scales how far vegetation stays a full model before switching to its sprite"},
-    {Kind::Value, kModelDetail, "MODEL DETAIL", "Scales how far models keep their higher detail levels"},
     {Kind::Heading, -1, "GENERAL", "Intros and audio output"},
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
     {Kind::Value, kAudioOutput, "AUDIO OUTPUT",
@@ -344,19 +337,6 @@ float* SensitivityField(int id) {
     }
 }
 
-uint32_t* DistanceField(int id) {
-    Settings& g = Get();
-    switch (id) {
-        case kShadowDistance: return &g.shadow_distance;
-        case kObjectDistance: return &g.object_distance;
-        case kDetailDistance: return &g.detail_distance;
-        case kGrassDistance: return &g.grass_distance;
-        case kVegetationDetail: return &g.vegetation_detail;
-        case kModelDetail: return &g.model_detail;
-        default: return nullptr;
-    }
-}
-
 // one of names, stepped first
 template <size_t N>
 void StepName(uint32_t& value, const char* const (&names)[N], int step, char (&text)[64]) {
@@ -397,8 +377,8 @@ void StepInputRow(int id, int step, char (&text)[64]) {
             *sensitivity = float(shown) / 50.0f;
         }
         std::snprintf(text, sizeof(text), "%.1f", float(shown) / 10.0f);
-    } else if (uint32_t* scale = DistanceField(id)) {
-        uint32_t v = kDistances[StepTable(kDistances, *scale, step)];
+    } else if (id == kDrawDistance) {
+        uint32_t v = kDistances[StepTable(kDistances, g.draw_distance, step)];
         std::snprintf(text, sizeof(text), v == 1 ? "DEFAULT" : "%ux", v);
     } else if (id == kShadowResolution) {
         uint32_t size = kShadowSizes[StepTable(kShadowSizes, g.shadow_resolution, step)];

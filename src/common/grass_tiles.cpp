@@ -124,7 +124,7 @@ uint32_t g_seen_texture = 0;
 // the squared camera distance of a tile past the stock radius, 0 within it or at 1x; the same centre as the tile
 // loop's radius test
 float FarDistance(uint32_t params) {
-    uint32_t mult = fcip::Get().grass_distance;
+    uint32_t mult = fcip::WorldDistance();
     if (mult <= 1) return 0.0f;
     uint32_t camera = R32(params + kParamCamera);
     float d2 = 0.0f;

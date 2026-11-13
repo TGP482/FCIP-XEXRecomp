@@ -17,12 +17,7 @@ struct Settings {
     bool smaa = false;          // over the finished frame, HUD included; combines with MSAA
     uint32_t ambient_occlusion = 0;  // 0 off, 1 SSAO, 2 GTAO, 3 RTAO; the world only, under the fog
     uint32_t shadow_resolution = 1344;  // sun shadow map edge, 0 follows the render scale; 1344 is stock
-    uint32_t shadow_distance = 1;       // multipliers on the level's own values, 1 is stock
-    uint32_t object_distance = 1;
-    uint32_t detail_distance = 1;
-    uint32_t grass_distance = 1;
-    uint32_t vegetation_detail = 1;  // sprite switch distance
-    uint32_t model_detail = 1;       // mesh LOD distance
+    uint32_t draw_distance = 1;         // multiplier on the level's own distances, 1 is stock; shadows take all of it
     bool blur = true;                // the game's blur while scoped and during feral run
     // mouse look, the game's own pad look is 1; while aiming only the aim pair applies
     float sensitivity_x = 1.0f;
@@ -40,6 +35,11 @@ struct Settings {
 };
 
 Settings& Get();
+
+constexpr uint32_t kMaxWorldDistance = 8;  // past it only the shadow distance grows
+
+// the draw distance for objects, detail, grass, sprite switch and mesh LOD
+uint32_t WorldDistance();
 
 // GameInfo load and save: these settings and the binds
 void LoadSettings(const void* table);
