@@ -134,6 +134,7 @@ Grass_Release = 0x823731E8
 Grass_Reset = 0x823739E0
 Grass_SetTexture = 0x823739F0
 Overlay_Flush = 0x82369480
+PostEffects_Draw = 0x8237F6B8
 PerspectiveFov = 0x8264D520
 Renderer_Init = 0x8236EA88
 Scene_Draw = 0x82502F48

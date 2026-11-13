@@ -14,8 +14,6 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 - Recomp settings can be adjusted in the in-game options menu while the game is running, or through the Settings overlay, which is opened with F10 by default.
 <img width="1920" height="1080" alt="{093FE4A3-2CAB-4354-94DA-DD0CFA02B7EF}" src="https://github.com/user-attachments/assets/def470af-3424-4f7b-910c-f9d327352faa" />
 
-- NVIDIA DLSS is optional and its files are not included. Download the latest Streamline SDK release from [NVIDIA's official GitHub](https://github.com/NVIDIA-RTX/Streamline/releases), then copy `sl.interposer.dll`, `sl.common.dll`, `sl.dlss.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll`, `nvngx_dlss.dll` and `nvngx_dlssg.dll` from its `bin\x64` folder into the `DLSS` folder beside `FCIP.exe`.
-
 ## Features
 
 ### Display
@@ -33,8 +31,8 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 
 ### Graphics
 - **Ambient Occlusion** - Adds screen space ambient occlusion, creating soft contact shadows where surfaces meet. Choose between SSAO, GTAO and hardware ray traced RTAO.
-- **Anti Aliasing** - Enables 2x, 4x or 8x MSAA to smooth jagged edges while preserving a sharp image, or NVIDIA DLSS, which also upscales with DLSS when the render resolution is lowered.
-- **Frame Generation** - Generates frames between the rendered ones with NVIDIA DLSS Frame Generation, from 2X up to what your graphics card supports.
+- **Anti Aliasing** - Enables 2x, 4x or 8x MSAA to smooth jagged edges while preserving a sharp image, or AMD FSR, which also upscales with FSR when the render resolution is lowered.
+- **Frame Generation** - Generates a frame between each two rendered ones with AMD FSR Frame Generation.
 - **Subpixel Morphological Antialiasing (SMAA)** - Enables SMAA to smooth jagged edges across the whole frame with a softer image. SMAA also smooths alpha-tested edges such as fences and foliage, and can be combined with MSAA.
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures.
 - **Shadow Resolution** - Sets the sun shadow resolution from 1024x1024 up to 8192x8192.
@@ -93,4 +91,4 @@ Run `build.bat`. The first build recompiles the game and takes a while. The exe 
 
 ## Credits
 
-- NVIDIA DLSS through the [NVIDIA Streamline SDK](https://github.com/NVIDIA-RTX/Streamline). NVIDIA and DLSS are trademarks of NVIDIA Corporation.
+- AMD FSR through the [AMD FSR SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). AMD, FSR and FidelityFX are trademarks of Advanced Micro Devices, Inc.

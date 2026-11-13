@@ -9,7 +9,7 @@ namespace gpu {
 
 constexpr uint32_t kClearMotionBegin = 0x400;
 constexpr uint32_t kClearMotionEnd = 0x800;
-constexpr uint32_t kClearSceneBegin = 0x1000;  // the camera's pass, for DLSS
+constexpr uint32_t kClearSceneBegin = 0x1000;  // the camera's pass, for FSR
 constexpr uint32_t kClearSceneEnd = 0x2000;
 
 // a camera's matrices as the title keeps them, row major, before its pass flips depth
@@ -41,10 +41,11 @@ public:
     };
 
     void Begin();
-    // last frame's draw for this one, null when none; pos null for a draw without an object position
-    const Draw* Match(uint64_t signature, const float* pos);
-    // the blocks read marks, from the title's big endian bank
-    void Record(uint64_t signature, const float* pos, const uint64_t (&read)[2], const uint8_t* be);
+    // the blocks read marks, from the title's big endian bank; pos null for a draw without an object position
+    const Draw& Record(uint64_t signature, const float* pos, const uint64_t (&read)[2], const uint8_t* be);
+    // last frame's draw for a recorded one, null when none: of its signature and near its position, the one whose
+    // constants are nearest, since instances of one mesh share both and differ only in their constants
+    const Draw* Match(const Draw& now);
     // a draw's blocks at their places in a 4 KB bank
     void Copy(const Draw& d, uint8_t* bank) const;
 

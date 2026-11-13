@@ -33,7 +33,7 @@
 #include "common/menu.h"
 #include "common/render_pass.h"
 #include "common/settings.h"
-#include "d3d/dlss.h"
+#include "d3d/fsr.h"
 #include "d3d/motion.h"
 #include "d3d/occlusion.h"
 #include "d3d/readback.h"
@@ -110,7 +110,7 @@ constexpr uint32_t kAoRtv = kSmaaRtv + kSmaaTargets;  // ambient occlusion's raw
 constexpr uint32_t kMotionRtv = kAoRtv + kAoTargets;  // motion vectors as the draws wrote them, then completed
 constexpr DXGI_FORMAT kMotionFormat = DXGI_FORMAT_R16G16_FLOAT;
 constexpr float kNoMotion = 32768;  // the drawn motion's clear: no world draw wrote the pixel
-constexpr uint64_t kSceneTarget = 1ull << 62;  // targets_ key bit of a target at the scene's scale, before DLSS
+constexpr uint64_t kSceneTarget = 1ull << 62;  // targets_ key bit of a target at the scene's scale, before FSR
 constexpr DXGI_FORMAT kUpscaledFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
 enum : uint32_t {
@@ -881,7 +881,8 @@ float2 motion(float4 pos : SV_Position) : SV_Target {
     if (m.x < 16384) return m;
     float2 n = pos.xy * ndc.xy + ndc.zw;
     float4 last = mul(float4(n, (depth.Load(p) - zuv.y) / zuv.x, 1), reproject);
-    return (last.xy / last.w - n) * zuv.zw;
+    float2 mv = (last.xy / last.w - n) * zuv.zw;
+    return last.w > 0 ? clamp(mv, -2, 2) : 2;
 }
 )";
 
@@ -1254,24 +1255,32 @@ private:
     void Occlusion(const State& s, const OcclusionArgs& a);
     void BeginRayScene();
 
-    // motion vectors of the camera pass's world, for DLSS
+    // motion vectors of the camera pass's world, for FSR
     void BeginMotion(const State& s);
     void EndMotion(const State& s);
     bool EnsureMotionTargets(uint32_t w, uint32_t h);
     bool MotionWanted(const State& s, const ShaderInfo& ps) const;
     void BindMotion(const State& s, const DrawArgs& a, const ShaderInfo& vs);
     void CompleteMotion(Target& depth, const DrawConstants& d);
+    void CapMotionMatch(const uint64_t (&read)[2], const uint8_t* now_be, const uint8_t* last, bool placed);
 
-    // DLSS: the camera's pass at the scene scale, upscaled at its end into its target at the render scale
-    bool Dlaa() const { return fcip::Get().dlaa && dlss::SuperResolution(); }
+    // FSR: the camera's pass at the scene scale, upscaled at its end into its target at the render scale
+    bool Fsr() const { return fcip::Get().fsr && fsr::Upscaling(); }
+    // frame generation's swap chain only while it is on: it costs a copy and two threads every present
+    bool GenerationWanted() const { return fcip::Get().frame_generation && Fsr() && fsr::FrameGeneration(); }
+    void RecreateSwapChain();
+    void ConfigureGeneration(bool enabled);
     bool SceneScaled(uint32_t width) const { return upscale_.scene && width == guest_w_; }
     uint64_t MapKey(const Target& t) const;
     float SceneScale() const;
     float BaseScale() const;
     void BeginScene();
     void EndScene();
+    void Stamp(uint32_t i);
+    void ReadStamps(uint32_t slot);
+    void AddStamps(const uint64_t* t, bool scene);
     bool EnsureUpscaled(uint32_t w, uint32_t h);
-    void DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, Target& out);
+    void DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, uint32_t taps, Target& out);
     uint32_t RayVertices(const DrawArgs& a, const PipelineKey& k, D3D12_PRIMITIVE_TOPOLOGY topo, uint32_t count,
                          bool alpha_test) const;
     void StreamOut(const DrawConstants& c, uint32_t vertices);
@@ -1323,6 +1332,7 @@ private:
     void CapSave(ID3D12Resource* res, D3D12_RESOURCE_STATES& state, DXGI_FORMAT view, uint32_t samples, bool depth,
                  uint32_t w, uint32_t h, float mul, const std::string& name);
     void CapSave(Target& t, const std::string& name, float mul);
+    void CapFinite(ID3D12Resource* res, D3D12_RESOURCE_STATES& state, const char* what);
     FILE* cap_ = nullptr;
     std::filesystem::path cap_dir_;
     uint32_t cap_i_ = 0;
@@ -1369,7 +1379,7 @@ private:
         uint32_t matched = 0;
     } motion_;
     MotionHistory motion_history_;
-    // DLSS: the scene's targets and camera as EndMotion left them, the upscaled frame
+    // FSR: the scene's targets and camera as EndMotion left them, the upscaled frame
     struct Upscale {
         bool scene = false;   // between kClearSceneBegin and kClearSceneEnd
         bool motion = false;  // EndMotion completed this scene's motion
@@ -1378,7 +1388,7 @@ private:
         uint64_t depth = 0;
         MotionCamera camera;
         uint32_t jitters = 0;
-        uint64_t drawn = ~0ull;  // the frame DLSS last upscaled
+        uint64_t configured = ~0ull;  // the frame frame generation was last set up for
         ComPtr<ID3D12Resource> out;
         D3D12_RESOURCE_STATES out_state = D3D12_RESOURCE_STATE_COMMON;
         uint32_t w = 0;
@@ -1404,7 +1414,9 @@ private:
     uint32_t out_w_ = 0, out_h_ = 0;
     ComPtr<ID3D12Device> dev_;
     ComPtr<ID3D12CommandQueue> queue_;
-    ComPtr<IDXGISwapChain3> swap_;
+    ComPtr<IDXGISwapChain4> swap_;
+    bool generation_wanted_ = false;  // GenerationWanted when swap_ was made
+    bool generation_swap_ = false;    // swap_ is frame generation's
     ComPtr<ID3D12Resource> bb_[kFrames];
     ComPtr<ID3D12DescriptorHeap> view_heap_, sampler_heap_, rtv_heap_, dsv_heap_, ui_heap_;
     uint32_t view_inc_ = 0, sampler_inc_ = 0, rtv_inc_ = 0, dsv_inc_ = 0;
@@ -1521,6 +1533,22 @@ private:
 
     ComPtr<ID3D12QueryHeap> query_heap_;
     ComPtr<ID3D12Resource> query_read_;
+    // GPU timestamps per frame slot, logged every few seconds with the CPU times
+    enum StampAt : uint32_t { kFrameStart, kFrameEnd, kSceneStart, kUpscaleStart, kUpscaleEnd, kStamps };
+    ComPtr<ID3D12QueryHeap> stamp_heap_;
+    ComPtr<ID3D12Resource> stamp_read_;
+    double stamp_ms_ = 0;  // per tick
+    bool stamped_[kFrames] = {};
+    bool scene_stamped_[kFrames] = {};
+    uint64_t last_frame_end_ = 0;
+    double gpu_frame_ms_ = 0;
+    double gpu_idle_ms_ = 0;  // from a frame's end to the next one's start
+    double scene_ms_ = 0;
+    double upscale_ms_ = 0;
+    uint32_t gpu_frames_ = 0;
+    uint32_t scene_frames_ = 0;
+    uint32_t log_frames_ = 0;
+    std::chrono::steady_clock::time_point stamp_log_ = std::chrono::steady_clock::now();
     Query queries_[kQueryCount];
 
     std::chrono::steady_clock::time_point fps_start_ = std::chrono::steady_clock::now();
@@ -1533,7 +1561,10 @@ D3D12Backend::~D3D12Backend() {
     if (!dev_) return;
     Submit(true);
     ImGui_ImplDX12_Shutdown();
-    dlss::Shutdown();
+    for (auto& b : bb_) b.Reset();
+    if (generation_swap_) fsr::DestroySwapChain(swap_.Get());
+    swap_.Reset();
+    fsr::Shutdown();
     if (event_) CloseHandle(event_);
 }
 
@@ -1557,6 +1588,7 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
         ext_->Reset(*this);
     }
     Begin();
+    Stamp(kFrameStart);
     LOGR("D3D12: %ux%u title, %ux%u window, render scale %.3f", width, height, swap_w_, swap_h_, scale_);
     return true;
 }
@@ -1566,7 +1598,7 @@ bool D3D12Backend::CreateDevice() {
         ComPtr<ID3D12Debug> dbg;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) dbg->EnableDebugLayer();
     }
-    dlss::Load();
+    fsr::Load();
     if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory_)))) return false;
     // the dedicated GPU first on hybrid laptops
     ComPtr<IDXGIFactory6> f6;
@@ -1582,8 +1614,7 @@ bool D3D12Backend::CreateDevice() {
     DXGI_ADAPTER_DESC1 ad{};
     if (adapter) adapter->GetDesc1(&ad);
     LOGR("D3D12 adapter: %ls", adapter ? ad.Description : L"default");
-    dlss::SetDevice(dev_.Get());
-    dlss::UpgradeFactory(reinterpret_cast<void**>(factory_.GetAddressOf()));
+    fsr::SetDevice(dev_.Get());
     D3D12_COMMAND_QUEUE_DESC qd{};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     dev_->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue_));
@@ -1614,13 +1645,19 @@ bool D3D12Backend::CreateSwapChain() {
     sd.BufferCount = kFrames;
     sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     sd.Flags = tearing_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    IDXGISwapChain4* generated = nullptr;
+    generation_wanted_ = GenerationWanted();
+    generation_swap_ = generation_wanted_ && fsr::CreateSwapChain(factory_.Get(), queue_.Get(), hwnd, sd, &generated);
     ComPtr<IDXGISwapChain1> sc1;
-    if (FAILED(factory_->CreateSwapChainForHwnd(queue_.Get(), hwnd, &sd, nullptr, nullptr, &sc1))) {
+    if (generation_swap_) {
+        swap_.Attach(generated);
+    } else if (SUCCEEDED(factory_->CreateSwapChainForHwnd(queue_.Get(), hwnd, &sd, nullptr, nullptr, &sc1))) {
+        sc1.As(&swap_);
+    } else {
         LOGE("D3D12: no swap chain");
         return false;
     }
     factory_->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
-    sc1.As(&swap_);
     for (int i = 0; i < kFrames; i++) swap_->GetBuffer(i, IID_PPV_ARGS(&bb_[i]));
     return true;
 }
@@ -1737,6 +1774,15 @@ void D3D12Backend::CreateFrames() {
     D3D12_RESOURCE_DESC rd = BufferDesc(kQueryCount * sizeof(uint64_t));
     dev_->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                                   IID_PPV_ARGS(&query_read_));
+    D3D12_QUERY_HEAP_DESC sd{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kStamps * kFrames, 0};
+    D3D12_RESOURCE_DESC srd = BufferDesc(kStamps * kFrames * sizeof(uint64_t));
+    UINT64 ticks = 0;
+    bool timed = SUCCEEDED(queue_->GetTimestampFrequency(&ticks)) && ticks;
+    if (timed && SUCCEEDED(dev_->CreateQueryHeap(&sd, IID_PPV_ARGS(&stamp_heap_)))) {
+        dev_->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &srd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                      IID_PPV_ARGS(&stamp_read_));
+        stamp_ms_ = 1000.0 / double(ticks);
+    }
 }
 
 std::filesystem::path PipelineCachePath() { return app::ExeDir() / "cache" / "pipelines.bin"; }
@@ -3582,6 +3628,14 @@ void D3D12Backend::BeginMotion(const State& s) {
         for (int i = 0; i < 4; i++) c.reproject[i * 5] = 1;
     }
     if (!motion_.has_last) upscale_.reset = true;
+    if (cap_) {
+        const float* p = camera.proj;
+        const float* v = camera.view;
+        const float* r = c.reproject;
+        const char* last = motion_.has_last ? "with" : "no";
+        std::fprintf(cap_, "motion begin: proj %g %g %g %g, view at %g %g %g, reproject %g %g %g %g, %s last\n",
+                     p[0], p[5], p[10], p[14], v[12], v[13], v[14], r[0], r[5], r[10], r[15], last);
+    }
     std::memcpy(motion_.last_clip, clip, sizeof(clip));
     std::memcpy(motion_.reproject, c.reproject, sizeof(c.reproject));
     motion_.has_last = true;
@@ -3672,19 +3726,51 @@ void D3D12Backend::BindMotion(const State& s, const DrawArgs& a, const ShaderInf
     bool placed = vs.constants[kPositionBit / 64] >> (kPositionBit % 64) & 1;
     const uint8_t* at = s.consts + kObjectPosition * 16;
     for (uint32_t i = 0; i < 3 && placed; i++) pos[i] = std::bit_cast<float>(Be32(at + i * 4));
-    const MotionHistory::Draw* last = motion_history_.Match(signature, placed ? pos : nullptr);
-    motion_history_.Record(signature, placed ? pos : nullptr, vs.constants, s.consts);
+    const MotionHistory::Draw& now = motion_history_.Record(signature, placed ? pos : nullptr, vs.constants, s.consts);
+    const MotionHistory::Draw* last = motion_history_.Match(now);
     D3D12_GPU_VIRTUAL_ADDRESS consts = const_gpu_[kRootVsConsts];
     if (last) {
         Alloc up = Upload(kConstBytes, kCbAlign);
         motion_history_.Copy(*last, up.cpu);
         consts = up.gpu;
         motion_.matched++;
+        if (cap_) CapMotionMatch(vs.constants, s.consts, up.cpu, placed);
     }
     motion_.draws++;
     if (Latch(binds_.roots[kRootPrevConsts], consts)) cl_->SetGraphicsRootConstantBufferView(kRootPrevConsts, consts);
     D3D12_GPU_VIRTUAL_ADDRESS mc = motion_.consts[last ? 1 : 0];
     if (Latch(binds_.roots[kRootMotion], mc)) cl_->SetGraphicsRootConstantBufferView(kRootMotion, mc);
+}
+
+// F3: how far the last frame's constants a draw was matched to are from its own
+void D3D12Backend::CapMotionMatch(const uint64_t (&read)[2], const uint8_t* now_be, const uint8_t* last, bool placed) {
+    uint32_t blocks = 0;
+    uint32_t differ = 0;
+    float most = 0;
+    uint32_t most_at = 0;
+    for (uint32_t w = 0; w < 2; w++) {
+        for (uint64_t m = read[w]; m; m &= m - 1) {
+            uint32_t block = w * 64 + uint32_t(std::countr_zero(m));
+            bool same = true;
+            for (uint32_t i = 0; i < 8; i++) {
+                uint32_t at = block * 32 + i * 4;
+                float now = std::bit_cast<float>(Be32(now_be + at));
+                float was = 0;
+                std::memcpy(&was, last + at, 4);
+                float d = std::fabs(now - was);
+                if (d == 0) continue;
+                same = false;
+                if (d > most) {
+                    most = d;
+                    most_at = at / 16;
+                }
+            }
+            blocks++;
+            differ += same ? 0 : 1;
+        }
+    }
+    std::fprintf(cap_, "     motion match %s: %u of %u blocks differ, most %g at c%u\n", placed ? "placed" : "in order",
+                 differ, blocks, most, most_at);
 }
 
 // kMotionHlsl into the completed target; d maps the title's ndc over the depth target as its draws did
@@ -3719,28 +3805,35 @@ void D3D12Backend::CompleteMotion(Target& depth, const DrawConstants& d) {
     Unbind();
 }
 
-// DLSS
+// FSR
 
 uint64_t D3D12Backend::MapKey(const Target& t) const {
     return TargetMapKey(t.surface, t.depth, t.width, t.key) | (SceneScaled(t.width) ? kSceneTarget : 0);
 }
 
-// the render scale without DLAA; with it the output's, as the scene alone is drawn at the render resolution
+// the render scale without FSR; with it the output's, as the scene alone is drawn at the render resolution
 float D3D12Backend::BaseScale() const {
     float scale = app::RenderScale(guest_h_);
-    return Dlaa() ? scale * 100.0f / float(app::Get().render_percent) : scale;
+    if (!Fsr()) return scale;
+    // the output's height in whole pixels, so the upscaled targets match the back buffer
+    float out_h = std::round(scale * float(guest_h_) * 100.0f / float(app::Get().render_percent));
+    return out_h / float(guest_h_);
 }
 
 float D3D12Backend::SceneScale() const {
-    uint32_t percent = std::clamp(app::Get().render_percent, dlss::kMinPercent, dlss::kMaxPercent);
-    return Dlaa() ? BaseScale() * float(percent) / 100.0f : BaseScale();
+    if (!Fsr()) return BaseScale();
+    uint32_t percent = std::clamp(app::Get().render_percent, fsr::kMinPercent, fsr::kMaxPercent);
+    // whole scene pixels in height, so a mode's own size lands exactly (a third of 2160 is 720)
+    float out_h = BaseScale() * float(guest_h_);
+    return std::round(out_h * fsr::SceneFraction(percent)) / float(guest_h_);
 }
 
 // the camera's pass begins: its full screen targets at the scene's scale, its draws offset by the next jitter
 void D3D12Backend::BeginScene() {
-    upscale_.scene = Dlaa();
+    upscale_.scene = Fsr();
     upscale_.motion = false;
     if (!upscale_.scene) return;
+    Stamp(kSceneStart);
     // Halton 2 and 3, eight phases for each output pixel a scene pixel covers
     float ratio = scale_ / scene_scale_;
     uint32_t phases = uint32_t(std::ceil(8 * ratio * ratio));
@@ -3749,11 +3842,22 @@ void D3D12Backend::BeginScene() {
     jitter_[1] = Halton(i, 3) - 0.5f;
 }
 
+// what the last camera passes did, logged when it changes
+void LogUpscale(const std::string& what) {
+    static std::string last;
+    if (what == last) return;
+    last = what;
+    LOGR("FSR: %s", what.c_str());
+}
+
 // the camera's pass ends: its colour upscaled into the same surface at the render scale, which the title draws on
 void D3D12Backend::EndScene() {
     if (!std::exchange(upscale_.scene, false)) return;
     auto color = targets_.find(upscale_.color);
-    if (color == targets_.end()) return;
+    if (color == targets_.end()) {
+        LogUpscale("the camera pass drew no scene target");
+        return;
+    }
     Target& in = color->second;
     Target* out = EnsureTarget(in.surface, false, in.width, in.height);
     if (!out || !EnsureUpscaled(out->w, out->h)) return;
@@ -3761,24 +3865,138 @@ void D3D12Backend::EndScene() {
     bool ok = false;
     if (upscale_.motion && depth != targets_.end()) {
         Target& ds = depth->second;
-        dlss::Frame f;
-        f.color = {in.res.Get(), uint32_t(in.state), uint32_t(ReadFormat(in)), in.w, in.h};
-        f.depth = {ds.res.Get(), uint32_t(ds.state), uint32_t(DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS), ds.w, ds.h};
-        f.motion = {motion_.done.Get(), uint32_t(motion_.done_state), 0, motion_.w, motion_.h};
-        f.output = {upscale_.out.Get(), uint32_t(upscale_.out_state), 0, upscale_.w, upscale_.h};
+        fsr::Frame f;
+        f.color = {in.res.Get(), uint32_t(ReadFormat(in)), in.w, in.h};
+        f.depth = {ds.res.Get(), uint32_t(DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS), ds.w, ds.h};
+        f.motion = {motion_.done.Get(), 0, motion_.w, motion_.h};
+        f.output = {upscale_.out.Get(), 0, upscale_.w, upscale_.h};
         f.camera = upscale_.camera;
-        std::memcpy(f.clip_to_prev, motion_.reproject, sizeof(f.clip_to_prev));
         f.jitter[0] = jitter_[0];
         f.jitter[1] = jitter_[1];
         f.reset = upscale_.reset;
-        f.index = uint32_t(presents_);
-        ok = dlss::Upscale(cl_.Get(), f);
-        Begin();  // Streamline's passes left their heaps and root signature bound
+        f.index = presents_;
+        if (cap_) {
+            CapFinite(in.res.Get(), in.state, "FSR colour");
+            CapFinite(ds.res.Get(), ds.state, "FSR depth");
+            CapFinite(motion_.done.Get(), motion_.done_state, "FSR motion");
+        }
+        Transition(in.res.Get(), in.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        Transition(ds.res.Get(), ds.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        Transition(motion_.done.Get(), motion_.done_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        Transition(upscale_.out.Get(), upscale_.out_state, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Stamp(kUpscaleStart);
+        ok = fsr::Upscale(cl_.Get(), f);
+        if (ok && generation_swap_) {
+            // frames are generated from gameplay FSR drew, never over the F10 panel
+            ConfigureGeneration(!fcip::MenuOpen());
+            fsr::Prepare(cl_.Get(), f);
+        }
+        Begin();  // FSR's passes left their heaps and root signature bound
+        Stamp(kUpscaleEnd);
+        if (cap_) {
+            CapFinite(upscale_.out.Get(), upscale_.out_state, "FSR output");
+            char name[32];
+            std::snprintf(name, sizeof(name), "%04u_fsr", cap_i_++);
+            CapSave(upscale_.out.Get(), upscale_.out_state, kUpscaledFormat, 1, false, upscale_.w, upscale_.h, 1, name);
+        }
     }
+    char what[96];
+    if (ok) std::snprintf(what, sizeof(what), "upscaling %ux%u to %ux%u", in.w, in.h, out->w, out->h);
+    else std::snprintf(what, sizeof(what), "not upscaling, %s", upscale_.motion ? "FSR failed" : "no motion vectors");
+    LogUpscale(what);
     upscale_.reset = !ok;
-    if (ok) upscale_.drawn = presents_;
-    if (ok) DrawUpscaled(upscale_.out.Get(), upscale_.out_state, kUpscaledFormat, *out);
-    else DrawUpscaled(in.res.Get(), in.state, ReadFormat(in), *out);
+    if (ok) DrawUpscaled(upscale_.out.Get(), upscale_.out_state, kUpscaledFormat, 1, *out);
+    else DrawUpscaled(in.res.Get(), in.state, ReadFormat(in), 1, *out);
+}
+
+// once a frame before its present through frame generation's swap chain
+void D3D12Backend::ConfigureGeneration(bool enabled) {
+    upscale_.configured = presents_;
+    fsr::Generation g;
+    g.swap = swap_.Get();
+    g.index = presents_;
+    g.enabled = enabled;
+    std::copy(std::begin(frame_rect_), std::end(frame_rect_), g.rect);
+    g.w = swap_w_;
+    g.h = swap_h_;
+    g.format = hdr_out_ ? kHdr10Format : kSwapFormat;
+    g.hdr = hdr_out_;
+    fsr::Configure(g);
+}
+
+// frame generation's swap chain made or dropped as the setting changes
+void D3D12Backend::RecreateSwapChain() {
+    Submit(true);
+    for (auto& b : bb_) b.Reset();
+    if (generation_swap_) fsr::DestroySwapChain(swap_.Get());
+    swap_.Reset();
+    if (!CreateSwapChain()) return;
+    // ResizeSwap makes the back buffers' views and colour space again
+    swap_w_ = 0;
+    hdr_want_ = false;
+    LOGR("FSR: frame generation's swap chain %s", generation_swap_ ? "in use" : "dropped");
+}
+
+void D3D12Backend::Stamp(uint32_t i) {
+    if (!stamp_read_) return;
+    uint32_t slot = uint32_t(frame_ % kFrames);
+    uint32_t first = slot * kStamps;
+    cl_->EndQuery(stamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first + i);
+    if (i == kUpscaleEnd) scene_stamped_[slot] = true;
+    if (i != kFrameEnd) return;
+    // the camera pass's stamps only when this frame wrote them
+    uint32_t count = scene_stamped_[slot] ? kStamps : kSceneStart;
+    cl_->ResolveQueryData(stamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first, count, stamp_read_.Get(),
+                          first * sizeof(uint64_t));
+    stamped_[slot] = true;
+}
+
+// a finished frame's GPU times; every few seconds their averages and the CPU times are logged
+void D3D12Backend::ReadStamps(uint32_t slot) {
+    log_frames_++;
+    bool scene = std::exchange(scene_stamped_[slot], false);
+    uint64_t* all = nullptr;
+    D3D12_RANGE range{slot * kStamps * sizeof(uint64_t), (slot + 1) * kStamps * sizeof(uint64_t)};
+    bool stamped = std::exchange(stamped_[slot], false);
+    if (stamped && SUCCEEDED(stamp_read_->Map(0, &range, reinterpret_cast<void**>(&all)))) {
+        AddStamps(all + slot * kStamps, scene);
+        D3D12_RANGE none{0, 0};
+        stamp_read_->Unmap(0, &none);
+    } else {
+        last_frame_end_ = 0;
+    }
+    auto now = std::chrono::steady_clock::now();
+    double secs = std::chrono::duration<double>(now - stamp_log_).count();
+    if (secs < 5) return;
+    double frames = std::max(gpu_frames_, 1u);
+    double scenes = std::max(scene_frames_, 1u);
+    LOGR("perf: %.1f fps, GPU frame %.2f ms, idle between frames %.2f ms", log_frames_ / secs, gpu_frame_ms_ / frames,
+         gpu_idle_ms_ / frames);
+    if (scene_frames_) {
+        LOGR("perf FSR: camera pass %.2f ms, upscale %.2f ms on the GPU in %u frames", scene_ms_ / scenes,
+             upscale_ms_ / scenes, scene_frames_);
+    }
+    stamp_log_ = now;
+    gpu_frame_ms_ = 0;
+    gpu_idle_ms_ = 0;
+    scene_ms_ = 0;
+    upscale_ms_ = 0;
+    gpu_frames_ = 0;
+    scene_frames_ = 0;
+    log_frames_ = 0;
+}
+
+void D3D12Backend::AddStamps(const uint64_t* t, bool scene) {
+    gpu_frame_ms_ += double(t[kFrameEnd] - t[kFrameStart]) * stamp_ms_;
+    if (last_frame_end_ && t[kFrameStart] > last_frame_end_) {
+        gpu_idle_ms_ += double(t[kFrameStart] - last_frame_end_) * stamp_ms_;
+    }
+    last_frame_end_ = t[kFrameEnd];
+    gpu_frames_++;
+    if (!scene) return;
+    scene_ms_ += double(t[kUpscaleStart] - t[kSceneStart]) * stamp_ms_;
+    upscale_ms_ += double(t[kUpscaleEnd] - t[kUpscaleStart]) * stamp_ms_;
+    scene_frames_++;
 }
 
 bool D3D12Backend::EnsureUpscaled(uint32_t w, uint32_t h) {
@@ -3792,7 +4010,7 @@ bool D3D12Backend::EnsureUpscaled(uint32_t w, uint32_t h) {
     upscale_.out_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, upscale_.out_state, nullptr,
                                              IID_PPV_ARGS(&upscale_.out)))) {
-        LOGE("D3D12: no %ux%u DLSS output", w, h);
+        LOGE("D3D12: no %ux%u FSR output", w, h);
         return false;
     }
     upscale_.w = w;
@@ -3800,8 +4018,9 @@ bool D3D12Backend::EnsureUpscaled(uint32_t w, uint32_t h) {
     return true;
 }
 
-// src over the whole of out
-void D3D12Backend::DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, Target& out) {
+// src over the whole of out, taps per side where src is larger
+void D3D12Backend::DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, uint32_t taps,
+                                Target& out) {
     Transition(src, state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(out.res.Get(), out.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
     D3D12_CPU_DESCRIPTOR_HANDLE rh = Rtv(out.view);
@@ -3811,7 +4030,7 @@ void D3D12Backend::DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& stat
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &sc);
     const float whole[4] = {0, 0, 1, 1};
-    Blit(src, fmt, whole, false, true, 1, 1, out.fmt);
+    Blit(src, fmt, whole, false, true, taps, 1, out.fmt);
 }
 
 // RTAO
@@ -4631,15 +4850,11 @@ void D3D12Backend::ShowFrame(const xenos::TextureFetch& t) {
         PresentHdr(t, rh);
     }
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_PRESENT);
+    Stamp(kFrameEnd);
     Submit(false);
     bool vsync = app::Get().vsync;
-    uint32_t frame = uint32_t(presents_);
-    // frames are generated from gameplay DLSS drew, never over the F10 panel
-    bool gameplay = upscale_.drawn == presents_ && !fcip::MenuOpen();
-    dlss::Generate(frame, fcip::Get().frame_generation, gameplay, frame_rect_, swap_w_, swap_h_);
-    dlss::Mark(dlss::Marker::PresentStart, frame);
+    if (generation_swap_ && upscale_.configured != presents_) ConfigureGeneration(false);
     swap_->Present(vsync ? 1 : 0, !vsync && tearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
-    dlss::Mark(dlss::Marker::PresentEnd, frame);
 }
 
 void D3D12Backend::Present(const uint32_t front[6]) {
@@ -4650,6 +4865,7 @@ void D3D12Backend::Present(const uint32_t front[6]) {
         StartCapture();
     }
     UpdateHdrDisplay();
+    if (GenerationWanted() != generation_wanted_) RecreateSwapChain();
     ResizeSwap();
     ShowFrame(t);
 
@@ -4660,6 +4876,7 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     frame_textures_.clear();
     Frame& next = CurrentFrame();
     WaitFence(next.fence);
+    ReadStamps(uint32_t(frame_ % kFrames));
     next.alloc->Reset();
     next.garbage.clear();
     next.used = 0;
@@ -4668,6 +4885,7 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     next.views = 0;
     cl_->Reset(next.alloc.Get(), nullptr);
     Begin();
+    Stamp(kFrameStart);
     if (uint32_t side = fcip::SunShadowSide(); side != shadow_side_) {
         last_shadow_side_ = shadow_side_;
         shadow_side_ = side;
@@ -4975,6 +5193,61 @@ void D3D12Backend::CapSave(ID3D12Resource* res, D3D12_RESOURCE_STATES& state, DX
     for (uint32_t y = 0; y < h; y++) std::memcpy(&px[size_t(y) * w * 4], p + size_t(y) * fp.Footprint.RowPitch, w * 4);
     readback->Unmap(0, nullptr);
     WriteBmp(cap_dir_ / (name + ".bmp"), w, h, px);
+}
+
+// F3: a float texture's values that are not finite, counted into draws.txt; waits for the GPU
+void D3D12Backend::CapFinite(ID3D12Resource* res, D3D12_RESOURCE_STATES& state, const char* what) {
+    D3D12_RESOURCE_DESC d = res->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
+    UINT rows = 0;
+    UINT64 row_bytes = 0;
+    UINT64 total = 0;
+    dev_->GetCopyableFootprints(&d, 0, 1, 0, &fp, &rows, &row_bytes, &total);
+    DXGI_FORMAT f = fp.Footprint.Format;
+    bool half = f == DXGI_FORMAT_R16G16B16A16_FLOAT || f == DXGI_FORMAT_R16G16_FLOAT || f == DXGI_FORMAT_R16_FLOAT;
+    bool single = f == DXGI_FORMAT_R32_FLOAT || f == DXGI_FORMAT_R32_TYPELESS || f == DXGI_FORMAT_R32G32_FLOAT;
+    if (!half && !single) {
+        std::fprintf(cap_, "%s: format %d, not float\n", what, int(f));
+        return;
+    }
+    ComPtr<ID3D12Resource> readback;
+    D3D12_HEAP_PROPERTIES rp{D3D12_HEAP_TYPE_READBACK};
+    D3D12_RESOURCE_DESC bd = BufferDesc(total);
+    if (FAILED(dev_->CreateCommittedResource(&rp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                             IID_PPV_ARGS(&readback))))
+        return;
+    D3D12_RESOURCE_STATES was = state;
+    Transition(res, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION dst{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {}};
+    dst.PlacedFootprint = fp;
+    D3D12_TEXTURE_COPY_LOCATION src{res, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {}};
+    cl_->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    Transition(res, state, was);
+    Submit(true);
+    uint8_t* p = nullptr;
+    if (FAILED(readback->Map(0, nullptr, reinterpret_cast<void**>(&p)))) return;
+    uint32_t size = half ? 2 : 4;
+    uint32_t pixel = uint32_t(row_bytes / fp.Footprint.Width);
+    uint64_t bad = 0;
+    uint32_t first_x = 0;
+    uint32_t first_y = 0;
+    for (uint32_t y = 0; y < rows; y++) {
+        const uint8_t* row = p + size_t(y) * fp.Footprint.RowPitch;
+        for (uint32_t i = 0; i < row_bytes; i += size) {
+            uint32_t v = 0;
+            std::memcpy(&v, row + i, size);
+            bool finite = half ? (v & 0x7C00) != 0x7C00 : (v & 0x7F800000) != 0x7F800000;
+            if (finite) continue;
+            if (!bad) {
+                first_x = i / pixel;
+                first_y = y;
+            }
+            bad++;
+        }
+    }
+    readback->Unmap(0, nullptr);
+    std::fprintf(cap_, "%s: format %d, %llu values not finite, first at %u,%u\n", what, int(f),
+                 static_cast<unsigned long long>(bad), first_x, first_y);
 }
 
 // Queries

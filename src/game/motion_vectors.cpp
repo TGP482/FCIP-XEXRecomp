@@ -29,7 +29,7 @@ void End() {
 namespace fcip {
 
 void MotionSceneDraw(uint32_t block) {
-    if (!Get().dlaa || SubmittedPass() != kPassCamera) return;
+    if (!Get().fsr || SubmittedPass() != kPassCamera) return;
     uint32_t camera = Camera();
     if (!camera) return;
     gpu::MotionCamera c;

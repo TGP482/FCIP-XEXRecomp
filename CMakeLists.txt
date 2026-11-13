@@ -24,8 +24,20 @@ include(${SDK}/cmake/XexRecomp.cmake)
 list(FILTER XEX_RUNTIME_SOURCES EXCLUDE REGEX "/(xdk/d3d9|xdk/xaudio|gpu/d3d12|gpu/shaders)\\.cpp$")
 # gyro aiming reads the controllers through SDL
 set_source_files_properties(src/common/gyro.cpp PROPERTIES INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
-# NVIDIA Streamline's headers for DLSS, its DLLs come from NVIDIA
-set_source_files_properties(src/d3d/dlss.cpp PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/include")
+# AMD FSR: the FidelityFX API's headers, and AMD's signed DLLs from its official SDK in the FSR folder beside the exe
+set_source_files_properties(src/d3d/fsr.cpp PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fidelityfx")
+set(FSR_URL https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v2.4.0/Kits/FidelityFX/signedbin)
+set(FSR_DLLS
+    amd_fidelityfx_loader_dx12.dll e2191d3c0828be45eb8affd4e3ec0378f2293adc345b772a7170edcf3b021ecb
+    amd_fidelityfx_upscaler_dx12.dll aad4fccccb29084a655f9a4f9f613bd22c8c03fb4a0f8840148cc6543b4ccace
+    amd_fidelityfx_framegeneration_dx12.dll e6843252f58b0341a0d80f6a20bc0d840643ee95bc48c22cac08745344577bb6)
+while(FSR_DLLS)
+    list(POP_FRONT FSR_DLLS name hash)
+    if(NOT EXISTS ${CMAKE_BINARY_DIR}/FSR/${name})
+        file(DOWNLOAD ${FSR_URL}/${name} ${CMAKE_BINARY_DIR}/FSR/${name} EXPECTED_HASH SHA256=${hash})
+    endif()
+endwhile()
+configure_file(third_party/fidelityfx/license.txt ${CMAKE_BINARY_DIR}/FSR/license.txt COPYONLY)
 
 file(GLOB XEX_HOST_SOURCES CONFIGURE_DEPENDS src/*/*.cpp)
 list(FILTER XEX_HOST_SOURCES EXCLUDE REGEX "/src/(game|editor)/")

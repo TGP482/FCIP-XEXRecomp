@@ -1157,7 +1157,11 @@ POut main(PIn i) {
     if (info_.writes_depth) s += "    o.depth = oDepth;\n";
     if (!info_.exports && !info_.writes_depth) s += "    o.c0 = 0;\n";
     // where the pixel was last frame, in the target's uv
-    if (opt_.motion) s += "    o.motion = (i.prev.xy / i.prev.w - i.cur.xy / i.cur.w) * float2(0.5, -0.5);\n";
+    if (opt_.motion) {
+        s += "    float2 mv = (i.prev.xy / i.prev.w - i.cur.xy / i.cur.w) * float2(0.5, -0.5);\n";
+        // behind the camera last frame or past two screens: off screen, finite for FSR and half floats
+        s += "    o.motion = i.prev.w > 0 ? clamp(mv, -2, 2) : 2;\n";
+    }
     s += "    return o;\n}\n";
     return s;
 }

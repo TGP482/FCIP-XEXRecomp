@@ -30,7 +30,7 @@
 #include "common/panel_colors.h"
 #include "common/settings.h"
 #include "core/input.h"
-#include "d3d/dlss.h"
+#include "d3d/fsr.h"
 #include "d3d/occlusion.h"
 
 namespace fcip {
@@ -126,7 +126,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kDisplayMode, "DISPLAY MODE", "Switch between fullscreen, borderless and windowed"},
     {Kind::Value, kResolution, "RESOLUTION", "Every mode your monitor reports, defaulting to your desktop resolution"},
     {Kind::Value, kRenderResolution, "RENDER RESOLUTION",
-     "Renders the game at 20% to 200% of the output resolution, independent of the window size, or 33% to 100% upscaled with DLSS on"},
+     "Renders the game at 20% to 200% of the output resolution, independent of the window size, or 33% to 100% upscaled with FSR on"},
     {Kind::Value, kFov, "FIELD OF VIEW", "Sets the horizontal field of view during gameplay, cutscenes keep their own"},
     {Kind::Value, kViewmodelFov, "VIEWMODEL FIELD OF VIEW", "Sets the field of view of the weapon and arms"},
     {Kind::Value, kVsync, "VERTICAL SYNC", "Reduces screen tearing"},
@@ -139,9 +139,9 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kAmbientOcclusion, "AMBIENT OCCLUSION",
      "Shades the world's creases and corners, SSAO, the more accurate GTAO or ray traced RTAO, characters and fog left alone"},
     {Kind::Value, kAntiAliasing, "ANTI ALIASING",
-     "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, or NVIDIA DLSS from the render resolution, DLAA at 100%"},
+     "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, or AMD FSR from the render resolution, NATIVE AA at 100%"},
     {Kind::Value, kFrameGeneration, "FRAME GENERATION",
-     "Generates frames between the rendered ones with NVIDIA DLSS Frame Generation, fixed or dynamic, with DLSS on"},
+     "Generates a frame between each two rendered ones with AMD FSR Frame Generation, with FSR on"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},
@@ -350,14 +350,14 @@ void StepName(uint32_t& value, const char* const (&names)[N], int step, char (&t
     std::snprintf(text, sizeof(text), "%s", names[value]);
 }
 
-// with DLSS, its range in fives and its modes' percentages, named
-constexpr uint32_t kDlssPercents[] = {33, 35, 40, 45, 50, 55, 58, 60, 65, 67, 70, 75, 80, 85, 90, 95, 100};
+// with FSR, its range in fives and its modes' percentages, named
+constexpr uint32_t kFsrPercents[] = {33, 35, 40, 45, 50, 55, 59, 60, 65, 67, 70, 75, 80, 85, 90, 95, 100};
 
 void StepRenderResolution(app::Settings& s, int step, char (&text)[64]) {
     uint32_t percent = s.render_percent;
-    if (Get().dlaa) {
-        percent = kDlssPercents[StepTable(kDlssPercents, s.render_percent, step)];
-        for (const dlss::ModePoint& m : dlss::kModes) {
+    if (Get().fsr) {
+        percent = kFsrPercents[StepTable(kFsrPercents, s.render_percent, step)];
+        for (const fsr::ModePoint& m : fsr::kModes) {
             if (m.percent != percent) continue;
             std::snprintf(text, sizeof(text), "%u%% %s", percent, m.name);
             return;
@@ -370,44 +370,25 @@ void StepRenderResolution(app::Settings& s, int step, char (&text)[64]) {
     std::snprintf(text, sizeof(text), "%u%% (%ux%u)", percent, out.width * percent / 100, out.height * percent / 100);
 }
 
-// MSAA's sample counts, then DLSS
+// MSAA's sample counts, then FSR
 void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
     constexpr int kMsaaCount = int(std::size(kMsaaValues));
-    int i = Get().dlaa ? kMsaaCount : NearestIndex(kMsaaValues, kMsaaCount, s.msaa);
+    int i = Get().fsr ? kMsaaCount : NearestIndex(kMsaaValues, kMsaaCount, s.msaa);
     if (step) {
         i = StepIndex(i, step, kMsaaCount + 1);
-        Get().dlaa = i == kMsaaCount;
-        s.msaa = Get().dlaa ? 0 : kMsaaValues[i];
+        Get().fsr = i == kMsaaCount;
+        s.msaa = Get().fsr ? 0 : kMsaaValues[i];
     }
-    // DLSS at 100% render resolution is DLAA
-    const char* name = s.render_percent >= dlss::kMaxPercent ? "DLAA" : "DLSS";
+    // FSR at 100% render resolution is native AA
+    const char* name = s.render_percent >= fsr::kMaxPercent ? "FSR NATIVE AA" : "FSR";
     if (i < kMsaaCount) std::snprintf(text, sizeof(text), "%s", kMsaaNames[i]);
-    else std::snprintf(text, sizeof(text), "%s%s", name, dlss::StatusNote(dlss::UpscalingStatus()));
-}
-
-// off, 2X to 6X, dynamic; noted where the DLLs are missing or this GPU lacks it
-constexpr uint32_t kGenerations[] = {dlss::kGenerationOff, 2, 3, 4, 5, 6, dlss::kGenerationDynamic};
-
-const char* GenerationNote(uint32_t v) {
-    dlss::Status status = dlss::GenerationStatus();
-    if (status != dlss::Status::Ready) return dlss::StatusNote(status);
-    bool runs = v == dlss::kGenerationDynamic ? dlss::DynamicFrameGeneration() : v <= dlss::MaxMultiplier();
-    return dlss::StatusNote(runs ? dlss::Status::Ready : dlss::Status::NotSupported);
+    else std::snprintf(text, sizeof(text), "%s%s", name, fsr::StatusNote(fsr::UpscalingStatus()));
 }
 
 void StepFrameGeneration(int step, char (&text)[64]) {
-    uint32_t& setting = Get().frame_generation;
-    const uint32_t* end = std::end(kGenerations);
-    const uint32_t* it = std::find(std::begin(kGenerations), end, setting);
-    int i = it == end ? 0 : int(it - std::begin(kGenerations));
-    if (step) {
-        i = StepIndex(i, step, int(std::size(kGenerations)));
-        setting = kGenerations[i];
-    }
-    uint32_t v = kGenerations[i];
-    if (v == dlss::kGenerationOff) std::snprintf(text, sizeof(text), "OFF");
-    else if (v == dlss::kGenerationDynamic) std::snprintf(text, sizeof(text), "DYNAMIC%s", GenerationNote(v));
-    else std::snprintf(text, sizeof(text), "%uX%s", v, GenerationNote(v));
+    bool& on = Get().frame_generation;
+    if (step) on = !on;
+    std::snprintf(text, sizeof(text), "%s%s", on ? "ON" : "OFF", fsr::StatusNote(fsr::GenerationStatus()));
 }
 
 void StepGyroRow(int id, int step, char (&text)[64]) {

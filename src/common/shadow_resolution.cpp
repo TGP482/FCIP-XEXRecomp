@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 #include "common/draw_distance.h"
 #include "common/render_pass.h"
@@ -88,6 +89,9 @@ thread_local uint32_t t_side = 0;
 thread_local uint32_t t_backed = 0;
 thread_local uint32_t t_handle = 0;
 thread_local uint32_t t_pass_type = 0;  // the pass being submitted
+#if HAS_Device_pointer
+thread_local bool t_scene = false;  // the camera's pass FSR upscales, until its end resolve
+#endif
 
 // which run of the shadow map update is drawing, and whether it drew the sun's camera
 // sharper maps by index, map i at 2^i times the stock radius, then the far one
@@ -253,6 +257,9 @@ PPC_EXTERN_FUNC(GUEST_ORIG(Shadow_Snap));
 PPC_EXTERN_FUNC(GUEST_ORIG(Shadow_Extent));
 PPC_EXTERN_FUNC(GUEST_ORIG(Shadow_Pass));
 PPC_EXTERN_FUNC(GUEST_ORIG(Shadow_Resolve));
+#if HAS_PostEffects_Draw
+PPC_EXTERN_FUNC(GUEST_ORIG(PostEffects_Draw));
+#endif
 PPC_EXTERN_FUNC(GUEST_ORIG(ShadowMaps_Update));
 
 // depth surface create or fetch, vtable +0x1E0, r4 the renderer, r7 r8 the size
@@ -373,12 +380,13 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
         W32(pass + kPassWidth, side);
         W32(pass + kPassHeight, side);
     }
-    // DLSS draws the camera's pass at its own scale and upscales it as the pass ends; the editor names no device
+    // FSR draws the camera's pass at its own scale, upscaled at its end resolve; the editor names no device
 #if HAS_Device_pointer
-    bool scene = t_pass_type == fcip::kPassCamera && fcip::Get().dlaa;
-    if (scene) d3d::SceneBegin(R32(SYM_Device_pointer));
+    bool outer_scene = t_scene;
+    t_scene = t_pass_type == fcip::kPassCamera && fcip::Get().fsr;
+    if (t_scene) d3d::SceneBegin(R32(SYM_Device_pointer));
     GUEST_ORIG(Shadow_Pass)(ctx, base);
-    if (scene) d3d::SceneEnd(R32(SYM_Device_pointer));
+    t_scene = outer_scene;
 #else
     GUEST_ORIG(Shadow_Pass)(ctx, base);
 #endif
@@ -389,8 +397,23 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
     }
 }
 
+#if HAS_PostEffects_Draw && HAS_Device_pointer
+// the camera pass's post effects, then its HUD: the post effects resolve the world first, so FSR upscales it here
+PPC_FUNC(GUEST(PostEffects_Draw)) {
+    if (std::exchange(t_scene, false)) d3d::SceneEnd(R32(SYM_Device_pointer));
+    GUEST_ORIG(PostEffects_Draw)(ctx, base);
+}
+#endif
+
 // pass end, resolves the bound targets: a depth only pass resolves its depth into the bound depth texture
 PPC_FUNC(GUEST(Shadow_Resolve)) {
+#if HAS_Device_pointer
+    // r3 set: the camera's pass end (823695C8), for a pass that drew no post effects
+    if (t_scene && uint8_t(ctx.r[3])) {
+        t_scene = false;
+        d3d::SceneEnd(R32(SYM_Device_pointer));
+    }
+#endif
     uint32_t tex = R32(SYM_RenderTargets_Depth);
     bool ok = tex >= 0x10000u && tex < 0xC0000000u;
     uint32_t size = tex + XDK_Texture_FetchConstant + kFetchSize;

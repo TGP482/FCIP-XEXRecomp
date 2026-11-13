@@ -19,7 +19,7 @@
 #include <vector>
 
 #include "app/app.h"
-#include "d3d/dlss.h"
+#include "d3d/fsr.h"
 #include "d3d/motion.h"
 #include "d3d/occlusion.h"
 #include "d3d/readback.h"
@@ -619,7 +619,7 @@ void OcclusionScene(uint32_t dev) {
 
 // the camera goes ahead of its marker, under the same lock, so the render thread takes them in order
 void MotionBegin(uint32_t dev, const gpu::MotionCamera& c) {
-    if (!dlss::SuperResolution() || !R32(dev + kDevTargets) || !R32(dev + kDevDepth)) return;
+    if (!fsr::Upscaling() || !R32(dev + kDevTargets) || !R32(dev + kDevDepth)) return;
     const float color[4] = {};
     std::lock_guard lock(g_lock);
     gpu::PushMotionCamera(c);
@@ -878,9 +878,8 @@ HLE_FUNC(D3DDevice_SetPredication) {
 }
 #endif
 
-// (device, front buffer texture, parameters); frames counted as the renderer presents them, for Reflex
+// (device, front buffer texture, parameters)
 HLE_FUNC(D3DDevice_Swap) {
-    static uint32_t frame = 0;
     app::SplashFirstFrame();
     app::HandoverSwap();
     {
@@ -890,16 +889,11 @@ HLE_FUNC(D3DDevice_Swap) {
             uint32_t front[6];
             for (uint32_t i = 0; i < 6; i++) front[i] = R32(a[1] + XDK_Texture_FetchConstant + i * 4);
             front[1] = mem::PhysicalFromVirtual(front[1] & 0xFFFFF000) | (front[1] & 0xFFF);
-            dlss::Mark(dlss::Marker::SimulationEnd, frame);
-            dlss::Mark(dlss::Marker::RenderSubmitStart, frame);
             Backend()->Present(front);
-            dlss::Mark(dlss::Marker::RenderSubmitEnd, frame++);
         }
     }
     gpu::NoteFrame();
     app::Pace();
-    dlss::Sleep(frame);
-    dlss::Mark(dlss::Marker::SimulationStart, frame);
     return 0;
 }
 

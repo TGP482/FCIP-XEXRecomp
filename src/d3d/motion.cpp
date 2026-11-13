@@ -101,31 +101,42 @@ void MotionHistory::Begin() {
     f.by_signature.clear();
 }
 
-const MotionHistory::Draw* MotionHistory::Match(uint64_t signature, const float* pos) {
+// summed distance of two draws' constants, given up once past limit
+float Gap(const uint8_t* a, const uint8_t* b, size_t floats, float limit) {
+    float sum = 0;
+    for (size_t i = 0; i < floats && sum < limit; i++) {
+        float x;
+        float y;
+        std::memcpy(&x, a + i * 4, 4);
+        std::memcpy(&y, b + i * 4, 4);
+        sum += std::fabs(x - y);
+    }
+    return sum;
+}
+
+const MotionHistory::Draw* MotionHistory::Match(const Draw& now) {
     Frame& last = frames_[now_ ^ 1];
-    auto it = last.by_signature.find(signature);
+    auto it = last.by_signature.find(now.signature);
     if (it == last.by_signature.end()) return nullptr;
+    const uint8_t* mine = frames_[now_].blocks.data() + size_t(now.at) * kBlock;
+    size_t floats = size_t(std::popcount(now.read[0]) + std::popcount(now.read[1])) * kBlock / 4;
     Draw* best = nullptr;
-    float best_d = kMatchRadius * kMatchRadius;
+    float best_gap = INFINITY;
     for (uint32_t i : it->second) {
         Draw& d = last.draws[i];
-        if (d.taken || d.placed != (pos != nullptr)) continue;
-        // without a position, draws of one signature pair up in the order they came
-        if (!pos) {
-            best = &d;
-            break;
-        }
-        float dist = Distance2(d.pos, pos);
-        if (dist <= best_d) {
-            best_d = dist;
-            best = &d;
-        }
+        if (d.taken || d.placed != now.placed || d.read[0] != now.read[0] || d.read[1] != now.read[1]) continue;
+        if (now.placed && Distance2(d.pos, now.pos) > kMatchRadius * kMatchRadius) continue;
+        float gap = Gap(mine, last.blocks.data() + size_t(d.at) * kBlock, floats, best_gap);
+        if (gap >= best_gap) continue;
+        best_gap = gap;
+        best = &d;
     }
     if (best) best->taken = true;
     return best;
 }
 
-void MotionHistory::Record(uint64_t signature, const float* pos, const uint64_t (&read)[2], const uint8_t* be) {
+const MotionHistory::Draw& MotionHistory::Record(uint64_t signature, const float* pos, const uint64_t (&read)[2],
+                                                 const uint8_t* be) {
     Frame& f = frames_[now_];
     Draw d;
     d.signature = signature;
@@ -151,6 +162,7 @@ void MotionHistory::Record(uint64_t signature, const float* pos, const uint64_t 
     }
     f.by_signature[signature].push_back(uint32_t(f.draws.size()));
     f.draws.push_back(d);
+    return f.draws.back();
 }
 
 void MotionHistory::Copy(const Draw& d, uint8_t* bank) const {
