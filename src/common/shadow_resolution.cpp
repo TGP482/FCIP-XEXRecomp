@@ -373,11 +373,15 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
         W32(pass + kPassWidth, side);
         W32(pass + kPassHeight, side);
     }
-    // DLSS draws the camera's pass at its own scale and upscales it as the pass ends
+    // DLSS draws the camera's pass at its own scale and upscales it as the pass ends; the editor names no device
+#if HAS_Device_pointer
     bool scene = t_pass_type == fcip::kPassCamera && fcip::Get().dlaa;
     if (scene) d3d::SceneBegin(R32(SYM_Device_pointer));
     GUEST_ORIG(Shadow_Pass)(ctx, base);
     if (scene) d3d::SceneEnd(R32(SYM_Device_pointer));
+#else
+    GUEST_ORIG(Shadow_Pass)(ctx, base);
+#endif
     t_pass_type = outer;
     if (side) {
         W32(pass + kPassWidth, w);
