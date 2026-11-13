@@ -757,6 +757,10 @@ float4 blit(O i) : SV_Target {
 
 uint64_t ResolvedKey(uint32_t base, uint64_t key) { return uint64_t(base) | key << 32; }
 
+constexpr uint32_t kPitchAlign = 80;         // EDRAM tile width a guest pitch rounds up to
+constexpr uint64_t kShadowIdleFrames = 120;  // shadow frames a shadow map may go unused before it is freed
+constexpr uint64_t kSideGrace = 8;           // presents the previous shadow side is still drawn after a change
+
 // XEX_PERF: what one second of frames cost, logged once a second
 struct Perf {
     uint32_t frames = 0;
@@ -1076,7 +1080,9 @@ private:
     void ReleaseResolved(Resolved& r);
     void DropResolved(uint32_t base);
     void DropTarget(uint64_t map_key);
-    void KeepSunMap(int map, uint32_t base, const Target* src);
+    bool ShadowWidth(uint32_t width) const;
+    void KeepShadowTarget(const Target& t);
+    void DropIdleShadowMaps();
     void KeepBlocks(Target& src, Resolved& dst, const ResolveArgs& r);
     Resolved* CpuSource(uint32_t base);
     bool MakeCpuTexels(Resolved& from);
@@ -1170,10 +1176,19 @@ private:
     std::unordered_map<uint32_t, Resolved> blocks_;     // by address: a resolve with the whole blocks it writes past
     Resolved* sun_[fcip::kSunMaps] = {};                // the sharper sun maps the draw's pixel shader reads
     fcip::SunMaps sun_maps_;
-    // the sun maps' resolves and depth targets since the last far map, then the frame before's: a new side leaves
-    // the old ones behind, released once the next far map is in
-    std::vector<uint32_t> sun_bases_[2];
-    std::vector<uint64_t> sun_targets_[2];
+    // shadow map targets and their resolves by the shadow frame that last used them and their guest width: a new side,
+    // distance or vis area leaves some behind
+    struct ShadowUse {
+        uint64_t frame = 0;
+        uint32_t width = 0;
+    };
+    std::unordered_map<uint64_t, ShadowUse> shadow_targets_;
+    std::unordered_map<uint32_t, ShadowUse> shadow_resolves_;
+    uint64_t shadow_frame_ = 0;  // frames that drew a shadow map
+    bool shadow_drawn_ = false;
+    uint32_t shadow_side_ = 0;       // SunShadowSide at the last present
+    uint32_t last_shadow_side_ = 0;  // the one before, which frames recorded before the change still draw
+    uint64_t side_changed_ = 0;      // the present it changed at
     std::unordered_map<uint64_t, std::array<float, 4>> pending_clears_;  // colour clears of targets not made yet
     Resolved cpu_texels_;                               // a resolve at title size, for the CPU
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> pass_pipelines_;
@@ -2925,6 +2940,11 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     if (Latch(binds_.stencil_ref, stencil_ref)) cl_->OMSetStencilRef(stencil_ref);
     if (Latch(binds_.pso, pso)) cl_->SetPipelineState(pso);
     if (Latch(binds_.topology, topo)) cl_->IASetPrimitiveTopology(topo);
+    if (bound.ds && ShadowWidth(bound.ds->width)) {
+        KeepShadowTarget(*bound.ds);
+        if (bound.rt) KeepShadowTarget(*bound.rt);
+        shadow_drawn_ = true;
+    }
     cl_->DrawIndexedInstanced(count, 1, 0, a.base_vertex, 0);
     binds_.valid = true;
     if (cap_) {
@@ -3128,7 +3148,10 @@ void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
         if (read != g_cpu.read.end()) RecordReadBack(read->second, r.dst_base, seq);
     }
     g_cpu.ran.notify_all();
-    if (int map = fcip::SunResolved(r.dst_base); map >= 0) KeepSunMap(map, r.dst_base, src);
+    fcip::SunResolved(r.dst_base);
+    if (src && shadow_targets_.count(TargetMapKey(src->surface, src->depth, src->width, src->key))) {
+        shadow_resolves_[r.dst_base] = {shadow_frame_, src->width};
+    }
     if (src && r.clear) {
         ClearTarget(*src, r.clear, r.clear_color, r.clear_z, uint8_t(r.clear_stencil), nullptr, 0);
         ClearSpan(*src, r.clear, r.clear_color, r.clear_z, uint8_t(r.clear_stencil));
@@ -3183,20 +3206,45 @@ void D3D12Backend::DropTarget(uint64_t map_key) {
     Unbind();
 }
 
-void D3D12Backend::KeepSunMap(int map, uint32_t base, const Target* src) {
-    sun_bases_[0].push_back(base);
-    if (src) sun_targets_[0].push_back(TargetMapKey(src->surface, src->depth, src->width, src->key));
-    if (map != fcip::kSunFar) return;
-    for (uint32_t old : sun_bases_[1]) {
-        if (std::find(sun_bases_[0].begin(), sun_bases_[0].end(), old) == sun_bases_[0].end()) DropResolved(old);
+// a guest pitch a sun map side or half of it rounds to
+bool FitsSide(uint32_t width, uint32_t side) {
+    for (uint32_t s : {side, side / 2}) {
+        if (s && width >= s && width < s + kPitchAlign) return true;
     }
-    for (uint64_t old : sun_targets_[1]) {
-        if (std::find(sun_targets_[0].begin(), sun_targets_[0].end(), old) == sun_targets_[0].end()) DropTarget(old);
-    }
-    sun_bases_[1].swap(sun_bases_[0]);
-    sun_targets_[1].swap(sun_targets_[0]);
-    sun_bases_[0].clear();
-    sun_targets_[0].clear();
+    return false;
+}
+
+// a shadow map pitch of the side now or, for frames recorded before the last change, the one before
+bool D3D12Backend::ShadowWidth(uint32_t width) const {
+    bool grace = presents_ - side_changed_ < kSideGrace;
+    return FitsSide(width, shadow_side_) || (grace && FitsSide(width, last_shadow_side_));
+}
+
+void D3D12Backend::KeepShadowTarget(const Target& t) {
+    shadow_targets_[TargetMapKey(t.surface, t.depth, t.width, t.key)] = {shadow_frame_, t.width};
+}
+
+// shadow maps of a side the setting left, or that no shadow frame drew for a while; freed before the next frame
+// makes others, so two sides never share VRAM
+void D3D12Backend::DropIdleShadowMaps() {
+    if (std::exchange(shadow_drawn_, false)) shadow_frame_++;
+    auto unused = [&](const ShadowUse& u) {
+        return shadow_frame_ - u.frame > kShadowIdleFrames || !FitsSide(u.width, shadow_side_);
+    };
+    size_t kept = shadow_targets_.size() + shadow_resolves_.size();
+    std::erase_if(shadow_targets_, [&](const auto& entry) {
+        if (!unused(entry.second)) return false;
+        DropTarget(entry.first);
+        return true;
+    });
+    std::erase_if(shadow_resolves_, [&](const auto& entry) {
+        if (!unused(entry.second)) return false;
+        DropResolved(entry.first);
+        return true;
+    });
+    if (shadow_targets_.size() + shadow_resolves_.size() == kept) return;
+    Submit(true);
+    for (Frame& f : frames_) f.garbage.clear();
 }
 
 // guest memory at base is read again
@@ -3768,6 +3816,12 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     next.views = 0;
     cl_->Reset(next.alloc.Get(), nullptr);
     Begin();
+    if (uint32_t side = fcip::SunShadowSide(); side != shadow_side_) {
+        last_shadow_side_ = shadow_side_;
+        shadow_side_ = side;
+        side_changed_ = presents_;
+    }
+    DropIdleShadowMaps();
     if (presents_ % 600 == 0) SavePipelineLibrary();
 
     fps_frames_++;
