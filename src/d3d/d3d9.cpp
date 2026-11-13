@@ -878,8 +878,9 @@ HLE_FUNC(D3DDevice_SetPredication) {
 }
 #endif
 
-// (device, front buffer texture, parameters)
+// (device, front buffer texture, parameters); frames counted as the renderer presents them, for Reflex
 HLE_FUNC(D3DDevice_Swap) {
+    static uint32_t frame = 0;
     app::SplashFirstFrame();
     app::HandoverSwap();
     {
@@ -889,11 +890,16 @@ HLE_FUNC(D3DDevice_Swap) {
             uint32_t front[6];
             for (uint32_t i = 0; i < 6; i++) front[i] = R32(a[1] + XDK_Texture_FetchConstant + i * 4);
             front[1] = mem::PhysicalFromVirtual(front[1] & 0xFFFFF000) | (front[1] & 0xFFF);
+            dlss::Mark(dlss::Marker::SimulationEnd, frame);
+            dlss::Mark(dlss::Marker::RenderSubmitStart, frame);
             Backend()->Present(front);
+            dlss::Mark(dlss::Marker::RenderSubmitEnd, frame++);
         }
     }
     gpu::NoteFrame();
     app::Pace();
+    dlss::Sleep(frame);
+    dlss::Mark(dlss::Marker::SimulationStart, frame);
     return 0;
 }
 

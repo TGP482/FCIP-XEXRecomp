@@ -32,6 +32,7 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 ### Graphics
 - **Ambient Occlusion** - Adds screen space ambient occlusion, creating soft contact shadows where surfaces meet. Choose between SSAO, GTAO and hardware ray traced RTAO.
 - **Anti Aliasing** - Enables 2x, 4x or 8x MSAA to smooth jagged edges while preserving a sharp image, or NVIDIA DLAA, which also upscales with DLSS when the render resolution is lowered.
+- **Frame Generation** - Generates frames between the rendered ones with NVIDIA DLSS Frame Generation, from 2X up to what your graphics card supports.
 - **Subpixel Morphological Antialiasing (SMAA)** - Enables SMAA to smooth jagged edges across the whole frame with a softer image. SMAA also smooths alpha-tested edges such as fences and foliage, and can be combined with MSAA.
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures.
 - **Shadow Resolution** - Sets the sun shadow resolution from 1024x1024 up to 8192x8192.

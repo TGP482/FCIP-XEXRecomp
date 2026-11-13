@@ -28,6 +28,7 @@ void LoadSettings(const void* table) {
     s.colour_blind = std::min(t["colour_blind"].value_or(s.colour_blind), 3u);
     s.smaa = t["smaa"].value_or(s.smaa);
     s.dlaa = t["dlaa"].value_or(s.dlaa);
+    s.frame_generation = std::min(t["frame_generation"].value_or(s.frame_generation), 6u);
     s.ambient_occlusion = std::min(t["ambient_occlusion"].value_or(s.ambient_occlusion), 3u);
     s.shadow_resolution = std::min(t["shadow_resolution"].value_or(s.shadow_resolution), 8192u);
     s.draw_distance = std::clamp(t["draw_distance"].value_or(s.draw_distance), 1u, 32u);
@@ -64,6 +65,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("colour_blind", int64_t(s.colour_blind));
     t.insert_or_assign("smaa", s.smaa);
     t.insert_or_assign("dlaa", s.dlaa);
+    t.insert_or_assign("frame_generation", int64_t(s.frame_generation));
     t.insert_or_assign("ambient_occlusion", int64_t(s.ambient_occlusion));
     t.insert_or_assign("shadow_resolution", int64_t(s.shadow_resolution));
     t.insert_or_assign("draw_distance", int64_t(s.draw_distance));

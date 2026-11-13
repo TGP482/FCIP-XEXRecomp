@@ -10,14 +10,19 @@
 
 #include <d3d12.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <mutex>
 #include <string>
 
 #include <sl.h>
 #include <sl_dlss.h>
+#include <sl_dlss_g.h>
+#include <sl_pcl.h>
+#include <sl_reflex.h>
 #include <sl_security.h>
 
 #include "core/log.h"
@@ -45,10 +50,20 @@ PFun_slSetTagForFrame* g_set_tags = nullptr;
 PFun_slEvaluateFeature* g_evaluate = nullptr;
 PFun_slUpgradeInterface* g_upgrade = nullptr;
 PFun_slDLSSSetOptions* g_dlss_options = nullptr;
+PFun_slDLSSGSetOptions* g_fg_options = nullptr;
+PFun_slDLSSGGetState* g_fg_state = nullptr;
+PFun_slReflexSetOptions* g_reflex_options = nullptr;
+PFun_slReflexSleep* g_reflex_sleep = nullptr;
+PFun_slPCLSetMarker* g_marker = nullptr;
 
 bool g_loaded = false;
 bool g_sr = false;
 bool g_fg = false;
+uint32_t g_fg_max = 1;  // multiplier
+bool g_fg_dynamic = false;
+std::mutex g_token_lock;  // tokens are asked for on the title and the render thread
+sl::DLSSGMode g_fg_mode = sl::DLSSGMode::eOff;
+uint32_t g_fg_frames = 0;  // generated per rendered frame
 
 void StreamlineLog(sl::LogType type, const char* msg) {
     if (type == sl::LogType::eError) LOGE("Streamline: %s", msg);
@@ -74,6 +89,37 @@ bool Ok(sl::Result r, const char* step) {
     if (!logged) LOGE("DLSS: %s failed (result %d)", step, int(r));
     logged = true;
     return false;
+}
+
+sl::FrameToken* Token(uint32_t frame) {
+    std::lock_guard lock(g_token_lock);
+    sl::FrameToken* token = nullptr;
+    return g_new_token(token, &frame) == sl::Result::eOk ? token : nullptr;
+}
+
+template <typename F>
+bool Feature(sl::Feature feature, const char* name, F*& fn) {
+    void* p = nullptr;
+    bool ok = g_feature_function(feature, name, p) == sl::Result::eOk && p;
+    fn = reinterpret_cast<F*>(p);
+    return ok;
+}
+
+// Reflex, PCL and DLSS-G's entry points, then the most frames this GPU generates
+bool LoadFrameGeneration() {
+    bool found = Feature(sl::kFeatureDLSS_G, "slDLSSGSetOptions", g_fg_options) &&
+                 Feature(sl::kFeatureDLSS_G, "slDLSSGGetState", g_fg_state) &&
+                 Feature(sl::kFeatureReflex, "slReflexSetOptions", g_reflex_options) &&
+                 Feature(sl::kFeatureReflex, "slReflexSleep", g_reflex_sleep) &&
+                 Feature(sl::kFeaturePCL, "slPCLSetMarker", g_marker);
+    if (!found) return false;
+    sl::ReflexOptions reflex;
+    g_reflex_options(reflex);
+    sl::DLSSGState state;
+    if (g_fg_state(sl::ViewportHandle(0u), state, nullptr) != sl::Result::eOk) return false;
+    g_fg_max = state.numFramesToGenerateMax + 1;
+    g_fg_dynamic = state.bIsDynamicMFGSupported == sl::Boolean::eTrue;
+    return true;
 }
 
 // the mode whose render resolution lies nearest the scene's
@@ -189,9 +235,10 @@ void SetDevice(ID3D12Device* dev) {
     if (sr == sl::Result::eOk) sr = g_feature_function(sl::kFeatureDLSS, "slDLSSSetOptions", options);
     g_dlss_options = reinterpret_cast<PFun_slDLSSSetOptions*>(options);
     g_sr = sr == sl::Result::eOk && g_dlss_options;
-    g_fg = fg == sl::Result::eOk;
+    g_fg = fg == sl::Result::eOk && LoadFrameGeneration();
     LOGR("DLSS: Super Resolution %s (result %d), Frame Generation %s (result %d)", g_sr ? "available" : "unavailable",
          int(sr), g_fg ? "available" : "unavailable", int(fg));
+    if (g_fg) LOGR("DLSS: Frame Generation up to %ux, dynamic %s", g_fg_max, g_fg_dynamic ? "yes" : "no");
 }
 
 void Shutdown() {
@@ -210,11 +257,55 @@ void UpgradeFactory(void** factory) {
 
 bool SuperResolution() { return g_sr; }
 bool FrameGeneration() { return g_fg; }
+uint32_t MaxMultiplier() { return g_fg ? g_fg_max : 1; }
+bool DynamicFrameGeneration() { return g_fg && g_fg_dynamic; }
+
+void Mark(Marker m, uint32_t frame) {
+    if (!g_fg) return;
+    if (sl::FrameToken* token = Token(frame)) g_marker(sl::PCLMarker(m), *token);
+}
+
+void Sleep(uint32_t frame) {
+    if (!g_fg) return;
+    if (sl::FrameToken* token = Token(frame)) g_reflex_sleep(*token);
+}
+
+void Generate(uint32_t frame, uint32_t setting, bool gameplay, const uint32_t rect[4], uint32_t w, uint32_t h) {
+    if (!g_fg) return;
+    sl::DLSSGMode mode = sl::DLSSGMode::eOff;
+    uint32_t frames = 1;
+    if (gameplay && setting == kGenerationDynamic && g_fg_dynamic) mode = sl::DLSSGMode::eDynamic;
+    if (gameplay && setting >= 2) {
+        mode = sl::DLSSGMode::eOn;
+        frames = std::min(setting, g_fg_max) - 1;
+    }
+    sl::ViewportHandle viewport(0u);
+    // the rest of the back buffer, the bars around a narrower frame, is copied as it is
+    bool whole = rect[0] == 0 && rect[1] == 0 && rect[2] == w && rect[3] == h;
+    sl::FrameToken* token = mode != sl::DLSSGMode::eOff && !whole ? Token(frame) : nullptr;
+    if (token) {
+        sl::Extent part{rect[1], rect[0], rect[2], rect[3]};
+        sl::ResourceTag tag(nullptr, sl::kBufferTypeBackbuffer, sl::ResourceLifecycle::eValidUntilPresent, &part);
+        Ok(g_set_tags(*token, viewport, &tag, 1, nullptr), "back buffer tag");
+    }
+    if (mode == g_fg_mode && frames == g_fg_frames) return;
+    g_fg_mode = mode;
+    g_fg_frames = frames;
+    // Reflex must be on while frames are generated
+    sl::ReflexOptions reflex;
+    reflex.mode = mode == sl::DLSSGMode::eOff ? sl::ReflexMode::eOff : sl::ReflexMode::eLowLatency;
+    Ok(g_reflex_options(reflex), "slReflexSetOptions");
+    sl::DLSSGOptions o;
+    o.mode = mode;
+    o.numFramesToGenerate = frames;
+    o.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
+    Ok(g_fg_options(viewport, o), "slDLSSGSetOptions");
+}
 
 bool Upscale(ID3D12GraphicsCommandList* cl, const Frame& f) {
     if (!g_sr) return false;
-    sl::FrameToken* token = nullptr;
-    if (!Ok(g_new_token(token, &f.index), "slGetNewFrameToken")) return false;
+    sl::FrameToken* token = Token(f.index);
+    if (!token) return false;
     sl::ViewportHandle viewport(0u);
     sl::DLSSOptions o;
     o.mode = ModeFor(f.color.h, f.output.h);
@@ -222,6 +313,12 @@ bool Upscale(ID3D12GraphicsCommandList* cl, const Frame& f) {
     o.outputHeight = f.output.h;
     o.colorBuffersHDR = sl::Boolean::eFalse;
     o.useAutoExposure = sl::Boolean::eTrue;
+    o.dlaaPreset = sl::DLSSPreset::ePresetM;
+    o.qualityPreset = sl::DLSSPreset::ePresetM;
+    o.balancedPreset = sl::DLSSPreset::ePresetM;
+    o.performancePreset = sl::DLSSPreset::ePresetM;
+    o.ultraPerformancePreset = sl::DLSSPreset::ePresetM;
+    o.ultraQualityPreset = sl::DLSSPreset::ePresetM;
     if (!Ok(g_dlss_options(viewport, o), "slDLSSSetOptions")) return false;
     sl::Constants c;
     FillConstants(f, c);

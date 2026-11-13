@@ -30,6 +30,7 @@
 
 #include "app/app.h"
 #include "common/aspect.h"
+#include "common/menu.h"
 #include "common/render_pass.h"
 #include "common/settings.h"
 #include "d3d/dlss.h"
@@ -1373,6 +1374,7 @@ private:
         uint64_t depth = 0;
         MotionCamera camera;
         uint32_t jitters = 0;
+        uint64_t drawn = ~0ull;  // the frame DLSS last upscaled
         ComPtr<ID3D12Resource> out;
         D3D12_RESOURCE_STATES out_state = D3D12_RESOURCE_STATE_COMMON;
         uint32_t w = 0;
@@ -1380,6 +1382,7 @@ private:
     } upscale_;
     float scene_scale_ = 1;
     float jitter_[2] = {};  // host pixels the scene's draws are offset by
+    uint32_t frame_rect_[4] = {};  // x, y, width and height of the frame in the back buffer
     // RTAO: inline ray tracing, null without; the world's streamed out triangles and their scene
     ComPtr<ID3D12Device5> dev5_;
     bool ray_capture_ = false;  // between OcclusionScene and Occlusion
@@ -3768,6 +3771,7 @@ void D3D12Backend::EndScene() {
         Begin();  // Streamline's passes left their heaps and root signature bound
     }
     upscale_.reset = !ok;
+    if (ok) upscale_.drawn = presents_;
     if (ok) DrawUpscaled(upscale_.out.Get(), upscale_.out_state, kUpscaledFormat, *out);
     else DrawUpscaled(in.res.Get(), in.state, ReadFormat(in), *out);
 }
@@ -4450,6 +4454,10 @@ void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state,
     D3D12_GPU_VIRTUAL_ADDRESS addr = UploadConstants(cb, sizeof(cb));
     D3D12_VIEWPORT vp{(swap_w_ - vw) / 2, (swap_h_ - vh) / 2, vw, vh, 0, 1};
     D3D12_RECT sc{0, 0, LONG(swap_w_), LONG(swap_h_)};
+    frame_rect_[0] = uint32_t(vp.TopLeftX);
+    frame_rect_[1] = uint32_t(vp.TopLeftY);
+    frame_rect_[2] = uint32_t(vw);
+    frame_rect_[3] = uint32_t(vh);
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &sc);
     cl_->SetPipelineState(pso);
@@ -4620,7 +4628,13 @@ void D3D12Backend::ShowFrame(const xenos::TextureFetch& t) {
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_PRESENT);
     Submit(false);
     bool vsync = app::Get().vsync;
+    uint32_t frame = uint32_t(presents_);
+    // frames are generated from gameplay DLSS drew, never over the F10 panel
+    bool gameplay = upscale_.drawn == presents_ && !fcip::MenuOpen();
+    dlss::Generate(frame, fcip::Get().frame_generation, gameplay, frame_rect_, swap_w_, swap_h_);
+    dlss::Mark(dlss::Marker::PresentStart, frame);
     swap_->Present(vsync ? 1 : 0, !vsync && tearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    dlss::Mark(dlss::Marker::PresentEnd, frame);
 }
 
 void D3D12Backend::Present(const uint32_t front[6]) {

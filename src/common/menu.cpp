@@ -115,7 +115,8 @@ enum RowId {
     kFpsCounter, kHdrOutput, kShadowResolution,
     kBlur, kDrawDistance,
     kInvincible, kNoclip, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
-    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kSmaa, kAmbientOcclusion, kAudioOutput
+    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kFrameGeneration, kSmaa, kAmbientOcclusion,
+    kAudioOutput
 };
 
 constexpr Row kSettingsRows[] = {
@@ -138,6 +139,8 @@ constexpr Row kSettingsRows[] = {
      "Shades the world's creases and corners, SSAO, the more accurate GTAO or ray traced RTAO, characters and fog left alone"},
     {Kind::Value, kAntiAliasing, "ANTI ALIASING",
      "Smooths jagged edges with 2x, 4x or 8x MSAA in place of the game's own 2x, or NVIDIA DLAA on supported graphics cards"},
+    {Kind::Value, kFrameGeneration, "FRAME GENERATION",
+     "Generates frames between the rendered ones with NVIDIA DLSS Frame Generation, fixed or dynamic, with DLAA on"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},
@@ -381,6 +384,24 @@ void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
     std::snprintf(text, sizeof(text), "%s", i < kMsaaCount ? kMsaaNames[i] : "DLAA");
 }
 
+// off, the multipliers this GPU generates, then dynamic where it runs
+void StepFrameGeneration(int step, char (&text)[64]) {
+    std::vector<uint32_t> values = {dlss::kGenerationOff};
+    for (uint32_t m = 2; m <= dlss::MaxMultiplier(); m++) values.push_back(m);
+    if (dlss::DynamicFrameGeneration()) values.push_back(dlss::kGenerationDynamic);
+    uint32_t& setting = Get().frame_generation;
+    auto it = std::find(values.begin(), values.end(), setting);
+    int i = it == values.end() ? 0 : int(it - values.begin());
+    if (step) {
+        i = StepIndex(i, step, int(values.size()));
+        setting = values[size_t(i)];
+    }
+    uint32_t v = values[size_t(i)];
+    if (v == dlss::kGenerationOff) std::snprintf(text, sizeof(text), "OFF");
+    else if (v == dlss::kGenerationDynamic) std::snprintf(text, sizeof(text), "DYNAMIC");
+    else std::snprintf(text, sizeof(text), "%uX", v);
+}
+
 void StepGyroRow(int id, int step, char (&text)[64]) {
     gyro::Settings& g = Get().gyro;
     switch (id) {
@@ -463,6 +484,9 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
         }
         case kAntiAliasing:
             StepAntiAliasing(s, step, text);
+            break;
+        case kFrameGeneration:
+            StepFrameGeneration(step, text);
             break;
         case kAudioOutput:
             std::snprintf(text, sizeof(text), "%s", kAudioOutputNames[StepTable(kAudioOutputs, s.audio_output, step)]);

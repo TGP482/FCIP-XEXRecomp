@@ -21,6 +21,28 @@ void Shutdown();
 
 bool SuperResolution();
 bool FrameGeneration();
+uint32_t MaxMultiplier();  // frames presented per rendered one, 1 without frame generation
+bool DynamicFrameGeneration();
+
+// the FRAME GENERATION setting: off, dynamic, else the multiplier
+constexpr uint32_t kGenerationOff = 0;
+constexpr uint32_t kGenerationDynamic = 1;
+
+// Reflex and frame generation's markers, by frame
+enum class Marker : uint32_t {
+    SimulationStart,
+    SimulationEnd,
+    RenderSubmitStart,
+    RenderSubmitEnd,
+    PresentStart,
+    PresentEnd,
+};
+void Mark(Marker m, uint32_t frame);
+// title thread, before its simulation starts
+void Sleep(uint32_t frame);
+// render thread, before the swap chain presents frame: the setting, whether the frame is gameplay DLSS drew, and the
+// frame's part of the back buffer
+void Generate(uint32_t frame, uint32_t setting, bool gameplay, const uint32_t rect[4], uint32_t w, uint32_t h);
 
 // render resolutions with ANTI ALIASING on DLAA: the percentages DLSS names a mode for
 struct ModePoint {

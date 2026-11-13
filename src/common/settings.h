@@ -16,6 +16,7 @@ struct Settings {
     uint32_t colour_blind = 0;  // 0 off, 1 protanopia, 2 deuteranopia, 3 tritanopia
     bool smaa = false;          // over the finished frame, HUD included; combines with MSAA
     bool dlaa = false;          // NVIDIA DLSS in place of MSAA, the render resolution its input
+    uint32_t frame_generation = 0;  // dlss::kGeneration*, else the frame multiplier; with DLAA only
     uint32_t ambient_occlusion = 0;  // 0 off, 1 SSAO, 2 GTAO, 3 RTAO; the world only, under the fog
     uint32_t shadow_resolution = 1344;  // sun shadow map edge, 0 follows the render scale; 1344 is stock
     uint32_t draw_distance = 1;         // multiplier on the level's own distances, 1 is stock; shadows take all of it
