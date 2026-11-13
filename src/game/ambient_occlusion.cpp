@@ -29,7 +29,7 @@ constexpr uint32_t kRegistryEnd = 0xC;
 constexpr uint32_t kEntrySize = 0x18;
 constexpr uint32_t kEntryName = 0x4;
 constexpr uint32_t kCharactersName = 0x82070D10;  // "PerPixel Phong Color (Characters)"
-// camera: PerspectiveFov's right handed projection, row major
+// camera: PerspectiveFov's right handed projection, row major, before the pass flips its depth
 constexpr uint32_t kCameraProjection = 0x23C;
 // draw list 825091A0: the count first, entries {key, item, next} of 0xC bytes at +8, the bucket being popped
 constexpr uint32_t kListEntries = 0x8;
@@ -98,8 +98,9 @@ void Occlude() {
     a.proj[1] = 1 / y_scale;
     a.proj[2] = -GF(m + 8 * 4);
     a.proj[3] = -GF(m + 9 * 4);
-    a.m22 = GF(m + 10 * 4);
-    a.m32 = GF(m + 14 * 4);
+    // the pass draws with depth flipped, z = w - z (823B0580)
+    a.m22 = GF(m + 11 * 4) - GF(m + 10 * 4);
+    a.m32 = GF(m + 15 * 4) - GF(m + 14 * 4);
     a.fog_scale = GF(block + kBlockFogScale);
     a.fog_bias = GF(block + kBlockFogBias);
     uint32_t r = ColourByte(block + kBlockFogColour);
