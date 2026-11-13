@@ -963,6 +963,7 @@ private:
 
     // targets
     uint32_t TargetHeight(const State& s) const;
+    bool TargetKeyOf(const Surface& sf, bool depth, uint32_t width, uint64_t& map_key) const;
     Target* EnsureTarget(const Surface& sf, bool depth, uint32_t width, uint32_t height);
     void DropTargets();
     Target* ColorTarget(const State& s, uint32_t i, uint32_t height);
@@ -1173,6 +1174,7 @@ private:
     // the old ones behind, released once the next far map is in
     std::vector<uint32_t> sun_bases_[2];
     std::vector<uint64_t> sun_targets_[2];
+    std::unordered_map<uint64_t, std::array<float, 4>> pending_clears_;  // colour clears of targets not made yet
     Resolved cpu_texels_;                               // a resolve at title size, for the CPU
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> pass_pipelines_;
     std::vector<std::unique_ptr<Shader>> shaders_;
@@ -1609,6 +1611,14 @@ DXGI_FORMAT ReadFormat(const Target& t) {
     return t.fmt == ColorFormat(t.surface.format) ? ColorReadFormat(t.surface.format) : t.fmt;
 }
 
+// the targets_ key of a surface, false when the extension keeps it off the host
+bool D3D12Backend::TargetKeyOf(const Surface& sf, bool depth, uint32_t width, uint64_t& map_key) const {
+    uint64_t key = 0;
+    if (ext_ && !ext_->TargetKey(sf, depth, key)) return false;
+    map_key = TargetMapKey(sf, depth, width, key);
+    return true;
+}
+
 Target* D3D12Backend::EnsureTarget(const Surface& sf, bool depth, uint32_t width, uint32_t height) {
     if (width == 0) return nullptr;
     uint64_t key = 0;
@@ -1666,8 +1676,12 @@ Target* D3D12Backend::EnsureTarget(const Surface& sf, bool depth, uint32_t width
         rv.Format = t.fmt;
         rv.ViewDimension = t.samples > 1 ? D3D12_RTV_DIMENSION_TEXTURE2DMS : D3D12_RTV_DIMENSION_TEXTURE2D;
         dev_->CreateRenderTargetView(t.res.Get(), &rv, Rtv(t.view));
-        float black[4] = {};
-        cl_->ClearRenderTargetView(Rtv(t.view), black, 0, nullptr);
+        std::array<float, 4> colour = {};
+        if (auto pending = pending_clears_.find(map_key); pending != pending_clears_.end()) {
+            colour = pending->second;
+            pending_clears_.erase(pending);
+        }
+        cl_->ClearRenderTargetView(Rtv(t.view), colour.data(), 0, nullptr);
     }
     // a grown target keeps what was drawn
     if (old.res && t.samples == 1 && old.fmt == t.fmt && old.scale == t.scale) {
@@ -1713,10 +1727,13 @@ uint32_t TargetWidth(const State& s) { return std::max(SurfacePitch(s), s.tiled_
 
 uint32_t ColorInfo(const State& s, uint32_t i) { return s.Reg(i == 0 ? kRbColorInfo : kRbColor1Info + i - 1); }
 
-Target* D3D12Backend::ColorTarget(const State& s, uint32_t i, uint32_t height) {
+Surface ColorSurface(const State& s, uint32_t i) {
     uint32_t info = ColorInfo(s, i);
-    Surface sf{Bits(info, 0, 12), Bits(info, 16, 4), SurfaceSamples(s), SurfacePitch(s)};
-    return EnsureTarget(sf, false, TargetWidth(s), height);
+    return {Bits(info, 0, 12), Bits(info, 16, 4), SurfaceSamples(s), SurfacePitch(s)};
+}
+
+Target* D3D12Backend::ColorTarget(const State& s, uint32_t i, uint32_t height) {
+    return EnsureTarget(ColorSurface(s, i), false, TargetWidth(s), height);
 }
 
 Target* D3D12Backend::DepthTarget(const State& s, uint32_t height) {
@@ -2946,7 +2963,21 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         if (whole) ClearSpan(*t, which, color, z, uint8_t(stencil));
     };
     for (uint32_t i = 0; i < 4; i++) {
-        if (flags >> i & 1) clear(ColorTarget(s, i, height), 1u << i);
+        if (!(flags >> i & 1)) continue;
+        Surface sf = ColorSurface(s, i);
+        uint64_t key = 0;
+        if (!TargetKeyOf(sf, false, width, key)) continue;
+        if (targets_.count(key)) {
+            clear(ColorTarget(s, i, height), 1u << i);
+            continue;
+        }
+        // nothing drew it yet: made in the clear colour at its first use
+        std::copy(color, color + 4, pending_clears_[key].begin());
+        Target span;
+        span.surface = sf;
+        span.width = width;
+        span.height = height;
+        if (whole) ClearSpan(span, 1u << i, color, z, uint8_t(stencil));
     }
     if (flags & (kClearZ | kClearStencil)) clear(DepthTarget(s, height), flags & (kClearZ | kClearStencil));
 }
