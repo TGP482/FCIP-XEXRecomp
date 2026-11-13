@@ -17,8 +17,6 @@ constexpr uint32_t kDetailViewDistance = 0x4C0;
 constexpr uint32_t kShadowRadius = 0x1174;
 // sector +0x149: 0x10 drawn, 0x40 detail asked, 0x80 detail loaded
 constexpr uint32_t kSectorFlags = 0x149;
-constexpr uint32_t kSightNear = 1;
-constexpr uint32_t kSightVisible = 8;
 constexpr uint32_t kNewSectors = 4;
 
 // new sectors a pass takes; limit: the kNewSectors nearest of those the last pass turned away
@@ -47,7 +45,6 @@ struct Gate {
     }
 };
 
-Gate g_shown;
 Gate g_kept;
 uint32_t g_last_sector = 0xFFFFFFFFu;
 
@@ -64,32 +61,16 @@ void ShadowRadiusLight(PPCContext& ctx, uint8_t*) { fcip::ScaleShadowRadius(ctx.
 void ShadowRadiusRange(PPCContext& ctx, uint8_t*) { fcip::ScaleShadowRadius(ctx.f[1]); }
 
 // Sector streaming reads each sector's byte in the camera sector's sight table: bit 1 the near set (3x3 to 5x5), bit
-// 8 the visible set, the level's PVS, often under 5 sectors. Visible sectors get objects and the render list, and only
-// near ones in the 3x3 get detail data (grass tiles). Within the grass distance a sector is now made visible, far like
-// stock bit 8 ones, and keeps its detail data. A pass adds at most kNewSectors of each, nearest first.
+// 8 the visible set, the level's PVS, often under 5 sectors. Near and visible sectors get the render list, which draws
+// their terrain and grass, and only near ones in the 3x3 get detail data (grass tiles). Within the grass distance near
+// and visible sectors now keep their detail data too. A pass adds at most kNewSectors, nearest first.
 
-// r11 the sight byte, r20/r21 the camera sector's row/column, r25/r27 this sector's, r30 the sector; sectors run in
-// order, so a lower one starts a pass
-void GrassSectorSight(PPCContext& ctx, uint8_t*) {
-    uint32_t key = uint32_t(ctx.r[25]) << 16 | (uint32_t(ctx.r[27]) & 0xFFFF);
-    if (key <= g_last_sector) {
-        g_shown.Start();
-        g_kept.Start();
-    }
-    g_last_sector = key;
-    uint32_t sight = uint32_t(ctx.r[11]);
-    if (sight & kSightVisible) return;
-    float gap = fcip::GrassReach(S32(ctx, 21), S32(ctx, 20), S32(ctx, 27), S32(ctx, 25));
-    if (gap < 0.0f) return;
-    // near ones are drawn anyway, one drawn since an earlier pass stays
-    bool drawn = (sight & kSightNear) || (R8(uint32_t(ctx.r[30]) + kSectorFlags) & 0x10);
-    if (!drawn && !g_shown.Take(gap)) return;
-    ctx.r[11] = sight | kSightVisible;
-}
-
-// after the ring test: r11 keep, r28 far, r29 near, r30 the sector; a kept sector needs near or far too, else its
-// container is dropped
+// after the ring test: r11 keep, r28 far, r29 near, r20/r21 the camera sector's row/column, r25/r27 this sector's, r30
+// the sector; sectors run in order, so a lower one starts a pass
 void GrassSectorRing(PPCContext& ctx, uint8_t*) {
+    uint32_t key = uint32_t(ctx.r[25]) << 16 | (uint32_t(ctx.r[27]) & 0xFFFF);
+    if (key <= g_last_sector) g_kept.Start();
+    g_last_sector = key;
     if (ctx.r[11] || !(ctx.r[28] || ctx.r[29])) return;
     float gap = fcip::GrassReach(S32(ctx, 21), S32(ctx, 20), S32(ctx, 27), S32(ctx, 25));
     bool asked = R8(uint32_t(ctx.r[30]) + kSectorFlags) & 0x40;

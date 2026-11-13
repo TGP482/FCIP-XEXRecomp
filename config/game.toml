@@ -241,10 +241,6 @@ call = "GrassTileRefilled"
 at = 0x825FF23C
 call = "GrassRadius"
 
-[[hook]]  # the sector sight byte in sector streaming
-at = 0x825EB484
-call = "GrassSectorSight"
-
 [[hook]]  # after the sector ring test
 at = 0x825EB5B8
 call = "GrassSectorRing"
