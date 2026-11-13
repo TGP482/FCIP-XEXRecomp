@@ -93,23 +93,37 @@ bool Reprojection(const float now[16], const float last[16], float out[16]) {
     return true;
 }
 
-void MotionHistory::Begin() {
-    now_ ^= 1;
-    Frame& f = frames_[now_];
-    f.draws.clear();
-    f.blocks.clear();
-    f.by_signature.clear();
+// the blocks a chain's draw differs from its first in
+void MotionHistory::MarkVarying(Chain& c, const uint8_t* first, const uint8_t* draw, size_t blocks) {
+    for (size_t k = 0; k < blocks; k++) {
+        if (std::memcmp(first + k * kBlock, draw + k * kBlock, kBlock)) c.varying[k / 64] |= 1ull << (k % 64);
+    }
 }
 
-// summed distance of two draws' constants, given up once past limit
-float Gap(const uint8_t* a, const uint8_t* b, size_t floats, float limit) {
+void MotionHistory::Begin() {
+    constexpr size_t kStaleSignatures = 8;  // signatures kept per draw before the table starts over
+    now_ ^= 1;
+    Frame& f = frames_[now_];
+    if (f.by_signature.size() > kStaleSignatures * (f.draws.size() + 64)) f.by_signature.clear();
+    f.draws.clear();
+    f.blocks.clear();
+    f.frame++;
+}
+
+// summed distance of two draws' constants over the blocks marked, given up once past limit
+float Gap(const uint8_t* a, const uint8_t* b, const uint64_t (&blocks)[2], float limit) {
     float sum = 0;
-    for (size_t i = 0; i < floats && sum < limit; i++) {
-        float x;
-        float y;
-        std::memcpy(&x, a + i * 4, 4);
-        std::memcpy(&y, b + i * 4, 4);
-        sum += std::fabs(x - y);
+    for (uint32_t w = 0; w < 2; w++) {
+        for (uint64_t m = blocks[w]; m && sum < limit; m &= m - 1) {
+            size_t at = (w * 64 + size_t(std::countr_zero(m))) * kBlock;
+            for (size_t i = 0; i < kBlock && sum < limit; i += 4) {
+                float x;
+                float y;
+                std::memcpy(&x, a + at + i, 4);
+                std::memcpy(&y, b + at + i, 4);
+                sum += std::fabs(x - y);
+            }
+        }
     }
     return sum;
 }
@@ -117,16 +131,17 @@ float Gap(const uint8_t* a, const uint8_t* b, size_t floats, float limit) {
 const MotionHistory::Draw* MotionHistory::Match(const Draw& now) {
     Frame& last = frames_[now_ ^ 1];
     auto it = last.by_signature.find(now.signature);
-    if (it == last.by_signature.end()) return nullptr;
+    if (it == last.by_signature.end() || it->second.frame != last.frame) return nullptr;
     const uint8_t* mine = frames_[now_].blocks.data() + size_t(now.at) * kBlock;
-    size_t floats = size_t(std::popcount(now.read[0]) + std::popcount(now.read[1])) * kBlock / 4;
+    // a block every candidate shares adds the same to each gap, so only the ones they differ in are compared
+    const uint64_t(&varying)[2] = it->second.varying;
     Draw* best = nullptr;
     float best_gap = INFINITY;
-    for (uint32_t i : it->second) {
+    for (uint32_t i = it->second.first; i != UINT32_MAX; i = last.draws[i].next) {
         Draw& d = last.draws[i];
         if (d.taken || d.placed != now.placed || d.read[0] != now.read[0] || d.read[1] != now.read[1]) continue;
         if (now.placed && Distance2(d.pos, now.pos) > kMatchRadius * kMatchRadius) continue;
-        float gap = Gap(mine, last.blocks.data() + size_t(d.at) * kBlock, floats, best_gap);
+        float gap = Gap(mine, last.blocks.data() + size_t(d.at) * kBlock, varying, best_gap);
         if (gap >= best_gap) continue;
         best_gap = gap;
         best = &d;
@@ -160,7 +175,16 @@ const MotionHistory::Draw& MotionHistory::Record(uint64_t signature, const float
             dst += kBlock;
         }
     }
-    f.by_signature[signature].push_back(uint32_t(f.draws.size()));
+    uint32_t index = uint32_t(f.draws.size());
+    Chain& c = f.by_signature[signature];
+    if (c.frame == f.frame) {
+        f.draws[c.last].next = index;
+        MarkVarying(c, f.blocks.data() + size_t(f.draws[c.first].at) * kBlock, f.blocks.data() + size_t(d.at) * kBlock,
+                    blocks);
+    } else {
+        c = {index, index, f.frame};
+    }
+    c.last = index;
     f.draws.push_back(d);
     return f.draws.back();
 }

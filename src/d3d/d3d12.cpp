@@ -1276,9 +1276,6 @@ private:
     float BaseScale() const;
     void BeginScene();
     void EndScene();
-    void Stamp(uint32_t i);
-    void ReadStamps(uint32_t slot);
-    void AddStamps(const uint64_t* t, bool scene);
     bool EnsureUpscaled(uint32_t w, uint32_t h);
     void DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, uint32_t taps, Target& out);
     uint32_t RayVertices(const DrawArgs& a, const PipelineKey& k, D3D12_PRIMITIVE_TOPOLOGY topo, uint32_t count,
@@ -1533,22 +1530,6 @@ private:
 
     ComPtr<ID3D12QueryHeap> query_heap_;
     ComPtr<ID3D12Resource> query_read_;
-    // GPU timestamps per frame slot, logged every few seconds with the CPU times
-    enum StampAt : uint32_t { kFrameStart, kFrameEnd, kSceneStart, kUpscaleStart, kUpscaleEnd, kStamps };
-    ComPtr<ID3D12QueryHeap> stamp_heap_;
-    ComPtr<ID3D12Resource> stamp_read_;
-    double stamp_ms_ = 0;  // per tick
-    bool stamped_[kFrames] = {};
-    bool scene_stamped_[kFrames] = {};
-    uint64_t last_frame_end_ = 0;
-    double gpu_frame_ms_ = 0;
-    double gpu_idle_ms_ = 0;  // from a frame's end to the next one's start
-    double scene_ms_ = 0;
-    double upscale_ms_ = 0;
-    uint32_t gpu_frames_ = 0;
-    uint32_t scene_frames_ = 0;
-    uint32_t log_frames_ = 0;
-    std::chrono::steady_clock::time_point stamp_log_ = std::chrono::steady_clock::now();
     Query queries_[kQueryCount];
 
     std::chrono::steady_clock::time_point fps_start_ = std::chrono::steady_clock::now();
@@ -1588,7 +1569,6 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
         ext_->Reset(*this);
     }
     Begin();
-    Stamp(kFrameStart);
     LOGR("D3D12: %ux%u title, %ux%u window, render scale %.3f", width, height, swap_w_, swap_h_, scale_);
     return true;
 }
@@ -1774,15 +1754,6 @@ void D3D12Backend::CreateFrames() {
     D3D12_RESOURCE_DESC rd = BufferDesc(kQueryCount * sizeof(uint64_t));
     dev_->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                                   IID_PPV_ARGS(&query_read_));
-    D3D12_QUERY_HEAP_DESC sd{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kStamps * kFrames, 0};
-    D3D12_RESOURCE_DESC srd = BufferDesc(kStamps * kFrames * sizeof(uint64_t));
-    UINT64 ticks = 0;
-    bool timed = SUCCEEDED(queue_->GetTimestampFrequency(&ticks)) && ticks;
-    if (timed && SUCCEEDED(dev_->CreateQueryHeap(&sd, IID_PPV_ARGS(&stamp_heap_)))) {
-        dev_->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &srd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                      IID_PPV_ARGS(&stamp_read_));
-        stamp_ms_ = 1000.0 / double(ticks);
-    }
 }
 
 std::filesystem::path PipelineCachePath() { return app::ExeDir() / "cache" / "pipelines.bin"; }
@@ -3833,7 +3804,6 @@ void D3D12Backend::BeginScene() {
     upscale_.scene = Fsr();
     upscale_.motion = false;
     if (!upscale_.scene) return;
-    Stamp(kSceneStart);
     // Halton 2 and 3, eight phases for each output pixel a scene pixel covers
     float ratio = scale_ / scene_scale_;
     uint32_t phases = uint32_t(std::ceil(8 * ratio * ratio));
@@ -3884,7 +3854,6 @@ void D3D12Backend::EndScene() {
         Transition(ds.res.Get(), ds.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
         Transition(motion_.done.Get(), motion_.done_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
         Transition(upscale_.out.Get(), upscale_.out_state, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        Stamp(kUpscaleStart);
         ok = fsr::Upscale(cl_.Get(), f);
         if (ok && generation_swap_) {
             // frames are generated from gameplay FSR drew, never over the F10 panel
@@ -3892,7 +3861,6 @@ void D3D12Backend::EndScene() {
             fsr::Prepare(cl_.Get(), f);
         }
         Begin();  // FSR's passes left their heaps and root signature bound
-        Stamp(kUpscaleEnd);
         if (cap_) {
             CapFinite(upscale_.out.Get(), upscale_.out_state, "FSR output");
             char name[32];
@@ -3935,68 +3903,6 @@ void D3D12Backend::RecreateSwapChain() {
     swap_w_ = 0;
     hdr_want_ = false;
     LOGR("FSR: frame generation's swap chain %s", generation_swap_ ? "in use" : "dropped");
-}
-
-void D3D12Backend::Stamp(uint32_t i) {
-    if (!stamp_read_) return;
-    uint32_t slot = uint32_t(frame_ % kFrames);
-    uint32_t first = slot * kStamps;
-    cl_->EndQuery(stamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first + i);
-    if (i == kUpscaleEnd) scene_stamped_[slot] = true;
-    if (i != kFrameEnd) return;
-    // the camera pass's stamps only when this frame wrote them
-    uint32_t count = scene_stamped_[slot] ? kStamps : kSceneStart;
-    cl_->ResolveQueryData(stamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first, count, stamp_read_.Get(),
-                          first * sizeof(uint64_t));
-    stamped_[slot] = true;
-}
-
-// a finished frame's GPU times; every few seconds their averages and the CPU times are logged
-void D3D12Backend::ReadStamps(uint32_t slot) {
-    log_frames_++;
-    bool scene = std::exchange(scene_stamped_[slot], false);
-    uint64_t* all = nullptr;
-    D3D12_RANGE range{slot * kStamps * sizeof(uint64_t), (slot + 1) * kStamps * sizeof(uint64_t)};
-    bool stamped = std::exchange(stamped_[slot], false);
-    if (stamped && SUCCEEDED(stamp_read_->Map(0, &range, reinterpret_cast<void**>(&all)))) {
-        AddStamps(all + slot * kStamps, scene);
-        D3D12_RANGE none{0, 0};
-        stamp_read_->Unmap(0, &none);
-    } else {
-        last_frame_end_ = 0;
-    }
-    auto now = std::chrono::steady_clock::now();
-    double secs = std::chrono::duration<double>(now - stamp_log_).count();
-    if (secs < 5) return;
-    double frames = std::max(gpu_frames_, 1u);
-    double scenes = std::max(scene_frames_, 1u);
-    LOGR("perf: %.1f fps, GPU frame %.2f ms, idle between frames %.2f ms", log_frames_ / secs, gpu_frame_ms_ / frames,
-         gpu_idle_ms_ / frames);
-    if (scene_frames_) {
-        LOGR("perf FSR: camera pass %.2f ms, upscale %.2f ms on the GPU in %u frames", scene_ms_ / scenes,
-             upscale_ms_ / scenes, scene_frames_);
-    }
-    stamp_log_ = now;
-    gpu_frame_ms_ = 0;
-    gpu_idle_ms_ = 0;
-    scene_ms_ = 0;
-    upscale_ms_ = 0;
-    gpu_frames_ = 0;
-    scene_frames_ = 0;
-    log_frames_ = 0;
-}
-
-void D3D12Backend::AddStamps(const uint64_t* t, bool scene) {
-    gpu_frame_ms_ += double(t[kFrameEnd] - t[kFrameStart]) * stamp_ms_;
-    if (last_frame_end_ && t[kFrameStart] > last_frame_end_) {
-        gpu_idle_ms_ += double(t[kFrameStart] - last_frame_end_) * stamp_ms_;
-    }
-    last_frame_end_ = t[kFrameEnd];
-    gpu_frames_++;
-    if (!scene) return;
-    scene_ms_ += double(t[kUpscaleStart] - t[kSceneStart]) * stamp_ms_;
-    upscale_ms_ += double(t[kUpscaleEnd] - t[kUpscaleStart]) * stamp_ms_;
-    scene_frames_++;
 }
 
 bool D3D12Backend::EnsureUpscaled(uint32_t w, uint32_t h) {
@@ -4850,7 +4756,6 @@ void D3D12Backend::ShowFrame(const xenos::TextureFetch& t) {
         PresentHdr(t, rh);
     }
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_PRESENT);
-    Stamp(kFrameEnd);
     Submit(false);
     bool vsync = app::Get().vsync;
     if (generation_swap_ && upscale_.configured != presents_) ConfigureGeneration(false);
@@ -4876,7 +4781,6 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     frame_textures_.clear();
     Frame& next = CurrentFrame();
     WaitFence(next.fence);
-    ReadStamps(uint32_t(frame_ % kFrames));
     next.alloc->Reset();
     next.garbage.clear();
     next.used = 0;
@@ -4885,7 +4789,6 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     next.views = 0;
     cl_->Reset(next.alloc.Get(), nullptr);
     Begin();
-    Stamp(kFrameStart);
     if (uint32_t side = fcip::SunShadowSide(); side != shadow_side_) {
         last_shadow_side_ = shadow_side_;
         shadow_side_ = side;

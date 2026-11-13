@@ -3,6 +3,7 @@
 #pragma once
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace gpu {
@@ -38,6 +39,7 @@ public:
         bool taken = false;
         uint32_t at = 0;  // first block in blocks
         uint64_t read[2] = {};
+        uint32_t next = UINT32_MAX;  // the next draw of its signature
     };
 
     void Begin();
@@ -50,10 +52,19 @@ public:
     void Copy(const Draw& d, uint8_t* bank) const;
 
 private:
+    // a signature's draws in draw order; kept across frames, so only a frame's own count
+    struct Chain {
+        uint32_t first = 0;
+        uint32_t last = 0;
+        uint32_t frame = 0;
+        uint64_t varying[2] = {};  // a bit per block of the draws' own, set where they differ
+    };
+    static void MarkVarying(Chain& c, const uint8_t* first, const uint8_t* draw, size_t blocks);
     struct Frame {
         std::vector<Draw> draws;
         std::vector<uint8_t> blocks;
-        std::unordered_map<uint64_t, std::vector<uint32_t>> by_signature;
+        std::unordered_map<uint64_t, Chain> by_signature;
+        uint32_t frame = 0;
     };
     Frame frames_[2];
     int now_ = 0;
