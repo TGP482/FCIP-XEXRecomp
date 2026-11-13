@@ -12,7 +12,7 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 - Put your game files in the `assets` folder. This can be an ISO, or the extracted data files.
 - Run `FCIP.exe`. The first start compiles the game's code for your PC, this only happens once.
 - Recomp settings can be adjusted in the in-game options menu while the game is running, or through the Settings overlay, which is opened with F10 by default.
-- NVIDIA DLSS is optional and its files are not included. Download the latest Streamline SDK release from [NVIDIA's official GitHub](https://github.com/NVIDIA-RTX/Streamline/releases), then copy `sl.interposer.dll`, `sl.common.dll`, `sl.dlss.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll`, `nvngx_dlss.dll` and `nvngx_dlssg.dll` from its `bin\x64` folder beside `FCIP.exe`.
+- NVIDIA DLSS is optional and its files are not included. Download the latest Streamline SDK release from [NVIDIA's official GitHub](https://github.com/NVIDIA-RTX/Streamline/releases), then copy `sl.interposer.dll`, `sl.common.dll`, `sl.dlss.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll`, `nvngx_dlss.dll` and `nvngx_dlssg.dll` from its `bin\x64` folder into the `DLSS` folder beside `FCIP.exe`.
 
 ## Features
 

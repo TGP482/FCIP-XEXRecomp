@@ -34,7 +34,7 @@ namespace {
 // Frame Generation needs Reflex and PCL loaded beside it
 constexpr sl::Feature kFeatures[] = {sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
 constexpr char kProjectId[] = "3afb89d7-853e-41e7-b84e-83a34cef2d84";
-// the DLLs from NVIDIA's Streamline release each feature needs beside the exe
+// the DLLs from NVIDIA's Streamline release each feature needs in the DLSS folder beside the exe
 constexpr const wchar_t* kUpscalingDlls[] = {L"sl.interposer.dll", L"sl.common.dll", L"sl.dlss.dll", L"nvngx_dlss.dll"};
 constexpr const wchar_t* kGenerationDlls[] = {L"sl.dlss_g.dll", L"sl.reflex.dll", L"sl.pcl.dll", L"nvngx_dlssg.dll"};
 // kModes in order, as DLSS names them
@@ -195,19 +195,20 @@ void FillConstants(const Frame& f, sl::Constants& c) {
 void Load() {
     wchar_t exe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::filesystem::path dir = std::filesystem::path(exe).parent_path();
+    std::filesystem::path dir = std::filesystem::path(exe).parent_path() / L"DLSS";
     g_sr_dlls = Beside(dir, kUpscalingDlls);
     g_fg_dlls = g_sr_dlls && Beside(dir, kGenerationDlls);
     std::wstring interposer = (dir / L"sl.interposer.dll").wstring();
     if (!std::filesystem::exists(interposer)) {
-        LOGR("DLSS: no sl.interposer.dll beside the exe");
+        LOGR("DLSS: no sl.interposer.dll in the DLSS folder");
         return;
     }
     if (!sl::security::verifyEmbeddedSignature(interposer.c_str())) {
         LOGE("DLSS: sl.interposer.dll is not signed by NVIDIA");
         return;
     }
-    HMODULE dll = LoadLibraryW(interposer.c_str());
+    // its own folder first for what it loads
+    HMODULE dll = LoadLibraryExW(interposer.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     bool found = dll && Find(dll, "slInit", g_init) && Find(dll, "slShutdown", g_shutdown) &&
                  Find(dll, "slSetD3DDevice", g_set_device) && Find(dll, "slIsFeatureSupported", g_is_supported) &&
                  Find(dll, "slGetFeatureFunction", g_feature_function) &&

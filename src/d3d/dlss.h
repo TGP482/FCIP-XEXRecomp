@@ -1,4 +1,4 @@
-// NVIDIA DLSS through Streamline, whose DLLs the player puts beside the exe
+// NVIDIA DLSS through Streamline, whose DLLs the player puts in the DLSS folder beside the exe
 #pragma once
 #include <cstdint>
 
@@ -10,7 +10,7 @@ struct ID3D12Resource;
 
 namespace dlss {
 
-// before the device: Streamline from beside the exe, only when NVIDIA signed it
+// before the device: Streamline from the DLSS folder, only when NVIDIA signed it
 void Load();
 // the device made: what this GPU and driver support
 void SetDevice(ID3D12Device* dev);
@@ -22,7 +22,7 @@ void Shutdown();
 bool SuperResolution();
 bool FrameGeneration();
 
-// why a DLSS feature does not run: its DLLs are not beside the exe, or this GPU or driver lacks it
+// why a DLSS feature does not run: its DLLs are not in the DLSS folder, or this GPU or driver lacks it
 enum class Status { Ready, MissingDll, NotSupported };
 Status UpscalingStatus();
 Status GenerationStatus();
