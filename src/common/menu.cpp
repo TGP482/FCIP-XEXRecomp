@@ -48,7 +48,7 @@ constexpr uint32_t kHostApplyDisplay = WM_APP + 1;  // main.cpp's kApplyDisplay
 constexpr uint32_t kAnisoValues[] = {0, 2, 4, 8, 16};
 const char* const kAnisoNames[] = {"OFF", "2x", "4x", "8x", "16x"};
 constexpr uint32_t kMsaaValues[] = {0, 2, 4, 8};
-const char* const kMsaaNames[] = {"OFF", "2x", "4x", "8x"};
+const char* const kMsaaNames[] = {"OFF", "2X MSAA", "4X MSAA", "8X MSAA"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
 const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
 const char* const kAmbientOcclusionNames[] = {"OFF", "SSAO", "GTAO", "RTAO"};
@@ -126,7 +126,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kDisplayMode, "DISPLAY MODE", "Switch between fullscreen, borderless and windowed"},
     {Kind::Value, kResolution, "RESOLUTION", "Every mode your monitor reports, defaulting to your desktop resolution"},
     {Kind::Value, kRenderResolution, "RENDER RESOLUTION",
-     "Renders the game at 20% to 200% of the output resolution, independent of the window size, or 33% to 100% upscaled by DLSS with DLAA on"},
+     "Renders the game at 20% to 200% of the output resolution, independent of the window size, or 33% to 100% upscaled with DLSS on"},
     {Kind::Value, kFov, "FIELD OF VIEW", "Sets the horizontal field of view during gameplay, cutscenes keep their own"},
     {Kind::Value, kViewmodelFov, "VIEWMODEL FIELD OF VIEW", "Sets the field of view of the weapon and arms"},
     {Kind::Value, kVsync, "VERTICAL SYNC", "Reduces screen tearing"},
@@ -139,9 +139,9 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kAmbientOcclusion, "AMBIENT OCCLUSION",
      "Shades the world's creases and corners, SSAO, the more accurate GTAO or ray traced RTAO, characters and fog left alone"},
     {Kind::Value, kAntiAliasing, "ANTI ALIASING",
-     "Smooths jagged edges with 2x, 4x or 8x MSAA in place of the game's own 2x, or NVIDIA DLAA on supported graphics cards"},
+     "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, or NVIDIA DLSS from the render resolution, DLAA at 100%"},
     {Kind::Value, kFrameGeneration, "FRAME GENERATION",
-     "Generates frames between the rendered ones with NVIDIA DLSS Frame Generation, fixed or dynamic, with DLAA on"},
+     "Generates frames between the rendered ones with NVIDIA DLSS Frame Generation, fixed or dynamic, with DLSS on"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},
@@ -350,14 +350,12 @@ void StepName(uint32_t& value, const char* const (&names)[N], int step, char (&t
     std::snprintf(text, sizeof(text), "%s", names[value]);
 }
 
-// with DLAA, DLSS's range in fives and its modes' percentages, named
+// with DLSS, its range in fives and its modes' percentages, named
 constexpr uint32_t kDlssPercents[] = {33, 35, 40, 45, 50, 55, 58, 60, 65, 67, 70, 75, 80, 85, 90, 95, 100};
-
-bool DlaaOn() { return Get().dlaa && dlss::SuperResolution(); }
 
 void StepRenderResolution(app::Settings& s, int step, char (&text)[64]) {
     uint32_t percent = s.render_percent;
-    if (DlaaOn()) {
+    if (Get().dlaa) {
         percent = kDlssPercents[StepTable(kDlssPercents, s.render_percent, step)];
         for (const dlss::ModePoint& m : dlss::kModes) {
             if (m.percent != percent) continue;
@@ -372,7 +370,7 @@ void StepRenderResolution(app::Settings& s, int step, char (&text)[64]) {
     std::snprintf(text, sizeof(text), "%u%% (%ux%u)", percent, out.width * percent / 100, out.height * percent / 100);
 }
 
-// MSAA's sample counts, then DLAA where DLSS runs
+// MSAA's sample counts, then DLSS
 void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
     constexpr int kMsaaCount = int(std::size(kMsaaValues));
     int i = Get().dlaa ? kMsaaCount : NearestIndex(kMsaaValues, kMsaaCount, s.msaa);
@@ -381,8 +379,10 @@ void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
         Get().dlaa = i == kMsaaCount;
         s.msaa = Get().dlaa ? 0 : kMsaaValues[i];
     }
+    // DLSS at 100% render resolution is DLAA
+    const char* name = s.render_percent >= dlss::kMaxPercent ? "DLAA" : "DLSS";
     if (i < kMsaaCount) std::snprintf(text, sizeof(text), "%s", kMsaaNames[i]);
-    else std::snprintf(text, sizeof(text), "DLAA%s", dlss::StatusNote(dlss::UpscalingStatus()));
+    else std::snprintf(text, sizeof(text), "%s%s", name, dlss::StatusNote(dlss::UpscalingStatus()));
 }
 
 // off, 2X to 6X, dynamic; noted where the DLLs are missing or this GPU lacks it
