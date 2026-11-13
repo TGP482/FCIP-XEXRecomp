@@ -129,7 +129,7 @@ void Land(PPCContext& ctx, uint32_t entity) {
     CallGuest(ctx, R32(vtable + kEntitySetPos), {entity, at, 0});
 }
 
-// the local player after its movement ran
+// the local player before the camera and the weapon are built from its position, with the cmd of its last movement
 void NoclipMove(PPCContext& ctx, uint32_t player, uint32_t cmd) {
     uint32_t entity = R32(player + kPlayerEntity);
     // a new entity left the old one behind, its physics went with it

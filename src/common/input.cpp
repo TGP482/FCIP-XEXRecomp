@@ -498,11 +498,8 @@ PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_ProcessView));
 
 // (this, cmd): clamps the move vector and applies the walk key
 PPC_FUNC(GUEST(CPlayer_ProcessMovements)) {
-    uint32_t player = uint32_t(ctx.r[3]);
-    uint32_t cmd = uint32_t(ctx.r[4]);
-    if (cmd) OnMovement(player, cmd);
+    if (uint32_t cmd = uint32_t(ctx.r[4])) OnMovement(uint32_t(ctx.r[3]), cmd);
     GUEST_ORIG(CPlayer_ProcessMovements)(ctx, base);
-    if (fcip::g_noclip_move && Local(player, cmd)) fcip::g_noclip_move(ctx, player, cmd);
 }
 
 // (player, cmd, u8 avail[3]), before ProcessMovements: NEXT and PREVIOUS WEAPON press the next slot the game can
@@ -656,11 +653,15 @@ PPC_FUNC(GUEST(CPlayer_UpdateLookBones)) {
     GUEST_ORIG(CPlayer_UpdateLookBones)(ctx, base);
 }
 
-// (this): its weapon yaw lag, zeroed like the pitch one
+// (this): its weapon yaw lag, zeroed like the pitch one. Noclip moves the player first, so the camera and the weapon
+// built from its position this frame agree
 PPC_FUNC(GUEST(CPlayer_UpdateView)) {
     uint32_t player = uint32_t(ctx.r[3]);
+    bool local = player && player == g_local_player;
+    uint32_t cmd = g_local_cmd;
+    if (local && cmd && fcip::g_noclip_move) fcip::g_noclip_move(ctx, player, cmd);
     GUEST_ORIG(CPlayer_UpdateView)(ctx, base);
-    if (!player || player != g_local_player || !RawLook()) return;
+    if (!local || !RawLook()) return;
     WF(player + kPlayerYawDelta, 0.0f);
     WF(player + kPlayerYawLag, 0.0f);
 }
