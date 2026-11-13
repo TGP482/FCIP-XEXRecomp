@@ -30,6 +30,7 @@
 #include "common/panel_colors.h"
 #include "common/settings.h"
 #include "core/input.h"
+#include "d3d/dlss.h"
 
 namespace fcip {
 
@@ -114,7 +115,7 @@ enum RowId {
     kFpsCounter, kHdrOutput, kShadowResolution,
     kBlur, kDrawDistance,
     kInvincible, kNoclip, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
-    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kMsaa, kSmaa, kAmbientOcclusion, kAudioOutput
+    kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kSmaa, kAmbientOcclusion, kAudioOutput
 };
 
 constexpr Row kSettingsRows[] = {
@@ -135,7 +136,8 @@ constexpr Row kSettingsRows[] = {
     {Kind::Heading, -1, "GRAPHICS", "Antialiasing, ambient occlusion, texture filtering, shadows and draw distance"},
     {Kind::Value, kAmbientOcclusion, "AMBIENT OCCLUSION",
      "Shades the world's creases and corners, SSAO, the more accurate GTAO or ray traced RTAO, characters and fog left alone"},
-    {Kind::Value, kMsaa, "MSAA", "Smooths jagged edges with 2x, 4x or 8x MSAA in place of the game's own 2x"},
+    {Kind::Value, kAntiAliasing, "ANTI ALIASING",
+     "Smooths jagged edges with 2x, 4x or 8x MSAA in place of the game's own 2x, or NVIDIA DLAA on supported graphics cards"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},
@@ -344,6 +346,19 @@ void StepName(uint32_t& value, const char* const (&names)[N], int step, char (&t
     std::snprintf(text, sizeof(text), "%s", names[value]);
 }
 
+// MSAA's sample counts, then DLAA where DLSS runs
+void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
+    constexpr int kMsaaCount = int(std::size(kMsaaValues));
+    int count = kMsaaCount + (dlss::SuperResolution() ? 1 : 0);
+    int i = Get().dlaa && dlss::SuperResolution() ? kMsaaCount : NearestIndex(kMsaaValues, kMsaaCount, s.msaa);
+    if (step) {
+        i = StepIndex(i, step, count);
+        Get().dlaa = i == kMsaaCount;
+        s.msaa = Get().dlaa ? 0 : kMsaaValues[i];
+    }
+    std::snprintf(text, sizeof(text), "%s", i < kMsaaCount ? kMsaaNames[i] : "DLAA");
+}
+
 void StepGyroRow(int id, int step, char (&text)[64]) {
     gyro::Settings& g = Get().gyro;
     switch (id) {
@@ -428,8 +443,8 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             else std::snprintf(text, sizeof(text), "UNLIMITED");
             break;
         }
-        case kMsaa:
-            std::snprintf(text, sizeof(text), "%s", kMsaaNames[StepTable(kMsaaValues, s.msaa, step)]);
+        case kAntiAliasing:
+            StepAntiAliasing(s, step, text);
             break;
         case kAudioOutput:
             std::snprintf(text, sizeof(text), "%s", kAudioOutputNames[StepTable(kAudioOutputs, s.audio_output, step)]);

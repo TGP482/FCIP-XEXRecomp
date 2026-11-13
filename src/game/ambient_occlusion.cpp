@@ -9,18 +9,18 @@
 #include "common/render_pass.h"
 #include "common/settings.h"
 #include "d3d/occlusion.h"
+#include "game/motion_vectors.h"
+#include "game/scene.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
+using namespace fcip::scene;
 
 namespace {
 
 // renderer
-constexpr uint32_t kRendererBlock = 0xC;       // the shader constant block, its draw list at +0x24
 constexpr uint32_t kRendererPipelines = 0x10;  // the pipeline registry
-constexpr uint32_t kRendererPass = 0x90;       // the pass being submitted, its camera first
 // shader constant block, as the pass submit fills it
-constexpr uint32_t kBlockList = 0x24;
 constexpr uint32_t kBlockFogScale = 0x21D4;  // fog amount / (end - start)
 constexpr uint32_t kBlockFogBias = 0x21D8;   // -scale * start
 constexpr uint32_t kBlockFogColour = 0x21E4;  // r, g, b from 0 to 1
@@ -37,17 +37,8 @@ constexpr uint32_t kPhongDraws[] = {0x8250DF28, 0x82504FB8, 0x825050F0, 0x825052
 // render item: its mesh, which 8250DF28 draws SKINNED when the byte at +0x40 is set
 constexpr uint32_t kItemMesh = 0x18;
 constexpr uint32_t kMeshSkinned = 0x40;
-// camera: PerspectiveFov's right handed projection, row major, before the pass flips its depth
-constexpr uint32_t kCameraProjection = 0x23C;
-// draw list 825091A0: the count first, entries {key, item, next} of 0xC bytes at +8, the bucket being popped
-constexpr uint32_t kListEntries = 0x8;
-constexpr uint32_t kListCursor = 0x201C;
-constexpr uint32_t kListEntrySize = 0xC;
 // keys
-constexpr uint32_t kLayerShift = 16;
-constexpr uint32_t kLayerMask = 0xF;
 constexpr uint32_t kPipelineShift = 11;
-constexpr uint32_t kLastWorldLayer = 4;
 constexpr uint32_t kLastPipeline = 0x1F;
 constexpr uint32_t kLayerAndPipeline = 0xFF800;  // key bits 11 to 19
 constexpr uint32_t kMovedKey = kLastWorldLayer << kLayerShift | kLastPipeline << kPipelineShift;
@@ -99,11 +90,8 @@ bool Character(uint32_t pipeline, uint32_t item) {
 
 // the item about to be popped lies past the world
 bool PastWorld(uint32_t list) {
-    uint32_t cursor = R32(list + kListCursor);
-    if (!R32(list) || !cursor) return false;
-    int32_t index = int32_t(R32(cursor));
-    if (index < 0) return false;
-    uint32_t key = R32(R32(list + kListEntries) + uint32_t(index) * kListEntrySize);
+    uint32_t key = 0;
+    if (!NextKey(list, key)) return false;
     uint32_t layer = key >> kLayerShift & kLayerMask;
     return layer > kLastWorldLayer || (key & kLayerAndPipeline) == kMovedKey;
 }
@@ -117,8 +105,7 @@ uint32_t ColourByte(uint32_t addr) {
 void Occlude() {
     t_draw_list = 0;
     uint32_t renderer = R32(SYM_Renderer_pointer);
-    uint32_t pass = renderer ? R32(renderer + kRendererPass) : 0;
-    uint32_t camera = pass ? R32(pass) : 0;
+    uint32_t camera = Camera();
     uint32_t block = renderer ? R32(renderer + kRendererBlock) : 0;
     if (!camera || !block) return;
     uint32_t m = camera + kCameraProjection;
@@ -173,17 +160,20 @@ PPC_FUNC(GUEST(Scene_Push)) {
 
 // the list drawn in key order, r3 the constant block; occlusion goes in at the end when nothing past the world came
 PPC_FUNC(GUEST(Scene_Draw)) {
+    fcip::MotionSceneDraw(uint32_t(ctx.r[3]));
     if (Enabled()) {
         t_draw_list = uint32_t(ctx.r[3]) + kBlockList;
         if (fcip::Get().ambient_occlusion == gpu::kAoRtao) d3d::OcclusionScene(R32(SYM_Device_pointer));
     }
     GUEST_ORIG(Scene_Draw)(ctx, base);
     if (t_draw_list) Occlude();
+    fcip::MotionSceneDone();
 }
 
 // the next item of a list, r3 the list
 PPC_FUNC(GUEST(Scene_Pop)) {
     uint32_t list = uint32_t(ctx.r[3]);
     if (t_draw_list && t_draw_list == list && PastWorld(list)) Occlude();
+    fcip::MotionScenePop(list);
     GUEST_ORIG(Scene_Pop)(ctx, base);
 }

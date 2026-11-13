@@ -33,6 +33,7 @@
 #include "common/render_pass.h"
 #include "common/settings.h"
 #include "d3d/dlss.h"
+#include "d3d/motion.h"
 #include "d3d/occlusion.h"
 #include "d3d/readback.h"
 #include "d3d/smaa_shader.h"
@@ -101,6 +102,9 @@ constexpr int kSmaaTargets = 3;
 constexpr uint32_t kSmaaRtv = kOutRtv + kOutTargets;  // SMAA's edges, blend weights and blended frame
 constexpr int kAoTargets = 2;
 constexpr uint32_t kAoRtv = kSmaaRtv + kSmaaTargets;  // ambient occlusion's raw pass and first blur
+constexpr uint32_t kMotionRtv = kAoRtv + kAoTargets;  // motion vectors as the draws wrote them, then completed
+constexpr DXGI_FORMAT kMotionFormat = DXGI_FORMAT_R16G16_FLOAT;
+constexpr float kNoMotion = 32768;  // the drawn motion's clear: no world draw wrote the pixel
 
 enum : uint32_t {
     kRootVsConsts,
@@ -112,6 +116,8 @@ enum : uint32_t {
     kRootPsViews,
     kRootVsSamplers,
     kRootPsSamplers,
+    kRootPrevConsts,  // a motion draw's vertex constants last frame
+    kRootMotion,
     kRootCount,
 };
 
@@ -352,7 +358,7 @@ struct PipelineKey {
     uint32_t topology = 0;
     uint32_t strip_cut = 0;
     uint32_t stream_out = 0;  // RTAO's
-    uint32_t unused = 0;      // no padding: the key is hashed and compared as bytes
+    uint32_t motion = 0;      // kMotionTarget's format, 0 none; no padding: the key is hashed and compared as bytes
 };
 
 // cache/pipelines.bin: the header, then per pipeline its record, the shaders' DXIL and the driver's blob
@@ -394,7 +400,7 @@ struct Frame {
 
 // a draw's render targets as OMSetRenderTargets takes them, 0 for none
 struct TargetViews {
-    SIZE_T rtv[4] = {};
+    SIZE_T rtv[kMotionTarget + 1] = {};
     SIZE_T dsv = 0;
 };
 
@@ -847,6 +853,38 @@ uint32_t StripTriangles(const DrawArgs& a, uint32_t count, bool cut) {
     return triangles;
 }
 
+// the motion vectors the world's draws left, with the depth reprojected from last frame's camera where none did.
+// reproject: a title clip position to last frame's; ndc: a pixel centre to the title's ndc; zuv: z = (raw - y) / x,
+// then the title's ndc to the target's uv
+const char* kMotionHlsl = R"(
+cbuffer M : register(b1) {
+    row_major float4x4 reproject;
+    float4 ndc;
+    float4 zuv;
+};
+Texture2D<float> depth : register(t0);
+Texture2D<float2> drawn : register(t1);
+float4 vs(uint id : SV_VertexID) : SV_Position {
+    float2 t = float2((id << 1) & 2, id & 2);
+    return float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+float2 motion(float4 pos : SV_Position) : SV_Target {
+    int3 p = int3(pos.xy, 0);
+    float2 m = drawn.Load(p);
+    if (m.x < 16384) return m;
+    float2 n = pos.xy * ndc.xy + ndc.zw;
+    float4 last = mul(float4(n, (depth.Load(p) - zuv.y) / zuv.x, 1), reproject);
+    return (last.xy / last.w - n) * zuv.zw;
+}
+)";
+
+// b5 of a motion draw
+struct MotionConstants {
+    float reproject[16];
+    uint32_t prev;  // run over the previous constants, else reproject
+    uint32_t unused[3];
+};
+
 const char* kBlitHlsl = R"(
 cbuffer P : register(b1) { float4 uvrect; float4 opts; };
 Texture2D<float4> img : register(t0);
@@ -1142,8 +1180,9 @@ private:
         float scale = 1;
         Target* rt = nullptr;  // the first colour target
         Target* ds = nullptr;
+        bool motion = false;  // the motion target bound at kMotionTarget
     };
-    bool BindTargets(const State& s, const ShaderInfo& ps, PipelineKey& k, Bound& b);
+    bool BindTargets(const State& s, const ShaderInfo& ps, PipelineKey& k, Bound& b, bool motion = false);
     void FillDrawConstants(const State& s, const Bound& b, DrawConstants& c) const;
     Rect GuestScissor(const State& s, uint32_t w, uint32_t h) const;
     D3D12_RECT HostRect(const Rect& r, float scale) const;
@@ -1196,6 +1235,14 @@ private:
     };
     void Occlusion(const State& s, const OcclusionArgs& a);
     void BeginRayScene();
+
+    // motion vectors of the camera pass's world, for DLSS
+    void BeginMotion(const State& s);
+    void EndMotion(const State& s);
+    bool EnsureMotionTargets(uint32_t w, uint32_t h);
+    bool MotionWanted(const State& s, const ShaderInfo& ps) const;
+    void BindMotion(const State& s, const DrawArgs& a, const ShaderInfo& vs);
+    void CompleteMotion(Target& depth, const DrawConstants& d);
     uint32_t RayVertices(const DrawArgs& a, const PipelineKey& k, D3D12_PRIMITIVE_TOPOLOGY topo, uint32_t count,
                          bool alpha_test) const;
     void StreamOut(const DrawConstants& c, uint32_t vertices);
@@ -1274,6 +1321,24 @@ private:
     uint32_t ao_w_ = 0;
     uint32_t ao_h_ = 0;
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> ao_pipelines_;
+    // motion vectors: as the world's draws wrote them, then completed by reprojecting the depth where none did
+    struct Motion {
+        bool active = false;  // between kClearMotionBegin and kClearMotionEnd
+        uint64_t rt_key = 0;  // the scene's colour target
+        ComPtr<ID3D12Resource> drawn;
+        ComPtr<ID3D12Resource> done;
+        D3D12_RESOURCE_STATES drawn_state = D3D12_RESOURCE_STATE_COMMON;
+        D3D12_RESOURCE_STATES done_state = D3D12_RESOURCE_STATE_COMMON;
+        uint32_t w = 0;
+        uint32_t h = 0;
+        float last_clip[16] = {};
+        bool has_last = false;
+        float reproject[16] = {};
+        D3D12_GPU_VIRTUAL_ADDRESS consts[2] = {};  // b5: reprojected, then run over the previous constants
+        uint32_t draws = 0;
+        uint32_t matched = 0;
+    } motion_;
+    MotionHistory motion_history_;
     // RTAO: inline ray tracing, null without; the world's streamed out triangles and their scene
     ComPtr<ID3D12Device5> dev5_;
     bool ray_capture_ = false;  // between OcclusionScene and Occlusion
@@ -1520,7 +1585,7 @@ void D3D12Backend::CreateHeaps() {
     };
     view_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kViewsPerFrame * kFrames, true, view_heap_);
     sampler_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCount, true, sampler_heap_);
-    rtv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kAoRtv + kAoTargets, false, rtv_heap_);
+    rtv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kMotionRtv + 2, false, rtv_heap_);
     dsv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvCount, false, dsv_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true, ui_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kPsTextures + kFrames, false, copy_heap_);
@@ -1570,6 +1635,8 @@ bool D3D12Backend::CreateRootSignature() {
     cbv(kRootFlow, 1, D3D12_SHADER_VISIBILITY_ALL);
     cbv(kRootDraw, 2, D3D12_SHADER_VISIBILITY_ALL);
     cbv(kRootFetch, 3, D3D12_SHADER_VISIBILITY_VERTEX);
+    cbv(kRootPrevConsts, 4, D3D12_SHADER_VISIBILITY_VERTEX);
+    cbv(kRootMotion, 5, D3D12_SHADER_VISIBILITY_VERTEX);
     table(kRootVsViews, vs_views, 2, D3D12_SHADER_VISIBILITY_VERTEX);
     table(kRootPsViews, &ps_views, 1, D3D12_SHADER_VISIBILITY_PIXEL);
     table(kRootVsSamplers, &vs_samplers, 1, D3D12_SHADER_VISIBILITY_VERTEX);
@@ -2079,6 +2146,7 @@ void FillBlend(const PipelineKey& k, D3D12_BLEND_DESC& d) {
         rt.LogicOp = D3D12_LOGIC_OP_NOOP;
         rt.RenderTargetWriteMask = UINT8(Bits(k.color_mask, 4 * i, 4));
     }
+    if (k.motion) d.RenderTarget[kMotionTarget].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 }
 
 // RB_DEPTHCONTROL: stencil 0, z 1, z write 2, z func 4, back stencil 7, stencil func, fail, pass, z fail from 8,
@@ -2125,6 +2193,11 @@ void D3D12Backend::FillPipelineDesc(const PipelineKey& k, D3D12_GRAPHICS_PIPELIN
     for (uint32_t i = 0; i < 4; i++) {
         d.RTVFormats[i] = DXGI_FORMAT(k.rt_formats[i]);
         if (k.rt_formats[i]) d.NumRenderTargets = i + 1;
+    }
+    if (k.motion) {
+        for (uint32_t i = d.NumRenderTargets; i < kMotionTarget; i++) d.RTVFormats[i] = kNullRtvFormat;
+        d.RTVFormats[kMotionTarget] = DXGI_FORMAT(k.motion);
+        d.NumRenderTargets = kMotionTarget + 1;
     }
     d.DSVFormat = DXGI_FORMAT(k.ds_format);
     d.SampleDesc.Count = k.samples;
@@ -2698,9 +2771,9 @@ void D3D12Backend::FillKeyStates(const State& s, PipelineKey& k) const {
 }
 
 // the colour targets the pixel shader writes and the mask lets through, and the depth target when tested
-bool D3D12Backend::BindTargets(const State& s, const ShaderInfo& ps, PipelineKey& k, Bound& b) {
+bool D3D12Backend::BindTargets(const State& s, const ShaderInfo& ps, PipelineKey& k, Bound& b, bool motion) {
     uint32_t height = TargetHeight(s);
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv[4];
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv[kMotionTarget + 1];
     uint32_t count = 0;
     b = {TargetWidth(s), height, scale_};
     k.samples = HostSamples(SurfaceSamples(s));
@@ -2728,6 +2801,16 @@ bool D3D12Backend::BindTargets(const State& s, const ShaderInfo& ps, PipelineKey
     if (!count && !ds) return false;
     b.ds = ds;
     b.scale = b.rt ? b.rt->scale : ds->scale;
+    if (motion && ds && b.rt && b.rt->key == motion_.rt_key && b.rt->samples == 1) {
+        while (count < kMotionTarget) {
+            k.rt_formats[count] = kNullRtvFormat;
+            rtv[count++] = Rtv(kNullRtv);
+        }
+        Transition(motion_.drawn.Get(), motion_.drawn_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        rtv[count++] = Rtv(kMotionRtv);
+        k.motion = kMotionFormat;
+        b.motion = true;
+    }
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = ds ? Dsv(ds->view) : D3D12_CPU_DESCRIPTOR_HANDLE{};
     TargetViews views;
     for (uint32_t i = 0; i < count; i++) views.rtv[i] = rtv[i].ptr;
@@ -3153,10 +3236,20 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     k.ps = ps ? ps->key : 0;
     Bound bound;
     PipelineKey unbound = k;
-    if (!BindTargets(s, ps_info, k, bound)) return;
+    bool motion = MotionWanted(s, ps_info);
+    if (!BindTargets(s, ps_info, k, bound, motion)) return;
     if (ext_ && ext_->Bound(*this, s, bound.rt, bound.ds)) {
         k = unbound;
-        if (!BindTargets(s, ps_info, k, bound)) return;
+        if (!BindTargets(s, ps_info, k, bound, motion)) return;
+    }
+    if (bound.motion) {
+        vs_opt.motion = true;
+        ps_opt.motion = true;
+        vs = EnsureVariant(s.vs, vs_opt);
+        ps = EnsureVariant(s.ps, ps_opt);
+        if (!vs || !ps) return;
+        k.vs = vs->key;
+        k.ps = ps->key;
     }
     FillKeyStates(s, k);
     if (!k.ds_format) k.depth_control = 0;
@@ -3193,6 +3286,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     uint32_t b0 = k.blend[0];
     uint32_t src_blend = (b0 & 0x1FFF1FFF) != 0x00010001 ? Bits(b0, 0, 5) : 1;
     BindConstants(s, UploadStreams(a, vs->info, min, max), c, bound.rt, src_blend);
+    if (bound.motion) BindMotion(s, a, vs->info);
     D3D12_VIEWPORT vp{0, 0, std::ceil(bound.w * bound.scale), std::ceil(bound.h * bound.scale), 0, 1};
     D3D12_RECT sc = HostRect(GuestScissor(s, bound.w, bound.h), bound.scale);
     if (Latch(binds_.viewport, vp)) cl_->RSSetViewports(1, &vp);
@@ -3235,6 +3329,14 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
     }
     if (flags & kClearOcclusionScene) {
         BeginRayScene();
+        return;
+    }
+    if (flags & kClearMotionBegin) {
+        BeginMotion(s);
+        return;
+    }
+    if (flags & kClearMotionEnd) {
+        EndMotion(s);
         return;
     }
     g_perf.clears++;
@@ -3393,6 +3495,158 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
     cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cl_->DrawInstanced(3, 1, 0, 0);
     return true;
+}
+
+// Motion vectors
+
+// the scene's colour target: its world draws write motion beside it until EndMotion
+void D3D12Backend::BeginMotion(const State& s) {
+    motion_.active = false;
+    MotionCamera camera;
+    if (!TakeMotionCamera(camera)) return;
+    Target* rt = ColorTarget(s, 0, TargetHeight(s));
+    if (!rt || rt->samples != 1 || !EnsureMotionTargets(rt->w, rt->h)) {
+        motion_.has_last = false;
+        return;
+    }
+    float clip[16];
+    ClipMatrix(camera, clip);
+    MotionConstants c{};
+    if (!motion_.has_last || !Reprojection(clip, motion_.last_clip, c.reproject)) {
+        std::fill(std::begin(c.reproject), std::end(c.reproject), 0.0f);
+        for (int i = 0; i < 4; i++) c.reproject[i * 5] = 1;
+    }
+    std::memcpy(motion_.last_clip, clip, sizeof(clip));
+    std::memcpy(motion_.reproject, c.reproject, sizeof(c.reproject));
+    motion_.has_last = true;
+    for (uint32_t prev = 0; prev < 2; prev++) {
+        c.prev = prev;
+        motion_.consts[prev] = UploadConstants(&c, sizeof(c));
+    }
+    motion_history_.Begin();
+    Transition(motion_.drawn.Get(), motion_.drawn_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    const float none[4] = {kNoMotion, kNoMotion, 0, 0};
+    cl_->ClearRenderTargetView(Rtv(kMotionRtv), none, 0, nullptr);
+    motion_.rt_key = rt->key;
+    motion_.draws = 0;
+    motion_.matched = 0;
+    motion_.active = true;
+}
+
+void D3D12Backend::EndMotion(const State& s) {
+    if (!std::exchange(motion_.active, false)) return;
+    uint32_t height = TargetHeight(s);
+    Target* rt = ColorTarget(s, 0, height);
+    Target* ds = DepthTarget(s, height);
+    if (!rt || !ds || rt->key != motion_.rt_key || ds->samples != 1) return;
+    if (ds->w != motion_.w || ds->h != motion_.h) return;
+    Bound b{TargetWidth(s), height, rt->scale};
+    DrawConstants d;
+    FillDrawConstants(s, b, d);
+    CompleteMotion(*ds, d);
+    if (cap_) {
+        std::fprintf(cap_, "motion: %u world draws, %u matched to last frame\n", motion_.draws, motion_.matched);
+        char name[32];
+        std::snprintf(name, sizeof(name), "%04u_motion", cap_i_++);
+        CapSave(motion_.done.Get(), motion_.done_state, kMotionFormat, 1, false, motion_.w, motion_.h, 50, name);
+    }
+}
+
+bool D3D12Backend::EnsureMotionTargets(uint32_t w, uint32_t h) {
+    if (motion_.done && motion_.w == w && motion_.h == h) return true;
+    motion_.w = 0;
+    motion_.h = 0;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(kMotionFormat, w, h);
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    ComPtr<ID3D12Resource>* res[2] = {&motion_.drawn, &motion_.done};
+    D3D12_RESOURCE_STATES* state[2] = {&motion_.drawn_state, &motion_.done_state};
+    for (int i = 0; i < 2; i++) {
+        if (*res[i]) Release(std::move(*res[i]));
+        *state[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, *state[i], nullptr,
+                                                 IID_PPV_ARGS(&*res[i])))) {
+            LOGE("D3D12: no %ux%u motion vector target", w, h);
+            return false;
+        }
+        dev_->CreateRenderTargetView(res[i]->Get(), nullptr, Rtv(kMotionRtv + i));
+    }
+    motion_.w = w;
+    motion_.h = h;
+    return true;
+}
+
+// a world draw that writes depth and its colour unblended
+bool D3D12Backend::MotionWanted(const State& s, const ShaderInfo& ps) const {
+    if (!motion_.active || !(ps.exports & 1) || !Bits(s.Reg(kRbColorMask), 0, 4)) return false;
+    uint32_t depth = s.Reg(kRbDepthControl);
+    bool writes_depth = Bits(depth, 1, 1) && Bits(depth, 2, 1);
+    bool blended = (s.Reg(kRbBlendControl0) & 0x1FFF1FFF) != 0x00010001;
+    return writes_depth && !blended;
+}
+
+// the draw's vertex constants last frame when a draw of the same signature and object matches, else its reprojection
+void D3D12Backend::BindMotion(const State& s, const DrawArgs& a, const ShaderInfo& vs) {
+    constexpr uint32_t kObjectPosition = 128;  // the render item's position, 825019E0
+    constexpr uint32_t kPositionBit = kObjectPosition / 2;
+    uint64_t stream = 0;
+    uint64_t first = 0;
+    if (!vs.fetches.empty() && a.streams) {
+        stream = uint64_t(uintptr_t(a.streams[0].data));
+        first = a.streams[0].first;
+    }
+    const uint64_t parts[6] = {uint64_t(uintptr_t(s.vs)), uint64_t(uintptr_t(a.indices)),
+                               uint64_t(a.count) << 32 | a.start, uint64_t(uint32_t(a.base_vertex)), stream, first};
+    uint64_t signature = Hash64(parts, sizeof(parts));
+    float pos[3];
+    bool placed = vs.constants[kPositionBit / 64] >> (kPositionBit % 64) & 1;
+    const uint8_t* at = s.consts + kObjectPosition * 16;
+    for (uint32_t i = 0; i < 3 && placed; i++) pos[i] = std::bit_cast<float>(Be32(at + i * 4));
+    const MotionHistory::Draw* last = motion_history_.Match(signature, placed ? pos : nullptr);
+    motion_history_.Record(signature, placed ? pos : nullptr, vs.constants, s.consts);
+    D3D12_GPU_VIRTUAL_ADDRESS consts = const_gpu_[kRootVsConsts];
+    if (last) {
+        Alloc up = Upload(kConstBytes, kCbAlign);
+        motion_history_.Copy(*last, up.cpu);
+        consts = up.gpu;
+        motion_.matched++;
+    }
+    motion_.draws++;
+    if (Latch(binds_.roots[kRootPrevConsts], consts)) cl_->SetGraphicsRootConstantBufferView(kRootPrevConsts, consts);
+    D3D12_GPU_VIRTUAL_ADDRESS mc = motion_.consts[last ? 1 : 0];
+    if (Latch(binds_.roots[kRootMotion], mc)) cl_->SetGraphicsRootConstantBufferView(kRootMotion, mc);
+}
+
+// kMotionHlsl into the completed target; d maps the title's ndc over the depth target as its draws did
+void D3D12Backend::CompleteMotion(Target& depth, const DrawConstants& d) {
+    ID3D12PipelineState* pso = EnsurePassPipeline(kMotionHlsl, "vs", "motion", kMotionFormat, -1);
+    if (!pso) return;
+    Transition(depth.res.Get(), depth.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(motion_.drawn.Get(), motion_.drawn_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(motion_.done.Get(), motion_.done_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    uint32_t views = AllocViews(kPsTextures);
+    ShaderView(depth.res.Get(), DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS, views);
+    ShaderView(motion_.drawn.Get(), kMotionFormat, views + 1);
+    NullViews(views + 2, kPsTextures - 2);
+    float c[24];
+    std::memcpy(c, motion_.reproject, sizeof(motion_.reproject));
+    // as OcclusionConstants: a pixel centre's host ndc back through the viewport to the title's
+    const float rest[8] = {2.0f / float(motion_.w) / d.ndc_scale[0], -2.0f / float(motion_.h) / d.ndc_scale[1],
+                           (-1 - d.ndc_offset[0]) / d.ndc_scale[0], (1 - d.ndc_offset[1]) / d.ndc_scale[1],
+                           d.ndc_scale[2], d.ndc_offset[2], d.ndc_scale[0] * 0.5f, d.ndc_scale[1] * -0.5f};
+    std::memcpy(c + 16, rest, sizeof(rest));
+    D3D12_CPU_DESCRIPTOR_HANDLE rh = Rtv(kMotionRtv + 1);
+    cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
+    D3D12_VIEWPORT vp{0, 0, float(motion_.w), float(motion_.h), 0, 1};
+    D3D12_RECT sc{0, 0, LONG(motion_.w), LONG(motion_.h)};
+    cl_->RSSetViewports(1, &vp);
+    cl_->RSSetScissorRects(1, &sc);
+    cl_->SetPipelineState(pso);
+    cl_->SetGraphicsRootConstantBufferView(kRootFlow, UploadConstants(c, sizeof(c)));
+    cl_->SetGraphicsRootDescriptorTable(kRootPsViews, ViewGuest(views));
+    cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cl_->DrawInstanced(3, 1, 0, 0);
+    Unbind();
 }
 
 // RTAO

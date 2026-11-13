@@ -19,6 +19,8 @@
 #include <vector>
 
 #include "app/app.h"
+#include "d3d/dlss.h"
+#include "d3d/motion.h"
 #include "d3d/occlusion.h"
 #include "d3d/readback.h"
 #include "gpu/backend.h"
@@ -613,6 +615,25 @@ void OcclusionScene(uint32_t dev) {
     gpu::State s;
     ReadRegisters(dev, s);
     Backend()->Clear(s, gpu::kClearOcclusionScene, color, 0, 0, nullptr);
+}
+
+// the camera goes ahead of its marker, under the same lock, so the render thread takes them in order
+void MotionBegin(uint32_t dev, const gpu::MotionCamera& c) {
+    if (!dlss::SuperResolution() || !R32(dev + kDevTargets) || !R32(dev + kDevDepth)) return;
+    const float color[4] = {};
+    std::lock_guard lock(g_lock);
+    gpu::PushMotionCamera(c);
+    gpu::State s;
+    ReadRegisters(dev, s);
+    Backend()->Clear(s, gpu::kClearMotionBegin, color, 0, 0, nullptr);
+}
+
+void MotionEnd(uint32_t dev) {
+    const float color[4] = {};
+    std::lock_guard lock(g_lock);
+    gpu::State s;
+    ReadRegisters(dev, s);
+    Backend()->Clear(s, gpu::kClearMotionEnd, color, 0, 0, nullptr);
 }
 
 // Shaders: the library makes its object, the host translates the container's microcode as created

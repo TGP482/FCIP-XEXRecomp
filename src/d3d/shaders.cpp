@@ -3,6 +3,7 @@
 #include "common/render_pass.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 
@@ -406,6 +407,48 @@ float4 VertexFetch(uint k, float index) {
 
 )";
 
+// motion vertex shaders run again over the previous constants, or reproject the title's clip position
+const char* kMotionPrelude = R"(cbuffer PrevConsts : register(b4) { float4 cp[256]; };
+cbuffer Motion : register(b5) {
+    row_major float4x4 g_reproject;
+    uint g_prev;
+};
+
+void Restart(uint id) {
+    [unroll] for (uint k = 0; k < 64; k++) r[k] = 0;
+    ps = 0;
+    p = false;
+    a0 = 0;
+    aL = 0;
+    lod = 0;
+    grad_h = 0;
+    grad_v = 0;
+    o_pos = 0;
+    pn = false;
+    pn_set = false;
+    a0n = 0;
+    a0n_set = false;
+    r[0].x = float(id);
+}
+
+)";
+
+// the body over the previous constants: each c[ that starts a name becomes cp[
+std::string PrevBody(const std::string& body) {
+    std::string out;
+    out.reserve(body.size() + body.size() / 8);
+    for (size_t i = 0; i < body.size(); i++) {
+        bool starts = i == 0 || !(std::isalnum(uint8_t(body[i - 1])) || body[i - 1] == '_');
+        if (starts && body.compare(i, 2, "c[") == 0) {
+            out += "cp[";
+            i++;
+            continue;
+        }
+        out += body[i];
+    }
+    return out;
+}
+
 const char* kPixelPrelude = R"(static float4 oC[4];
 static float oDepth;
 
@@ -448,6 +491,7 @@ private:
     uint32_t Binding(const Fetch& f);
     std::string Head() const;
     std::string Entry() const;
+    std::string MotionEntry() const;
 
     ShaderStage stage_;
     const uint32_t* code_;
@@ -970,6 +1014,7 @@ void CommitAlu() {
 )";
     s += Pixel() ? "float Kill(bool c) { if (c) discard; return c ? 1 : 0; }\n"
                  : "float Kill(bool c) { return c ? 1 : 0; }\n";
+    if (opt_.motion && !Pixel()) s += kMotionPrelude;
     for (uint32_t i = 0; i < info_.textures.size(); i++) {
         static const char* kTypes[4] = {"Texture2D", "Texture2D", "Texture3D", "TextureCube"};
         s += F("%s<float4> t%u : register(t%u);\nSamplerState s%u : register(s%u);\n",
@@ -979,8 +1024,60 @@ void CommitAlu() {
     return s;
 }
 
+// the vertex shader of a motion draw: its position, and where it was last frame
+std::string Translator::MotionEntry() const {
+    return R"(
+// the title's clip space position the host divides
+float4 TitleClip(float4 pos) {
+)" + Hooks().Position() + R"(    // VTX_W0_FMT clear: w is given as 1/w
+    if (!(g_vtx_fmt & 4)) pos.w = 1 / pos.w;
+    if ((g_vtx_fmt & 1) && (pos.w == 0 || !isfinite(pos.w))) pos.w = 1;
+    // xy and z given already divided by w go back to clip space so the host's divide returns them
+    if (g_vtx_fmt & 1) pos.xy *= pos.w;
+    if (g_vtx_fmt & 2) pos.z *= pos.w;
+    return pos;
+}
+
+float4 HostClip(float4 pos) {
+    pos.xyz = pos.xyz * g_ndc_scale.xyz + g_ndc_offset.xyz * pos.w;
+    return pos;
+}
+
+struct VOut {
+    float4 pos : SV_Position;
+    float4 o[16] : TEXCOORD0;
+    float4 cur : TEXCOORD16;
+    float4 prev : TEXCOORD17;
+    float4 clip0 : SV_ClipDistance0;
+    float2 clip1 : SV_ClipDistance1;
+};
+
+VOut main(uint id : SV_VertexID) {
+    r[0].x = float(id);
+    Run();
+    float4 pos = TitleClip(o_pos);
+    VOut v;
+    v.clip0 = float4(dot(pos, g_clip[0]), dot(pos, g_clip[1]), dot(pos, g_clip[2]), dot(pos, g_clip[3]));
+    v.clip1 = float2(dot(pos, g_clip[4]), dot(pos, g_clip[5]));
+    v.pos = HostClip(pos);
+    v.o = o;
+    v.cur = v.pos;
+    // the run over the previous constants overwrites every register, so it goes last
+    float4 prev = mul(pos, g_reproject);
+    if (g_prev) {
+        Restart(id);
+        RunPrev();
+        prev = TitleClip(o_pos);
+    }
+    v.prev = HostClip(prev);
+    return v;
+}
+)";
+}
+
 std::string Translator::Entry() const {
     if (!Pixel()) {
+        if (opt_.motion) return MotionEntry();
         return R"(
 struct VOut {
     float4 pos : SV_Position;
@@ -1013,7 +1110,9 @@ VOut main(uint id : SV_VertexID) {
 struct PIn {
     float4 pos : SV_Position;
     float4 v[16] : TEXCOORD0;
-    bool front : SV_IsFrontFace;
+)";
+    if (opt_.motion) s += "    float4 cur : TEXCOORD16;\n    float4 prev : TEXCOORD17;\n";
+    s += R"(    bool front : SV_IsFrontFace;
 };
 
 struct POut {
@@ -1023,6 +1122,7 @@ struct POut {
     }
     if (info_.writes_depth) s += "    float depth : SV_Depth;\n";
     if (!info_.exports && !info_.writes_depth) s += "    float4 c0 : SV_Target0;\n";
+    if (opt_.motion) s += F("    float2 motion : SV_Target%u;\n", kMotionTarget);
     s += R"(};
 
 POut main(PIn i) {
@@ -1056,6 +1156,8 @@ POut main(PIn i) {
     }
     if (info_.writes_depth) s += "    o.depth = oDepth;\n";
     if (!info_.exports && !info_.writes_depth) s += "    o.c0 = 0;\n";
+    // where the pixel was last frame, in the target's uv
+    if (opt_.motion) s += "    o.motion = (i.prev.xy / i.prev.w - i.cur.xy / i.cur.w) * float2(0.5, -0.5);\n";
     s += "    return o;\n}\n";
     return s;
 }
@@ -1067,7 +1169,8 @@ std::string Translator::Translate() {
     if (branches) EmitDispatch(cfs);
     else EmitStraight(cfs);
     info_.kills = body_.find("Kill(") != std::string::npos;
-    return Head() + "\nvoid Run() {\n" + body_ + "}\n" + Entry();
+    std::string prev = opt_.motion && !Pixel() ? "\nvoid RunPrev() {\n" + PrevBody(body_) + "}\n" : "";
+    return Head() + "\nvoid Run() {\n" + body_ + "}\n" + prev + Entry();
 }
 
 }  // namespace
