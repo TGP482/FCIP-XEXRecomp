@@ -2891,6 +2891,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         c.ext[0] = float(sun_maps_.distance);
         c.ext[1] = float(sun_maps_.count);
         c.ext[2] = float(sun_maps_.side);
+        c.ext[3] = float(sun_maps_.near_side);
     }
     // the source factor of colour 0, 1 without blending
     uint32_t b0 = k.blend[0];

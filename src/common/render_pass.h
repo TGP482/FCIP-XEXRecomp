@@ -28,7 +28,8 @@ struct SunMaps {
     uint32_t bases[kSunMaps] = {};
     uint32_t count = 0;
     uint32_t distance = 0;
-    uint32_t side = 0;  // guest side of every map
+    uint32_t side = 0;       // the far map's guest side, half inside a vis area
+    uint32_t near_side = 0;  // the sharper maps' guest side
 };
 constexpr int kSunFar = int(kSunMaps);  // SunResolved's answer for the far map
 

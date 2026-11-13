@@ -4,28 +4,28 @@
 // new size allocates), the viewport with 1/w and 1/h, the shadow camera's texel snapping, the draw extent, and the
 // pass struct's own copy. The fetch constant packs each dimension into 13 bits, so 8192 is the ceiling.
 //
-// The setting is the map's edge on the host, which draws every guest pixel at the render scale, so the guest side is
-// the setting over the render scale; 0 keeps the stock side, which then follows the render scale.
+// The setting is the map's guest side; the renderer draws it at the render scale like every target, short of the host's
+// 16384 texture edge, so its texels shrink with the output as the screen's do. Automatic is the stock side. The four
+// maps drawn inside a vis area take half the side, as the stock 672 against 1344.
 //
 // Only the host reads a map, so its guest texture is never backed above the stock side: larger ones outgrow guest
-// physical memory (144 MB at 6144), and a cascade takes six. While the depth is resolved its header carries the chosen
-// size, as the renderer sizes its copy from it. A new side leaves the old surfaces in the pool, which frees unused
-// ones only when the screen size changes, so it is told the screen changed.
+// physical memory (144 MB at 6144), and a cascade takes six. Its header carries the chosen size from creation on: the
+// receivers take their texel offsets from it and the renderer sizes its copy from it. A new side leaves the old
+// surfaces in the pool, which frees unused ones only when the screen size changes, so it is told the screen changed.
 //
 // Past 1x shadow distance sharper maps are drawn first, at 1x, 2x, 4x and on of the stock radius while they divide the
 // distance, each a whole run of the update into another pool surface (the pool frees its surfaces after the camera
 // pass), so detail halves from one map to the next. Every sun camera sits where the stock radius puts it, on the far
 // map's texel grid, with the far map's depth range, and is as wide as its radius. The far map draws last, so the
 // receivers keep its texture and matrix. The renderer finds the maps by their resolve addresses and reads the sharpest
-// one that covers the point. Inside a vis area every run draws four light frustums at 672, the sun among them; only
-// the sun's resolve is recorded.
+// one that covers the point. Inside a vis area the far run draws the game's four light frustums, the sun among them;
+// the sharper runs draw one frustum, the top scored light, normally the sun. Only the sun's resolves are recorded.
 #include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstring>
 
-#include "app/app.h"
 #include "common/draw_distance.h"
 #include "common/render_pass.h"
 #include "common/settings.h"
@@ -45,7 +45,6 @@ constexpr uint32_t kPassHeight = 0x20;
 constexpr uint32_t kPassType = 0x10;
 constexpr uint32_t kFetchAddress = 4;  // fetch constant dword 1: the base from bit 12
 constexpr uint32_t kFetchSize = 8;     // fetch constant dword 2: width - 1 and height - 1, 13 bits each
-constexpr uint32_t kTitleHeight = 720;  // the guest frame the render scale is taken from
 // CCamera: position, view axes, far plane and its copy, the orthographic projection's size
 constexpr uint32_t kCameraPosition = 0x4;
 constexpr uint32_t kCameraForward = 0x1C;
@@ -102,14 +101,13 @@ fcip::SunMaps g_drawn;    // render thread
 // a map's radius over the stock one
 uint32_t Reach(int map) { return map == kFarMap ? g_distance.load() : 1u << map; }
 
-// the replacement side, 0 when this is not the shadow map or the setting keeps it
+// the replacement side, 0 when this is not the shadow map or the side stays
 uint32_t Wanted(uint32_t side) {
+    if (side != kStockSide && side != kStockSideQuad) return 0;
     uint32_t edge = fcip::Get().shadow_resolution;
     if (edge == 0) return 0;
-    if (side != kStockSide && side != kStockSideQuad) return 0;
-    double guest = double(side) * edge / (kStockSide * app::RenderScale(kTitleHeight));
-    uint64_t scaled = (uint64_t(guest) + 7) & ~uint64_t(7);
-    scaled = std::min<uint64_t>(scaled, kMaxSide);
+    uint64_t want = side == kStockSideQuad ? edge / 2 : edge;
+    uint64_t scaled = std::min<uint64_t>((want + 7) & ~uint64_t(7), kMaxSide);
     return scaled == side ? 0 : uint32_t(scaled);
 }
 
@@ -178,9 +176,13 @@ PPC_FUNC(GUEST(Shadow_Surface)) {
 
 // texture create under the pool miss, r3 r4 width and height
 PPC_FUNC(GUEST(Shadow_Texture)) {
-    if (t_side && t_backed != t_side && uint32_t(ctx.r[3]) == t_side && uint32_t(ctx.r[4]) == t_side)
-        ctx.r[3] = ctx.r[4] = t_backed;
+    bool backed = t_side && t_backed != t_side && uint32_t(ctx.r[3]) == t_side && uint32_t(ctx.r[4]) == t_side;
+    if (backed) ctx.r[3] = ctx.r[4] = t_backed;
     GUEST_ORIG(Shadow_Texture)(ctx, base);
+    uint32_t tex = uint32_t(ctx.r[3]);
+    if (!backed || tex < 0x10000u || tex >= 0xC0000000u) return;
+    uint32_t size = tex + XDK_Texture_FetchConstant + kFetchSize;
+    W32(size, (R32(size) & ~0x3FFFFFFu) | (t_side - 1) | (t_side - 1) << 13);
 }
 
 // size by handle, r5 r6 point at width and height; the bind (vtable +0x1EC) sets the viewport and rect from it
@@ -283,9 +285,6 @@ PPC_FUNC(GUEST(Shadow_Resolve)) {
     uint32_t bits = ok ? R32(size) : 0;
     uint32_t w = (bits & 0x1FFF) + 1;
     uint32_t h = (bits >> 13 & 0x1FFF) + 1;
-    uint32_t side = ok && w == h ? Wanted(w) : 0;
-    if (side <= w) side = 0;
-    if (side) W32(size, (bits & ~0x3FFFFFFu) | (side - 1) | (side - 1) << 13);
     // recorded before the resolve is queued, so the render thread finds it
     if (ok && w == h && t_sun && t_map != kNoMap) {
         uint32_t at = mem::PhysicalFromVirtual(R32(tex + XDK_Texture_FetchConstant + kFetchAddress) & 0xFFFFF000);
@@ -295,7 +294,6 @@ PPC_FUNC(GUEST(Shadow_Resolve)) {
         t_sun = false;  // the lights after the sun in a quad run
     }
     GUEST_ORIG(Shadow_Resolve)(ctx, base);
-    if (side) W32(size, bits);
 }
 
 namespace {
@@ -333,7 +331,10 @@ void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     while (maps < kSunMaps && (1u << maps) < distance && distance % (1u << maps) == 0) maps++;
     g_distance = maps ? distance : 0;
     g_maps = maps;
+    uint64_t quad = ctx.r[6];
+    ctx.r[6] = 0;  // one frustum: the sharper maps hold only the sun
     for (uint32_t i = 0; i < maps; i++) RunCascade(ctx, base, int(i));
+    ctx.r[6] = quad;
     RunShadowMaps(ctx, base, kFarMap);
 }
 
@@ -346,6 +347,7 @@ int fcip::SunResolved(uint32_t address) {
         g_matched = i + 1;
         if (r.map != kFarMap) {
             g_drawn.bases[r.map] = address;
+            g_drawn.near_side = r.side;
             return r.map;
         }
         g_drawn.far_base = address;
