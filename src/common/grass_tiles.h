@@ -16,5 +16,8 @@ Admission Admit(PPCContext& ctx, uint32_t renderer, uint32_t tiles, uint32_t par
 bool Lookup(PPCContext& ctx, uint32_t renderer, uint32_t params, uint32_t& desc);
 // the miss path after the blade copy
 void Refilled(uint32_t renderer, uint32_t params);
+// how many times the renderer's entries were made or freed, and how many cache resets, so far
+uint32_t Generation();
+uint32_t Resets();
 
 }  // namespace fcip::grass

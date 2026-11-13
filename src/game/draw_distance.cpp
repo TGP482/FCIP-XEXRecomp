@@ -6,6 +6,7 @@
 
 #include "common/draw_distance.h"
 #include "common/grass_tiles.h"
+#include "game/grass_blocks.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -99,6 +100,10 @@ void GrassSectorRing(PPCContext& ctx, uint8_t*) {
 // the tile through, 512 skips it
 void GrassTileBudget(PPCContext& ctx, uint8_t*) {
     using fcip::grass::Admission;
+    if (fcip::grass_blocks::Owns(uint32_t(ctx.r[27]))) {
+        ctx.r[11] = 0;
+        return;
+    }
     Admission a = fcip::grass::Admit(ctx, uint32_t(ctx.r[30]), uint32_t(ctx.r[11]), uint32_t(ctx.r[27]));
     if (a == Admission::Take) ctx.r[11] = 0;
     else if (a == Admission::Wait) ctx.r[11] = fcip::grass::kStockEntries;
@@ -106,6 +111,10 @@ void GrassTileBudget(PPCContext& ctx, uint8_t*) {
 
 // replaces the cache scan: both targets read r23 as entry+4, the miss clears stream 1 from r4 to r7
 bool GrassTileLookup(PPCContext& ctx, uint8_t*) {
+    if (fcip::grass_blocks::Owns(uint32_t(ctx.r[27]))) {
+        ctx.r[23] = fcip::grass_blocks::Desc();
+        return true;
+    }
     uint32_t desc = 0;
     bool hit = fcip::grass::Lookup(ctx, uint32_t(ctx.r[30]), uint32_t(ctx.r[27]), desc);
     ctx.r[23] = desc;

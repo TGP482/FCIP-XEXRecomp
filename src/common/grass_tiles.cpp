@@ -413,6 +413,9 @@ void Refilled(uint32_t renderer, uint32_t params) {
     }
 }
 
+uint32_t Generation() { return g_attach; }
+uint32_t Resets() { return g_forget; }
+
 }  // namespace fcip::grass
 
 PPC_EXTERN_FUNC(GUEST_ORIG(Grass_Init));
