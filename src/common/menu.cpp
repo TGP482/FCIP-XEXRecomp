@@ -54,7 +54,7 @@ constexpr uint32_t kAudioOutputs[] = {audio::kOutputAuto, audio::kOutputMono, au
                                       audio::kOutputSurround};
 const char* const kAudioOutputNames[] = {"AUTOMATIC", "MONO", "2.0 STEREO", "5.1 SURROUND"};
 constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, 360, app::kFpsCapRefresh, 0};
-constexpr uint32_t kShadowSizes[] = {0, 512, 1024, 1344, 2048, 3072, 4096, 6144, 8192};
+constexpr uint32_t kShadowSizes[] = {0, 1024, 1344, 2048, 3072, 4096, 6144, 8192};
 constexpr uint32_t kDistances[] = {1, 2, 4, 6, 8, 12, 16, 32};
 
 // rows::Choices reads a row's values by picking each index in turn; -1 steps as usual
@@ -138,7 +138,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kMsaa, "MSAA", "Smooths jagged edges with 2x, 4x or 8x MSAA in place of the game's own 2x"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
-    {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 512 to 8192, 1344 is stock, automatic follows the render resolution"},
+    {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},
     {Kind::Value, kShadowDistance, "SHADOW DISTANCE", "Scales the area around the player that casts sun shadows"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
     {Kind::Heading, -1, "DRAW DISTANCE", "How far objects, grass and detail are drawn"},
@@ -401,7 +401,7 @@ void StepInputRow(int id, int step, char (&text)[64]) {
         std::snprintf(text, sizeof(text), v == 1 ? "DEFAULT" : "%ux", v);
     } else if (id == kShadowResolution) {
         uint32_t size = kShadowSizes[StepTable(kShadowSizes, g.shadow_resolution, step)];
-        if (size) std::snprintf(text, sizeof(text), size == 1344 ? "%u (DEFAULT)" : "%u", size);
+        if (size) std::snprintf(text, sizeof(text), size == 1344 ? "%ux%u (DEFAULT)" : "%ux%u", size, size);
         else std::snprintf(text, sizeof(text), "AUTOMATIC");
     } else if (id == kFov || id == kViewmodelFov) {
         // 45 to 140 in steps of 1

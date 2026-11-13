@@ -1070,7 +1070,7 @@ private:
     ID3D12PipelineState* EnsureOcclusionPipeline(const AoPass& p, bool ms_depth);
     bool OcclusionPass(const AoPass& p, Target& depth, float c[kAoConstants], const D3D12_RECT& rect);
     void CopyResolve(Target& src, Resolved& dst, const ResolveArgs& r);
-    Resolved& EnsureResolved(uint64_t key, DXGI_FORMAT format, uint32_t w, uint32_t h);
+    Resolved& EnsureResolved(uint64_t key, DXGI_FORMAT format, uint32_t w, uint32_t h, float scale);
     void MakeResolved(Resolved& dst, DXGI_FORMAT format, uint32_t w, uint32_t h, float scale);
     void ReleaseResolved(Resolved& r);
     void DropResolved(uint32_t base);
@@ -1624,7 +1624,9 @@ Target* D3D12Backend::EnsureTarget(const Surface& sf, bool depth, uint32_t width
     t.key = key;
     t.width = width;
     t.height = std::max(height, old.height);
-    t.scale = scale_;
+    // the render scale, less where the target would pass the host's largest texture edge
+    float edge = float(D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION);
+    t.scale = std::min(scale_, edge / float(std::max(t.width, t.height)));
     t.fmt = depth ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : ColorFormat(sf.format);
     if (ext_) ext_->MakeTarget(sf, depth, t.width, t.height, t.scale, t.fmt);
     t.w = uint32_t(std::ceil(t.width * t.scale));
@@ -3077,7 +3079,7 @@ void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
         uint32_t w = std::max(r.dst_pitch, 1u);
         uint32_t h = std::max(r.dst_height, 1u);
         uint64_t key = ResolvedKey(r.dst_base, src->key);
-        Resolved& dst = EnsureResolved(key, fi.host, w, h);
+        Resolved& dst = EnsureResolved(key, fi.host, w, h, src->scale);
         if (dst.res) {
             CopyResolve(*src, dst, r);
             KeepBlocks(*src, dst, r);
@@ -3102,9 +3104,9 @@ void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
 }
 
 // the host texture read in place of guest memory, made again when the format or size changes
-Resolved& D3D12Backend::EnsureResolved(uint64_t key, DXGI_FORMAT format, uint32_t w, uint32_t h) {
+Resolved& D3D12Backend::EnsureResolved(uint64_t key, DXGI_FORMAT format, uint32_t w, uint32_t h, float scale) {
     Resolved& dst = resolved_[key];
-    MakeResolved(dst, format, w, h, scale_);
+    MakeResolved(dst, format, w, h, scale);
     return dst;
 }
 
@@ -3195,7 +3197,7 @@ void D3D12Backend::KeepBlocks(Target& src, Resolved& dst, const ResolveArgs& r) 
     Resolved& block = blocks_[r.dst_base];
     width = std::max(width, block.width);
     height = std::max(height, block.height);
-    MakeResolved(block, dst.format, width, height, scale_);
+    MakeResolved(block, dst.format, width, height, dst.scale);
     if (!block.res) return;
     // the texture over what earlier resolves left past it, then this resolve's blocks
     Transition(dst.res.Get(), dst.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -3365,17 +3367,18 @@ void D3D12Backend::CopyResolve(Target& src, Resolved& dst, const ResolveArgs& r)
     Transition(src.res.Get(), src.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     dev_->CreateShaderResourceView(src.res.Get(), &v, ViewCpu(views));
     Transition(dst.res.Get(), dst.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    // source in its own host pixels, destination at the render scale
+    // source and destination each in their own host pixels
     float ss = src.scale;
     float cb[8] = {r.rect.x1 * ss, r.rect.y1 * ss, (r.rect.x2 - r.rect.x1) * ss, (r.rect.y2 - r.rect.y1) * ss,
                    float(src.samples), src.depth ? 1.0f : 0.0f, 0, 0};
     D3D12_GPU_VIRTUAL_ADDRESS addr = UploadConstants(cb, sizeof(cb));
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = Rtv(dst.view);
     cl_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-    float dw = (r.rect.x2 - r.rect.x1) * scale_;
-    float dh = (r.rect.y2 - r.rect.y1) * scale_;
-    D3D12_VIEWPORT vp{r.dst_x * scale_, r.dst_y * scale_, dw, dh, 0, 1};
-    D3D12_RECT sc{0, 0, LONG(std::ceil(dst.width * scale_)), LONG(std::ceil(dst.height * scale_))};
+    float ds = dst.scale;
+    float dw = (r.rect.x2 - r.rect.x1) * ds;
+    float dh = (r.rect.y2 - r.rect.y1) * ds;
+    D3D12_VIEWPORT vp{r.dst_x * ds, r.dst_y * ds, dw, dh, 0, 1};
+    D3D12_RECT sc{0, 0, LONG(std::ceil(dst.width * ds)), LONG(std::ceil(dst.height * ds))};
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &sc);
     cl_->SetPipelineState(pso);
