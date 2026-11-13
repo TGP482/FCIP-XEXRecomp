@@ -49,7 +49,7 @@ constexpr uint32_t kMsaaValues[] = {0, 2, 4, 8};
 const char* const kMsaaNames[] = {"OFF", "2x", "4x", "8x"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
 const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
-const char* const kAmbientOcclusionNames[] = {"OFF", "SSAO", "GTAO"};
+const char* const kAmbientOcclusionNames[] = {"OFF", "SSAO", "GTAO", "RTAO"};
 constexpr uint32_t kAudioOutputs[] = {audio::kOutputAuto, audio::kOutputMono, audio::kOutputStereo,
                                       audio::kOutputSurround};
 const char* const kAudioOutputNames[] = {"AUTOMATIC", "MONO", "2.0 STEREO", "5.1 SURROUND"};
@@ -134,7 +134,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kColourBlind, "COLOUR BLIND MODE", "Adjusts the colours for protanopia, deuteranopia or tritanopia"},
     {Kind::Heading, -1, "GRAPHICS", "Antialiasing, ambient occlusion, texture filtering and shadows"},
     {Kind::Value, kAmbientOcclusion, "AMBIENT OCCLUSION",
-     "Shades the world's creases and corners, SSAO or the more accurate GTAO, characters and fog left alone"},
+     "Shades the world's creases and corners, SSAO, the more accurate GTAO or ray traced RTAO, characters and fog left alone"},
     {Kind::Value, kMsaa, "MSAA", "Smooths jagged edges with 2x, 4x or 8x MSAA in place of the game's own 2x"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},

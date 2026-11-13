@@ -607,6 +607,14 @@ void Occlusion(uint32_t dev, const gpu::OcclusionArgs& a) {
     Backend()->Clear(s, gpu::kClearOcclusion, color, z, stencil, &rect);
 }
 
+void OcclusionScene(uint32_t dev) {
+    const float color[4] = {};
+    std::lock_guard lock(g_lock);
+    gpu::State s;
+    ReadRegisters(dev, s);
+    Backend()->Clear(s, gpu::kClearOcclusionScene, color, 0, 0, nullptr);
+}
+
 // Shaders: the library makes its object, the host translates the container's microcode as created
 HLE_AFTER(D3DDevice_CreateVertexShader) { CreateShader(a[0], uint32_t(ctx.r[3]), true); }
 HLE_AFTER(D3DDevice_CreatePixelShader) { CreateShader(a[0], uint32_t(ctx.r[3]), false); }

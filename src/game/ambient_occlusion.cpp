@@ -3,7 +3,7 @@
 // 9, 10 and 13 by table 0x8204AEB8; the ocean is on 7 and 11). In the camera's pass the characters (skinned items and
 // the characters' pipeline) move to the end of layer 4 and occlusion goes in before the first item past the world, so
 // the characters, the blended layers and the ocean land on top. The fog is linear over view distance, from the
-// renderer's constant block.
+// renderer's constant block. RTAO traces the world's draws from the start of the camera's list to that point.
 #include <cmath>
 
 #include "common/render_pass.h"
@@ -51,7 +51,6 @@ constexpr uint32_t kLastWorldLayer = 4;
 constexpr uint32_t kLastPipeline = 0x1F;
 constexpr uint32_t kLayerAndPipeline = 0xFF800;  // key bits 11 to 19
 constexpr uint32_t kMovedKey = kLastWorldLayer << kLayerShift | kLastPipeline << kPipelineShift;
-constexpr uint32_t kGtao = 2;  // the setting, 1 SSAO
 
 // the registry's pipelines whose items may be characters
 struct Pipelines {
@@ -141,7 +140,7 @@ void Occlude() {
     uint32_t g = ColourByte(block + kBlockFogColour + 4);
     uint32_t b = ColourByte(block + kBlockFogColour + 8);
     a.fog_colour = r << 16 | g << 8 | b;
-    a.gtao = fcip::Get().ambient_occlusion == kGtao;
+    a.method = fcip::Get().ambient_occlusion;
     d3d::Occlusion(R32(SYM_Device_pointer), a);
 }
 
@@ -174,7 +173,10 @@ PPC_FUNC(GUEST(Scene_Push)) {
 
 // the list drawn in key order, r3 the constant block; occlusion goes in at the end when nothing past the world came
 PPC_FUNC(GUEST(Scene_Draw)) {
-    if (Enabled()) t_draw_list = uint32_t(ctx.r[3]) + kBlockList;
+    if (Enabled()) {
+        t_draw_list = uint32_t(ctx.r[3]) + kBlockList;
+        if (fcip::Get().ambient_occlusion == gpu::kAoRtao) d3d::OcclusionScene(R32(SYM_Device_pointer));
+    }
     GUEST_ORIG(Scene_Draw)(ctx, base);
     if (t_draw_list) Occlude();
 }

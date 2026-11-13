@@ -9,6 +9,10 @@
 namespace gpu {
 
 constexpr uint32_t kClearOcclusion = 0x100;
+constexpr uint32_t kClearOcclusionScene = 0x200;  // RTAO traces the world drawn from here to the occlusion
+
+// the ambient occlusion setting
+enum : uint32_t { kAoSsao = 1, kAoGtao = 2, kAoRtao = 3 };
 
 struct OcclusionArgs {
     float proj[4] = {};  // 1 / x scale, 1 / y scale, x and y centre: view x = (ndc x - centre) / scale * distance
@@ -17,7 +21,7 @@ struct OcclusionArgs {
     float fog_scale = 0;  // the fogged share = saturate(scale * view distance + bias)
     float fog_bias = 0;
     uint32_t fog_colour = 0;  // 0xRRGGBB
-    uint32_t gtao = 0;        // 1 GTAO, 0 SSAO
+    uint32_t method = 0;      // kAo*
 };
 
 inline void PackOcclusion(const OcclusionArgs& a, float color[4], float& z, uint32_t& stencil, Rect& r) {
@@ -25,7 +29,7 @@ inline void PackOcclusion(const OcclusionArgs& a, float color[4], float& z, uint
     z = a.m32;
     stencil = std::bit_cast<uint32_t>(a.m22);
     r = {std::bit_cast<int32_t>(a.fog_scale), std::bit_cast<int32_t>(a.fog_bias), int32_t(a.fog_colour),
-         int32_t(a.gtao)};
+         int32_t(a.method)};
 }
 
 inline OcclusionArgs UnpackOcclusion(const float color[4], float z, uint32_t stencil, const Rect& r) {
@@ -36,7 +40,7 @@ inline OcclusionArgs UnpackOcclusion(const float color[4], float z, uint32_t ste
     a.fog_scale = std::bit_cast<float>(r.x1);
     a.fog_bias = std::bit_cast<float>(r.y1);
     a.fog_colour = uint32_t(r.x2);
-    a.gtao = uint32_t(r.y2);
+    a.method = uint32_t(r.y2);
     return a;
 }
 
@@ -45,4 +49,6 @@ inline OcclusionArgs UnpackOcclusion(const float color[4], float z, uint32_t ste
 namespace d3d {
 // on the title's thread between the draws it goes after, over dev's bound colour and depth targets
 void Occlusion(uint32_t dev, const gpu::OcclusionArgs& a);
+// on the title's thread before the world's draws RTAO traces
+void OcclusionScene(uint32_t dev);
 }  // namespace d3d
