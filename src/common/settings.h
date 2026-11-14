@@ -19,6 +19,7 @@ struct Settings {
     bool frame_generation = false;  // AMD FSR frame generation, with FSR only
     uint32_t ambient_occlusion = 0;  // 0 off, 1 SSAO, 2 GTAO, 3 RTAO; the world only, under the fog
     uint32_t shadow_resolution = 1344;  // sun shadow map edge, 0 follows the render scale; 1344 is stock
+    uint32_t shadow_filter = 0;         // shadow edges, 0 sharp as the game, 1 soft
     uint32_t draw_distance = 1;         // multiplier on the level's own distances, 1 is stock; shadows take all of it
     bool blur = true;                // the game's blur while scoped and during feral run
     // mouse look, the game's own pad look is 1; while aiming only the aim pair applies

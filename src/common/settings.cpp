@@ -31,6 +31,7 @@ void LoadSettings(const void* table) {
     s.frame_generation = t["frame_generation"].value_or(s.frame_generation);
     s.ambient_occlusion = std::min(t["ambient_occlusion"].value_or(s.ambient_occlusion), 3u);
     s.shadow_resolution = std::min(t["shadow_resolution"].value_or(s.shadow_resolution), 8192u);
+    s.shadow_filter = std::min(t["shadow_filter"].value_or(s.shadow_filter), 1u);
     s.draw_distance = std::clamp(t["draw_distance"].value_or(s.draw_distance), 1u, 32u);
     s.blur = t["aim_and_sprint_blur"].value_or(s.blur);
     // a file from before the split keeps its one sensitivity for both axes
@@ -68,6 +69,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("frame_generation", s.frame_generation);
     t.insert_or_assign("ambient_occlusion", int64_t(s.ambient_occlusion));
     t.insert_or_assign("shadow_resolution", int64_t(s.shadow_resolution));
+    t.insert_or_assign("shadow_filter", int64_t(s.shadow_filter));
     t.insert_or_assign("draw_distance", int64_t(s.draw_distance));
     // the six distances before they became one
     for (const char* key : {"shadow_distance", "object_distance", "detail_distance", "grass_distance",

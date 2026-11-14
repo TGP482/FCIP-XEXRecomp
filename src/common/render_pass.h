@@ -40,5 +40,8 @@ constexpr int kSunFar = int(kSunMaps);  // SunResolved's answer for the far map
 int SunResolved(uint32_t address);
 SunMaps SunMapsDrawn();
 constexpr uint8_t kSunCascade = 1;     // ShaderOptions::tex_flags on a fetch of the far map
+constexpr uint8_t kSunSoft = 2;        // the same, with the soft filter on
+constexpr uint8_t kShadowSoft = 4;     // another light's shadow map, soft
+constexpr uint8_t kShadowHalf = 8;     // that map drawn as one of four inside a vis area, 672 at stock
 
 }  // namespace fcip

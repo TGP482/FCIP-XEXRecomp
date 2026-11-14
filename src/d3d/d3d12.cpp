@@ -1195,6 +1195,7 @@ private:
     Resolved* FindResolved(const xenos::TextureFetch& t, const TextureBinding& b, ShaderStage stage, uint32_t slot);
     void TexFlags(const State& s, const ShaderInfo& info, ShaderStage stage, uint8_t flags[32]);
     bool SunCascade(const State& s, const ShaderInfo& info, ShaderOptions& opt);
+    uint8_t SoftShadow(uint32_t base, bool far) const;
     Resolved* SunMap(uint32_t base);
     void SunMapView(Resolved& r, D3D12_CPU_DESCRIPTOR_HANDLE at);
     void FillTextureView(const TextureBinding& b, const uint32_t fetch[6], D3D12_CPU_DESCRIPTOR_HANDLE at,
@@ -2689,10 +2690,12 @@ Resolved* D3D12Backend::SunMap(uint32_t base) {
     return map != resolved_.end() && map->second.res ? &map->second : nullptr;
 }
 
-// the sharper sun maps, with a flag on each pixel shader fetch of the far one; false when the draw reads no far map
+// the sharper sun maps and the soft filter, with flags on each pixel shader fetch of a shadow map; false when the draw
+// reads no far sun map
 bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
     fcip::SunMaps m = fcip::SunMapsDrawn();
-    if (!m.count || info.textures.size() > fcip::kSunFirstSlot) return false;
+    bool soft = fcip::Get().shadow_filter != 0;
+    if ((!m.count && !soft) || info.textures.size() > fcip::kSunFirstSlot) return false;
     // a missing map would read zero depth: it and the coarser ones are left to the far map
     Resolved* maps[fcip::kSunMaps] = {};
     uint32_t count = 0;
@@ -2700,22 +2703,32 @@ bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOpti
         maps[count] = SunMap(m.bases[count]);
         if (!maps[count]) break;
     }
-    if (!count) return false;
+    if (!count && !soft) return false;
     bool any = false;
     for (uint32_t i = 0; i < info.textures.size(); i++) {
         const TextureBinding& b = info.textures[i];
         if (b.fetch != fcip::kSunFetch || b.dimension > 1) continue;
         uint32_t fetch[6];
         ReadFetch(s, b.fetch, fetch);
-        if (xenos::DecodeTextureFetch(fetch).base != m.far_base) continue;
-        opt.tex_flags[i] |= fcip::kSunCascade;
-        any = true;
+        uint32_t base = xenos::DecodeTextureFetch(fetch).base;
+        bool far = m.far_base && base == m.far_base;
+        if (far && count) opt.tex_flags[i] |= fcip::kSunCascade;
+        if (soft) opt.tex_flags[i] |= SoftShadow(base, far);
+        any = any || (far && (count || soft));
     }
     if (!any) return false;
     std::copy(std::begin(maps), std::end(maps), sun_);
     sun_maps_ = m;
     sun_maps_.count = count;
     return true;
+}
+
+// the soft filter's flags on a fetch of the map at base, none when it is no shadow map
+uint8_t D3D12Backend::SoftShadow(uint32_t base, bool far) const {
+    auto map = shadow_resolves_.find(base);
+    if (map == shadow_resolves_.end()) return 0;
+    if (far) return fcip::kSunSoft;
+    return map->second.width < shadow_side_ ? fcip::kShadowSoft | fcip::kShadowHalf : fcip::kShadowSoft;
 }
 
 void D3D12Backend::SunMapView(Resolved& r, D3D12_CPU_DESCRIPTOR_HANDLE at) {

@@ -52,6 +52,7 @@ const char* const kMsaaNames[] = {"OFF", "2X MSAA", "4X MSAA", "8X MSAA"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
 const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
 const char* const kAmbientOcclusionNames[] = {"OFF", "SSAO", "GTAO", "RTAO"};
+const char* const kShadowFilterNames[] = {"SHARP (DEFAULT)", "SOFT"};
 constexpr uint32_t kAudioOutputs[] = {audio::kOutputAuto, audio::kOutputMono, audio::kOutputStereo,
                                       audio::kOutputSurround};
 const char* const kAudioOutputNames[] = {"AUTOMATIC", "MONO", "2.0 STEREO", "5.1 SURROUND"};
@@ -113,7 +114,7 @@ void Flip(bool& on, int step) {
 enum RowId {
     kMonitor, kDisplayMode, kResolution, kRenderResolution, kVsync, kMaxFps, kAniso, kSensitivityX, kSensitivityY,
     kAimSensitivityX, kAimSensitivityY, kInvertX, kInvertY, kHoldAim, kHoldSprint, kSkipIntros, kFov, kViewmodelFov,
-    kFpsCounter, kHdrOutput, kShadowResolution,
+    kFpsCounter, kHdrOutput, kShadowResolution, kShadowFilter,
     kBlur, kDrawDistance,
     kInvincible, kNoclip, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kFrameGeneration, kSmaa, kAmbientOcclusion,
@@ -145,6 +146,8 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},
+    {Kind::Value, kShadowFilter, "SHADOW FILTERING",
+     "Sharp keeps the game's own shadow edges, soft blurs them by the same amount at every resolution"},
     {Kind::Value, kDrawDistance, "DRAW DISTANCE",
      "Scales how far objects, grass and vegetation are drawn up to 8x and the area casting sun shadows up to 32x"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
@@ -483,6 +486,9 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             break;
         case kColourBlind:
             StepName(Get().colour_blind, kColourBlindNames, step, text);
+            break;
+        case kShadowFilter:
+            StepName(Get().shadow_filter, kShadowFilterNames, step, text);
             break;
         case kAmbientOcclusion:
             StepName(Get().ambient_occlusion, kAmbientOcclusionNames, step, text);

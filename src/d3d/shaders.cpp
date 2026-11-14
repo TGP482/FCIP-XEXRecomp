@@ -454,6 +454,35 @@ static float oDepth;
 
 )";
 
+const char* kSunSoftPrelude = R"(
+// the receiver plane's depth per sun map uv, from its screen derivatives
+float2 SunSlope(float3 p) {
+    float3 dx = ddx(p);
+    float3 dy = ddy(p);
+    float det = dx.x * dy.y - dx.y * dy.x;
+    float2 slope = float2(dx.z * dy.y - dx.y * dy.z, dx.x * dy.z - dy.x * dx.z) / det;
+    return all(isfinite(slope)) ? slope : 0;
+}
+
+// the share of a disc of bilinear depth compares at or below the receiver plane, radius in uv
+float SunSoft(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 slope, float radius) {
+    float2 size;
+    map.GetDimensions(size.x, size.y);
+    float below = 0;
+    [unroll] for (int i = 0; i < 16; i++) {
+        // golden angle turns, the same area per tap
+        float angle = i * 2.39996323;
+        float2 off = sqrt((i + 0.5) / 16) * radius * float2(cos(angle), sin(angle));
+        float2 at = uv + off;
+        // gathered texels (0, 1), (1, 1), (1, 0), (0, 0)
+        float4 c = float4(map.GatherRed(s, at) <= z + dot(slope, off));
+        float2 f = frac(at * size - 0.5);
+        below += lerp(lerp(c.w, c.z, f.x), lerp(c.x, c.y, f.x), f.y);
+    }
+    return below / 16;
+}
+)";
+
 class Translator {
 public:
     Translator(ShaderStage stage, const uint32_t* code, size_t dwords, const ShaderOptions& opt, ShaderInfo& info)
@@ -480,7 +509,9 @@ private:
     void EmitAlu(const Alu& a);
     void EmitVertexFetch(const Fetch& f, uint32_t address);
     void EmitTextureFetch(const Fetch& f);
+    void OpenSunMap(const std::string& margin);
     void EmitSunMaps(uint32_t t, bool weights);
+    void EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags);
     void EmitExport(const Alu& a, bool vector, bool scalar);
     void EmitWrite(const std::string& dst, uint32_t swizzle, const char* src);
 
@@ -501,6 +532,7 @@ private:
     std::string body_;
     int indent_ = 0;
     bool sun_maps_ = false;  // t_sun declared
+    bool sun_soft_ = false;  // SunSoft declared
 };
 
 std::string Translator::Reg(uint32_t index, bool rel) const {
@@ -813,10 +845,15 @@ void Translator::EmitTextureFetch(const Fetch& f) {
         } else {
             fetch = F("t%u.Sample(s%u, %s)", t, t, at.c_str());
         }
-        Line("float4 ft = " + fetch + ";");
         bool sun_op = op == kTextureFetch || op == kGetWeights;
-        bool sun_fetch = Pixel() && dim == kDim2D && !f.Unnormalized() && (opt_.tex_flags[t & 31] & fcip::kSunCascade);
-        if (sun_op && sun_fetch) EmitSunMaps(t, op == kGetWeights);
+        uint8_t sun = Pixel() && dim == kDim2D && !f.Unnormalized() ? opt_.tex_flags[t & 31] : 0;
+        bool soft = sun_op && (sun & (fcip::kSunSoft | fcip::kShadowSoft)) && (op == kGetWeights || oy);
+        if (soft) {
+            EmitSunSoft(t, op == kGetWeights, oy, sun);
+        } else {
+            Line("float4 ft = " + fetch + ";");
+            if (sun_op && (sun & fcip::kSunCascade)) EmitSunMaps(t, op == kGetWeights);
+        }
         std::string fetched = op == kTextureFetch ? Hooks().Fetched(t, opt_.tex_flags[t & 31]) : std::string();
         if (!fetched.empty()) Line(fetched);
         EmitWrite(Reg(f.Dst(), f.DstRel()), f.DstSwizzle(), "ft");
@@ -831,6 +868,18 @@ void Translator::EmitTextureFetch(const Fetch& f) {
 // the sharper maps', map sk at 2^sk the stock radius. Scaled about the centre, the fetch's own offset kept in texels, a texel and a half inside its
 // edge for the taps around it
 void Translator::EmitSunMaps(uint32_t t, bool weights) {
+    OpenSunMap("3 / ns");
+    Open("if (nw > 0)");
+    if (weights) Line("ft = lerp(ft, float4(frac(un * ns - 0.5), 0, 0), nw);");
+    else Line(F("ft = lerp(ft, t_sun[sk].SampleLevel(s%u, un + (uv - tc.xy) * size / ns, 0), nw);", t));
+    Close();
+    Close();
+    Close();
+}
+
+// the sharper maps' loop, coarsest first: un is the point in map sk, nw its weight, margin how far inside its edge in
+// twice its uv the reads reach
+void Translator::OpenSunMap(const std::string& margin) {
     sun_maps_ = true;
     Open(F("[unroll] for (int sk = %u; sk >= 0; sk--)", fcip::kSunMaps - 1));
     Open("if (sk < g_ext.y)");
@@ -838,14 +887,41 @@ void Translator::EmitSunMaps(uint32_t t, bool weights) {
     // ShadowMatrix maps the centre to 0.5 + 0.5 / side, the guest side, not the host's
     Line("float2 un = (tc.xy - 0.5 - 0.5 / g_ext.z) * (g_ext.x / exp2(sk)) + 0.5 + 0.5 / g_ext.w;");
     // the outer fifth hands over to the next coarser map: depths and weights blended, so shadow edges morph across it
-    Line("float2 ne = abs(un - 0.5) * 2 + 3 / ns;");
+    Line("float2 ne = abs(un - 0.5) * 2 + " + margin + ";");
     Line("float nw = 1 - saturate((max(ne.x, ne.y) - 0.8) / 0.2);");
-    Open("if (nw > 0)");
-    if (weights) Line("ft = lerp(ft, float4(frac(un * ns - 0.5), 0, 0), nw);");
-    else Line(F("ft = lerp(ft, t_sun[sk].SampleLevel(s%u, un + (uv - tc.xy) * size / ns, 0), nw);", t));
-    Close();
-    Close();
-    Close();
+}
+
+// the soft disc's radius in uv, three stock texels of its map: the same world size at every resolution. The sun's
+// takes the 1x map's texels in every map, so the cascades and the vis area's half side map all match
+constexpr double kSoftRadius = 3.0 / 1344;
+constexpr double kSoftRadiusHalf = 3.0 / 672;
+
+// soft shadows through the receiver's own filter, four taps half a texel either way blended by the weights fetch:
+// the weights fetch gives as its y weight the share of a disc of compares at or below the receiver's depth tc.z, and
+// each tap row a depth on its side of tc.z, so the blend comes out at that share
+void Translator::EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags) {
+    if (!weights) {
+        // the y weight scales the +y row
+        Line(F("float4 ft = (tc.z %c 1).xxxx;", oy > 0 ? '+' : '-'));
+        return;
+    }
+    sun_soft_ = true;
+    Line("float2 slope = SunSlope(float3(uv, tc.z));");
+    if (flags & fcip::kSunSoft) {
+        // the far map spans scale stock radii, map sk 2^sk
+        Line("float scale = max(g_ext.x, 1);");
+        Line(F("float below = SunSoft(t%u, s%u, uv, tc.z, slope, %.9g / scale);", t, t, kSoftRadius));
+        OpenSunMap(F("3 / ns + %.9g / exp2(sk)", 2 * kSoftRadius));
+        Line("float2 nslope = slope * exp2(sk) / scale;");
+        Line(F("float nr = %.9g / exp2(sk);", kSoftRadius));
+        Line(F("if (nw > 0) below = lerp(below, SunSoft(t_sun[sk], s%u, un, tc.z, nslope, nr), nw);", t));
+        Close();
+        Close();
+    } else {
+        double radius = flags & fcip::kShadowHalf ? kSoftRadiusHalf : kSoftRadius;
+        Line(F("float below = SunSoft(t%u, s%u, uv, tc.z, slope, %.9g);", t, t, radius));
+    }
+    Line("float4 ft = float4(0, 1 - below, 0, 0);");
 }
 
 void Translator::EmitExec(const Cf& cf) {
@@ -1021,6 +1097,7 @@ void CommitAlu() {
                kTypes[info_.textures[i].dimension & 3], i, i, i, i);
     }
     if (sun_maps_) s += F("Texture2D<float4> t_sun[%u] : register(t%u);\n", fcip::kSunMaps, fcip::kSunFirstSlot);
+    if (sun_soft_) s += kSunSoftPrelude;
     return s;
 }
 
