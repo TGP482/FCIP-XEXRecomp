@@ -848,7 +848,8 @@ float4 occlusion_apply(float4 pos : SV_Position) : SV_Target {
 // pixel at half resolution through the camera pass's world, turned and spread by the 4x4 dither. A hit the screen
 // shows takes the colour seen there; a hidden or off screen one is lit as the game lights it, its texture's colour
 // under the ambient and the sun through the far sun map. The game lights everything with a flat ambient, its sky: the
-// share of rays that hit something takes that share of it away, in the game's own colour space. Blurred across at half
+// share of rays that hit something takes that share of it away, in the game's own colour space; in the sun's shadow,
+// where all the colour is indirect, that share of the whole colour. Blurred across at half
 // resolution and down at full within depth edges, then the pixel's albedo times the bounce is added under the fog.
 // Light adds in linear space: the scene's colour and the textures are gamma encoded. opt.x the ray length, opt.y the
 // scene's gamma, 1 where its target holds linear colour, amb the game's ambient, w 1 with the sun map bound. Then come
@@ -870,8 +871,8 @@ ByteAddressBuffer t_ray_records : register(t6);
 Texture2D<float> sunmap : register(t7);
 )";
 const char* kGiHlsl = R"(
-static const float kBounce = 1.5;  // over one bounce, standing in for the bounces past it
 static const float kHitLod = 4;    // mips down a hit's texture is read: its average colour, cheap
+static const float kOcclusion = 0.6;  // share of the blocked indirect light taken away
 // the full resolution pixel a half resolution one traces for
 int2 Full(int2 h) { return h * 2; }
 // the screen's colour at p, a view space point, where the screen sees that point
@@ -907,7 +908,8 @@ float3 Bounced(uint caster, uint prim, float2 bary, float3 p, float3 dir) {
         float facing = saturate(dot(n, normalize(sun[2].xyz)));
         incoming += suncolour.rgb * facing * SunLit(sunmap, p + n * 0.05);
     }
-    return Linear(albedo * incoming);
+    // no brighter than the screen could show it: the sun's colour lights past 1 in the game's space
+    return Linear(saturate(albedo * incoming));
 }
 // out: the light reaching the pixel, the share of its rays that reach the sky; -1 where no draw left an albedo
 float4 gi_trace(float4 pos : SV_Position) : SV_Target {
@@ -980,6 +982,18 @@ float4 gi_blur(float4 pos : SV_Position) : SV_Target {
     if (light.Load(int3(h, 0)).w < 0) return float4(0, 0, 0, -1);
     return Smooth(h, View(Full(h)).z);
 }
+// how much the sun lights the pixel, read from the game's own shading: its colour over its albedo, the light it took,
+// against the ambient and the sun; 1 without the sun map
+float SunReach(float2 pos, float3 c, float3 albedo) {
+    if (amb.w == 0) return 1;
+    float3 p = View(pos);
+    float3 n = Normal(pos, p);
+    if (dot(n, p) > 0) n = -n;
+    float facing = max(dot(n, normalize(sun[2].xyz)), 0.25);
+    float3 luma = float3(0.299, 0.587, 0.114);
+    float light = dot(c, luma) / max(dot(albedo, luma), 0.02);
+    return saturate((light - dot(amb.rgb, luma)) / (dot(suncolour.rgb, luma) * facing));
+}
 // the scene's colour lit again, written over it with its alpha kept; the half resolution light is taken up within
 // the pixel's depth
 float4 gi_apply(float4 pos : SV_Position) : SV_Target {
@@ -988,8 +1002,10 @@ float4 gi_apply(float4 pos : SV_Position) : SV_Target {
     float4 a = Albedo(int2(pos.xy));
     float keep = a.a * (1 - saturate(fog.x * z + fog.y));
     float3 c = colour.Load(int3(pos.xy, 0)).rgb;
-    float3 lit = max(c - a.rgb * amb.rgb * (1 - l.w) * keep, 0);
-    float3 bounce = pow(a.rgb, 2.2) * l.rgb * kBounce * keep;
+    // the pixel's indirect light: all of it in the sun's shadow, the game's ambient where the sun reaches
+    float3 indirect = lerp(c, min(c, a.rgb * amb.rgb), SunReach(pos.xy, c, a.rgb));
+    float3 lit = c - indirect * (1 - l.w) * kOcclusion * keep;
+    float3 bounce = pow(a.rgb, 2.2) * l.rgb * keep;
     return float4(pow(Linear(lit) + bounce, 1 / opt.y), 0);
 }
 )";
