@@ -131,9 +131,13 @@ bool EnsureGeneration(const Generation& g) {
     ffxCreateBackendDX12Desc backend{};
     backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
     backend.device = g_device;
+    ffxCreateContextDescFrameGenerationHudless hudless{};
+    hudless.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_HUDLESS;
+    hudless.header.pNext = &backend.header;
+    hudless.hudlessBackBufferFormat = ffxApiGetSurfaceFormatDX12(DXGI_FORMAT(g.format));
     ffxCreateContextDescFrameGenerationVersion version{};
     version.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_VERSION;
-    version.header.pNext = &backend.header;
+    version.header.pNext = &hudless.header;
     version.version = FFX_FRAMEGENERATION_VERSION;
     ffxCreateContextDescFrameGeneration d{};
     d.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
@@ -320,6 +324,7 @@ void Configure(const Generation& g) {
     c.frameGenerationEnabled = g.enabled;
     c.generationRect = {int32_t(g.rect[0]), int32_t(g.rect[1]), int32_t(g.rect[2]), int32_t(g.rect[3])};
     c.frameID = g.index;
+    if (g.hudless) c.HUDLessColor = ffxApiGetResourceDX12(g.hudless, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
     static bool logged = false;
     ffxReturnCode_t r = g_configure(&g_generate, &c.header);
     if (r != FFX_API_RETURN_OK && !std::exchange(logged, true)) LOGE("FSR: frame generation setup failed (result %u)", r);

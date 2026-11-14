@@ -109,7 +109,8 @@ constexpr int kAoTargets = 2;
 constexpr uint32_t kAoRtv = kSmaaRtv + kSmaaTargets;  // ambient occlusion's raw pass and first blur
 constexpr uint32_t kMotionRtv = kAoRtv + kAoTargets;  // motion vectors as the draws wrote them, then completed
 constexpr DXGI_FORMAT kMotionFormat = DXGI_FORMAT_R16G16_FLOAT;
-constexpr float kNoMotion = 32768;  // the drawn motion's clear: no world draw wrote the pixel
+constexpr uint32_t kHudlessRtv = kMotionRtv + 2;  // frame generation's two back buffers without the HUD
+constexpr float kNoMotion = 32768;  // the drawn motion's clear: no draw wrote the pixel
 constexpr uint64_t kSceneTarget = 1ull << 62;  // targets_ key bit of a target at the scene's scale, before FSR
 constexpr DXGI_FORMAT kUpscaledFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
@@ -860,7 +861,7 @@ uint32_t StripTriangles(const DrawArgs& a, uint32_t count, bool cut) {
     return triangles;
 }
 
-// the motion vectors the world's draws left, with the depth reprojected from last frame's camera where none did.
+// the motion vectors the scene's draws left, with the depth reprojected from last frame's camera where none did.
 // reproject: a title clip position to last frame's; ndc: a pixel centre to the title's ndc; zuv: z = (raw - y) / x,
 // then the title's ndc to the target's uv
 const char* kMotionHlsl = R"(
@@ -1270,6 +1271,9 @@ private:
     bool GenerationWanted() const { return fcip::Get().frame_generation && Fsr() && fsr::FrameGeneration(); }
     void RecreateSwapChain();
     void ConfigureGeneration(bool enabled);
+    void KeepHudless(const State& s);
+    bool EnsureHudless();
+    void DrawHudless(const xenos::TextureFetch& t);
     bool SceneScaled(uint32_t width) const { return upscale_.scene && width == guest_w_; }
     uint64_t MapKey(const Target& t) const;
     float SceneScale() const;
@@ -1357,9 +1361,10 @@ private:
     uint32_t ao_w_ = 0;
     uint32_t ao_h_ = 0;
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> ao_pipelines_;
-    // motion vectors: as the world's draws wrote them, then completed by reprojecting the depth where none did
+    // motion vectors: as the scene's draws wrote them, then completed by reprojecting the depth where none did
     struct Motion {
-        bool active = false;  // between kClearMotionBegin and kClearMotionEnd
+        bool open = false;    // between kClearMotionBegin and the scene's end
+        bool active = false;  // open and not paused
         uint64_t rt_key = 0;  // the scene's colour target
         ComPtr<ID3D12Resource> drawn;
         ComPtr<ID3D12Resource> done;
@@ -1391,6 +1396,20 @@ private:
         uint32_t w = 0;
         uint32_t h = 0;
     } upscale_;
+    // frame generation tells the HUD apart by the frame without it, in the back buffer's form
+    struct Hudless {
+        ComPtr<ID3D12Resource> frame;  // the target as the post effects left it, before the HUD
+        D3D12_RESOURCE_STATES frame_state = D3D12_RESOURCE_STATE_COMMON;
+        DXGI_FORMAT frame_format = DXGI_FORMAT_UNKNOWN;
+        uint64_t kept = ~0ull;  // the frame it was kept for
+        // two: the swap chain may still generate from the last one while this frame draws the next
+        ComPtr<ID3D12Resource> out[2];
+        D3D12_RESOURCE_STATES out_state[2] = {};
+        uint32_t w = 0;
+        uint32_t h = 0;
+        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        uint64_t used = ~0ull;  // the frame frame generation was handed it for
+    } hudless_;
     float scene_scale_ = 1;
     float jitter_[2] = {};  // host pixels the scene's draws are offset by
     uint32_t frame_rect_[4] = {};  // x, y, width and height of the frame in the back buffer
@@ -1653,7 +1672,7 @@ void D3D12Backend::CreateHeaps() {
     };
     view_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kViewsPerFrame * kFrames, true, view_heap_);
     sampler_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCount, true, sampler_heap_);
-    rtv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kMotionRtv + 2, false, rtv_heap_);
+    rtv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kHudlessRtv + 2, false, rtv_heap_);
     dsv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvCount, false, dsv_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true, ui_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kPsTextures + kFrames, false, copy_heap_);
@@ -3310,6 +3329,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     Bound bound;
     PipelineKey unbound = k;
     bool motion = MotionWanted(s, ps_info);
+    if (cap_ && motion_.active && !motion) std::fprintf(cap_, "     motion: none, blended or no depth write\n");
     if (!BindTargets(s, ps_info, k, bound, motion)) return;
     if (ext_ && ext_->Bound(*this, s, bound.rt, bound.ds)) {
         k = unbound;
@@ -3408,8 +3428,9 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         BeginMotion(s);
         return;
     }
-    if (flags & kClearMotionEnd) {
-        EndMotion(s);
+    if (flags & (kClearMotionPause | kClearMotionResume)) {
+        motion_.active = motion_.open && (flags & kClearMotionResume);
+        if (cap_) std::fprintf(cap_, "motion %s\n", motion_.active ? "resumed" : "paused");
         return;
     }
     if (flags & kClearSceneBegin) {
@@ -3417,7 +3438,12 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         return;
     }
     if (flags & kClearSceneEnd) {
+        EndMotion(s);
         EndScene();
+        return;
+    }
+    if (flags & kClearHudBegin) {
+        KeepHudless(s);
         return;
     }
     g_perf.clears++;
@@ -3580,8 +3606,9 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
 
 // Motion vectors
 
-// the scene's colour target: its world draws write motion beside it until EndMotion
+// the scene's colour target: its draws write motion beside it until EndMotion, paused over the ocean
 void D3D12Backend::BeginMotion(const State& s) {
+    motion_.open = false;
     motion_.active = false;
     MotionCamera camera;
     if (!TakeMotionCamera(camera)) return;
@@ -3622,11 +3649,13 @@ void D3D12Backend::BeginMotion(const State& s) {
     upscale_.color = motion_.rt_key;
     motion_.draws = 0;
     motion_.matched = 0;
+    motion_.open = true;
     motion_.active = true;
 }
 
 void D3D12Backend::EndMotion(const State& s) {
-    if (!std::exchange(motion_.active, false)) return;
+    if (!std::exchange(motion_.open, false)) return;
+    motion_.active = false;
     uint32_t height = TargetHeight(s);
     Target* rt = ColorTarget(s, 0, height);
     Target* ds = DepthTarget(s, height);
@@ -3640,7 +3669,7 @@ void D3D12Backend::EndMotion(const State& s) {
     CompleteMotion(*ds, d);
     upscale_.motion = true;
     if (cap_) {
-        std::fprintf(cap_, "motion: %u world draws, %u matched to last frame\n", motion_.draws, motion_.matched);
+        std::fprintf(cap_, "motion: %u draws, %u matched to last frame\n", motion_.draws, motion_.matched);
         char name[32];
         std::snprintf(name, sizeof(name), "%04u_motion", cap_i_++);
         CapSave(motion_.done.Get(), motion_.done_state, kMotionFormat, 1, false, motion_.w, motion_.h, 50, name);
@@ -3671,7 +3700,7 @@ bool D3D12Backend::EnsureMotionTargets(uint32_t w, uint32_t h) {
     return true;
 }
 
-// a world draw that writes depth and its colour unblended
+// a draw that writes depth and its colour unblended
 bool D3D12Backend::MotionWanted(const State& s, const ShaderInfo& ps) const {
     if (!motion_.active || !(ps.exports & 1) || !Bits(s.Reg(kRbColorMask), 0, 4)) return false;
     uint32_t depth = s.Reg(kRbDepthControl);
@@ -3706,6 +3735,8 @@ void D3D12Backend::BindMotion(const State& s, const DrawArgs& a, const ShaderInf
         consts = up.gpu;
         motion_.matched++;
         if (cap_) CapMotionMatch(vs.constants, s.consts, up.cpu, placed);
+    } else if (cap_) {
+        std::fprintf(cap_, "     motion %s: no match, reprojected as still\n", placed ? "placed" : "in order");
     }
     motion_.draws++;
     if (Latch(binds_.roots[kRootPrevConsts], consts)) cl_->SetGraphicsRootConstantBufferView(kRootPrevConsts, consts);
@@ -3889,7 +3920,100 @@ void D3D12Backend::ConfigureGeneration(bool enabled) {
     g.h = swap_h_;
     g.format = hdr_out_ ? kHdr10Format : kSwapFormat;
     g.hdr = hdr_out_;
+    if (enabled && EnsureHudless()) {
+        g.hudless = hudless_.out[presents_ % 2].Get();
+        hudless_.used = presents_;
+    }
     fsr::Configure(g);
+}
+
+// the target as the post effects leave it, before the HUD draws over it
+void D3D12Backend::KeepHudless(const State& s) {
+    if (!generation_swap_) return;
+    Target* rt = ColorTarget(s, 0, TargetHeight(s));
+    if (!rt || rt->samples != 1) return;
+    D3D12_RESOURCE_DESC d = rt->res->GetDesc();
+    D3D12_RESOURCE_DESC have{};
+    if (hudless_.frame) have = hudless_.frame->GetDesc();
+    if (have.Width != d.Width || have.Height != d.Height || have.Format != d.Format) {
+        if (hudless_.frame) Release(std::move(hudless_.frame));
+        d.Flags = D3D12_RESOURCE_FLAG_NONE;
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        hudless_.frame_state = D3D12_RESOURCE_STATE_COPY_DEST;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, hudless_.frame_state, nullptr,
+                                                 IID_PPV_ARGS(&hudless_.frame)))) {
+            LOGE("D3D12: no frame without the HUD");
+            return;
+        }
+    }
+    Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Transition(hudless_.frame.Get(), hudless_.frame_state, D3D12_RESOURCE_STATE_COPY_DEST);
+    cl_->CopyResource(hudless_.frame.Get(), rt->res.Get());
+    hudless_.frame_format = ReadFormat(*rt);
+    hudless_.kept = presents_;
+}
+
+// the back buffer's size and format, made again when they change
+bool D3D12Backend::EnsureHudless() {
+    DXGI_FORMAT format = hdr_out_ ? kHdr10Format : kSwapFormat;
+    if (hudless_.out[0] && hudless_.w == swap_w_ && hudless_.h == swap_h_ && hudless_.format == format) return true;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(format, swap_w_, swap_h_);
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    for (int i = 0; i < 2; i++) {
+        if (hudless_.out[i]) Release(std::move(hudless_.out[i]));
+        hudless_.out_state[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, hudless_.out_state[i], nullptr,
+                                                 IID_PPV_ARGS(&hudless_.out[i])))) {
+            LOGE("D3D12: no %ux%u back buffer without the HUD", swap_w_, swap_h_);
+            hudless_.w = 0;
+            return false;
+        }
+        dev_->CreateRenderTargetView(hudless_.out[i].Get(), nullptr, Rtv(kHudlessRtv + i));
+    }
+    hudless_.w = swap_w_;
+    hudless_.h = swap_h_;
+    hudless_.format = format;
+    return true;
+}
+
+// the frame kept before the HUD as the back buffer shows the front buffer, else the front buffer itself
+void D3D12Backend::DrawHudless(const xenos::TextureFetch& t) {
+    Begin();  // RenderUi left ImGui's heap and root signature bound
+    auto front = resolved_.find(ResolvedKey(t.base, 0));
+    bool kept = hudless_.kept == presents_ && front != resolved_.end();
+    uint32_t i = presents_ % 2;
+    D3D12_CPU_DESCRIPTOR_HANDLE out = Rtv(kHudlessRtv + i);
+    D3D12_CPU_DESCRIPTOR_HANDLE frame = out;
+    DXGI_FORMAT frame_format = kSwapFormat;
+    float black[4] = {0, 0, 0, 1};
+    Transition(hudless_.out[i].Get(), hudless_.out_state[i], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    cl_->ClearRenderTargetView(out, black, 0, nullptr);
+    if (hdr_out_) {
+        frame = Rtv(kOutRtv + kOutFrame);
+        frame_format = kOutFrameFormat;
+        Transition(out_[kOutFrame].Get(), out_state_[kOutFrame], D3D12_RESOURCE_STATE_RENDER_TARGET);
+        cl_->ClearRenderTargetView(frame, black, 0, nullptr);
+    }
+    cl_->OMSetRenderTargets(1, &frame, FALSE, nullptr);
+    if (kept) {
+        // the title's shaders wrote the target in rgba order, which the front buffer's resolve and fetch undo
+        const Resolved& r = front->second;
+        uint32_t w = uint32_t(std::ceil(r.width * r.scale));
+        uint32_t h = uint32_t(std::ceil(r.height * r.scale));
+        BlitToSwap(hudless_.frame.Get(), hudless_.frame_state, hudless_.frame_format, frame_format, frame,
+                   D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, w, h);
+    } else {
+        DrawFront(t, frame_format, frame);
+    }
+    if (hdr_out_) {
+        Transition(out_[kOutFrame].Get(), out_state_[kOutFrame], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        ID3D12Resource* const src[3] = {out_[kOutFrame].Get(), nullptr, nullptr};
+        const DXGI_FORMAT fmt[3] = {kOutFrameFormat, kSwapFormat, kSwapFormat};
+        float p[8] = {paper_nits_, peak_nits_, 0, 0, 0, 0, 0, 0};
+        Pass(kHdrHlsl, "hdr10", kHdr10Format, out, swap_w_, swap_h_, src, fmt, p, -1);
+    }
+    Transition(hudless_.out[i].Get(), hudless_.out_state[i], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
 }
 
 // frame generation's swap chain made or dropped as the setting changes
@@ -4755,6 +4879,7 @@ void D3D12Backend::ShowFrame(const xenos::TextureFetch& t) {
     } else if (EnsureOutTargets()) {
         PresentHdr(t, rh);
     }
+    if (generation_swap_ && hudless_.used == presents_) DrawHudless(t);
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_PRESENT);
     Submit(false);
     bool vsync = app::Get().vsync;

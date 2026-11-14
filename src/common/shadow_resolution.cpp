@@ -398,10 +398,13 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
 }
 
 #if HAS_PostEffects_Draw && HAS_Device_pointer
-// the camera pass's post effects, then its HUD: the post effects resolve the world first, so FSR upscales it here
+// the camera pass's post effects, then its HUD: the post effects resolve the world first, so FSR upscales it here, and
+// frame generation keeps the frame they leave
 PPC_FUNC(GUEST(PostEffects_Draw)) {
-    if (std::exchange(t_scene, false)) d3d::SceneEnd(R32(SYM_Device_pointer));
+    bool scene = std::exchange(t_scene, false);
+    if (scene) d3d::SceneEnd(R32(SYM_Device_pointer));
     GUEST_ORIG(PostEffects_Draw)(ctx, base);
+    if (scene && fcip::Get().frame_generation) d3d::HudBegin(R32(SYM_Device_pointer));
 }
 #endif
 

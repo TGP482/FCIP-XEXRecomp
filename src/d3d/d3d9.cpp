@@ -641,9 +641,11 @@ void Mark(uint32_t dev, uint32_t flag) {
 
 }  // namespace
 
-void MotionEnd(uint32_t dev) { Mark(dev, gpu::kClearMotionEnd); }
 void SceneBegin(uint32_t dev) { Mark(dev, gpu::kClearSceneBegin); }
 void SceneEnd(uint32_t dev) { Mark(dev, gpu::kClearSceneEnd); }
+void HudBegin(uint32_t dev) { Mark(dev, gpu::kClearHudBegin); }
+void MotionPause(uint32_t dev) { Mark(dev, gpu::kClearMotionPause); }
+void MotionResume(uint32_t dev) { Mark(dev, gpu::kClearMotionResume); }
 
 // Shaders: the library makes its object, the host translates the container's microcode as created
 HLE_AFTER(D3DDevice_CreateVertexShader) { CreateShader(a[0], uint32_t(ctx.r[3]), true); }

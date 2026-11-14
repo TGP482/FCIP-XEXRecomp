@@ -93,6 +93,7 @@ struct Generation {
     uint32_t h = 0;
     uint32_t format = 0;  // DXGI_FORMAT
     bool hdr = false;
+    ID3D12Resource* hudless = nullptr;  // the back buffer without the HUD, readable by shaders by the present
 };
 // render thread, once a frame before its present
 void Configure(const Generation& g);

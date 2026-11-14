@@ -1,5 +1,6 @@
-// Motion vectors of the camera's pass. The title marks the pass's world with clears no D3DCLEAR value uses and hands
-// over the camera; the render thread matches each world draw to last frame's, whose vertex constants it runs again
+// Motion vectors of the camera's pass. The title marks the pass's world and what it draws after its list with clears no
+// D3DCLEAR value uses and hands over the camera, the scene end completes them; the render thread matches each draw to
+// last frame's, whose vertex constants it runs again
 #pragma once
 #include <cstdint>
 #include <unordered_map>
@@ -9,9 +10,11 @@
 namespace gpu {
 
 constexpr uint32_t kClearMotionBegin = 0x400;
-constexpr uint32_t kClearMotionEnd = 0x800;
+constexpr uint32_t kClearHudBegin = 0x800;  // the post effects done, frame generation keeps the frame
 constexpr uint32_t kClearSceneBegin = 0x1000;  // the camera's pass, for FSR
 constexpr uint32_t kClearSceneEnd = 0x2000;
+constexpr uint32_t kClearMotionPause = 0x4000;  // the ocean's draws, until kClearMotionResume
+constexpr uint32_t kClearMotionResume = 0x8000;
 
 // a camera's matrices as the title keeps them, row major, before its pass flips depth
 struct MotionCamera {
@@ -73,10 +76,13 @@ private:
 }  // namespace gpu
 
 namespace d3d {
-// on the title's thread at the start and end of the camera pass's world
+// on the title's thread before the camera pass's draw list, around its ocean layers and after its last item
 void MotionBegin(uint32_t dev, const gpu::MotionCamera& c);
-void MotionEnd(uint32_t dev);
+void MotionPause(uint32_t dev);
+void MotionResume(uint32_t dev);
 // on the title's thread at the start and end of the camera's pass
 void SceneBegin(uint32_t dev);
 void SceneEnd(uint32_t dev);
+// after the camera pass's post effects, before the HUD draws over its frame
+void HudBegin(uint32_t dev);
 }  // namespace d3d
