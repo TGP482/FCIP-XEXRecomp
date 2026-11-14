@@ -25,6 +25,8 @@ void Shutdown();
 
 bool Upscaling();
 bool FrameGeneration();
+// any thread: frames are being generated, one between each two rendered
+bool Generating();
 
 // why an FSR feature does not run: its DLLs are not in the FSR folder, or this GPU lacks it
 enum class Status { Ready, MissingDll, NotSupported };

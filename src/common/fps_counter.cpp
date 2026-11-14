@@ -6,6 +6,7 @@
 
 #include "common/aspect.h"
 #include "common/settings.h"
+#include "d3d/fsr.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
 
@@ -96,7 +97,9 @@ PPC_FUNC(GUEST(Overlay_Flush)) {
         return;
     }
     char text[32];
-    std::snprintf(text, sizeof(text), "FPS: %.1f", Fps());
+    double fps = Fps();
+    if (fsr::Generating()) std::snprintf(text, sizeof(text), "FPS: %.1f, FG %.1f", fps, fps * 2);
+    else std::snprintf(text, sizeof(text), "FPS: %.1f", fps);
     // y is up from the bottom, so the baseline sits at height minus y
     uint32_t ui = R32(SYM_UISystem_pointer);
     int size = int(R8(g_font + kFontSize) * kScale);

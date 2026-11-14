@@ -56,6 +56,7 @@ uint32_t g_generate_h = 0;
 uint32_t g_generate_format = 0;
 uint64_t g_frame_time = 0;  // ns, the last Upscale
 float g_delta_ms = 0;       // from the Upscale before
+std::atomic<bool> g_generating{false};  // the last frame set up generated one between it and the one before
 
 // the first errors and warnings only: one that repeats each frame would flood the log
 void Message(uint32_t type, const wchar_t* msg) {
@@ -245,6 +246,7 @@ const char* StatusNote(Status s) {
 
 bool Upscaling() { return g_sr; }
 bool FrameGeneration() { return g_fg; }
+bool Generating() { return g_generating; }
 
 bool Upscale(ID3D12GraphicsCommandList* cl, const Frame& f) {
     if (!g_sr || !EnsureUpscale(f.output.w, f.output.h)) return false;
@@ -302,6 +304,7 @@ bool CreateSwapChain(IDXGIFactory4* factory, ID3D12CommandQueue* queue, HWND__* 
 }
 
 void DestroySwapChain(IDXGISwapChain4* swap) {
+    g_generating = false;
     if (!g_swap) return;
     // generation off first: it waits for the swap chain's work on its resources
     if (g_generate) {
@@ -328,6 +331,7 @@ void Configure(const Generation& g) {
     static bool logged = false;
     ffxReturnCode_t r = g_configure(&g_generate, &c.header);
     if (r != FFX_API_RETURN_OK && !std::exchange(logged, true)) LOGE("FSR: frame generation setup failed (result %u)", r);
+    g_generating = r == FFX_API_RETURN_OK && g.enabled;
 }
 
 void Prepare(ID3D12GraphicsCommandList* cl, const Frame& f) {
