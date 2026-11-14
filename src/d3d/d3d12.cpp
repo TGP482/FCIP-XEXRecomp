@@ -671,6 +671,19 @@ float3 Normal(float2 pos, float3 c) {
     return normalize(cross(dx, dy));
 }
 static const float kDither[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+// 1 where the sun reaches p, a view space point, through the far sun map; off the map counts as lit
+float SunLit(Texture2D<float> map, float3 p) {
+    float4 at = float4(p, 1);
+    float4 c = float4(dot(at, sun[0]), dot(at, sun[1]), dot(at, sun[2]), dot(at, sun[3]));
+    float3 n = c.xyz / c.w;
+    float2 uv = float2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5);
+    if (any(uv <= 0) || any(uv >= 1) || n.z <= 0 || n.z >= 1) return 1;
+    uint w;
+    uint h;
+    map.GetDimensions(w, h);
+    // reversed depth: a caster nearer the sun is deeper
+    return n.z >= map.Load(int3(int2(uv * float2(w, h)), 0)) - 0.001 ? 1 : 0;
+}
 )";
 
 // Ambient occlusion from the scene's depth: occlusion pass, then a blur across and one down that multiplies it into
@@ -832,12 +845,14 @@ float4 occlusion_apply(float4 pos : SV_Position) : SV_Target {
 )";
 
 // Global illumination: one bounce of the light the scene's surfaces throw onto each other. 4 cosine weighted rays a
-// pixel through the camera pass's world, turned and spread by the 4x4 dither, each hit lit by the colour the screen
-// shows where it sees that point; a hidden or off screen hit adds nothing. The game lights everything with a flat
-// ambient, its sky: the share of rays that hit something takes that share of it away, in the game's own colour space.
-// Blurred across and down within depth edges, then the pixel's albedo times the bounce is added under the fog. Light
-// adds in linear space: the scene's colour and the textures are gamma encoded. opt.x the ray length, opt.y the scene's
-// gamma, 1 where its target holds linear colour, amb the game's ambient. Then come fcip::kCasterHitHlsl and kGiHlsl
+// pixel at half resolution through the camera pass's world, turned and spread by the 4x4 dither. A hit the screen
+// shows takes the colour seen there; a hidden or off screen one is lit as the game lights it, its texture's colour
+// under the ambient and the sun through the far sun map. The game lights everything with a flat ambient, its sky: the
+// share of rays that hit something takes that share of it away, in the game's own colour space. Blurred across at half
+// resolution and down at full within depth edges, then the pixel's albedo times the bounce is added under the fog.
+// Light adds in linear space: the scene's colour and the textures are gamma encoded. opt.x the ray length, opt.y the
+// scene's gamma, 1 where its target holds linear colour, amb the game's ambient, w 1 with the sun map bound. Then come
+// fcip::kCasterHitHlsl and kGiHlsl
 const char* kGiViewsHlsl = R"(
 Texture2D<float4> light : register(t1);
 RaytracingAccelerationStructure scene : register(t2);
@@ -852,24 +867,57 @@ Texture2D<float4> colour : register(t4);  // the scene before it, resolved
 float3 Linear(float3 c) { return pow(max(c, 0), opt.y); }
 ByteAddressBuffer t_ray_casters : register(t5);
 ByteAddressBuffer t_ray_records : register(t6);
+Texture2D<float> sunmap : register(t7);
 )";
 const char* kGiHlsl = R"(
+static const float kBounce = 1.5;  // over one bounce, standing in for the bounces past it
+static const float kHitLod = 4;    // mips down a hit's texture is read: its average colour, cheap
+// the full resolution pixel a half resolution one traces for
+int2 Full(int2 h) { return h * 2; }
 // the screen's colour at p, a view space point, where the screen sees that point
-float3 Seen(float3 p) {
-    if (p.z <= 0) return 0;
+bool Seen(float3 p, out float3 seen) {
+    seen = 0;
+    if (p.z <= 0) return false;
     float2 px = (p.xy / (proj.xy * p.z) + proj.zw - ndc.zw) / ndc.xy;
-    if (any(px < vp.xy) || any(px >= vp.xy + vp.zw)) return 0;
-    if (abs(View(px).z - p.z) > 0.05 + p.z * 0.02) return 0;
-    return Linear(colour.Load(int3(px, 0)).rgb);
+    if (any(px < vp.xy) || any(px >= vp.xy + vp.zw)) return false;
+    if (abs(View(px).z - p.z) > 0.05 + p.z * 0.02) return false;
+    seen = Linear(colour.Load(int3(px, 0)).rgb);
+    return true;
+}
+// the light leaving a hit at p along dir as the game lights it: its texture's colour, grey without one, under the
+// ambient and the sun
+float3 Bounced(uint caster, uint prim, float2 bary, float3 p, float3 dir) {
+    uint4 c = t_ray_casters.Load4(caster * 16);
+    uint at = (c.x + prim * 3) * 32;
+    float3 a = asfloat(t_ray_records.Load3(at));
+    float3 e = cross(asfloat(t_ray_records.Load3(at + 32)) - a, asfloat(t_ray_records.Load3(at + 64)) - a);
+    float3 n = e * rsqrt(max(dot(e, e), 1e-20));
+    if (dot(n, dir) > 0) n = -n;
+    float3 albedo = 0.5;
+    if (c.w & 8) {
+        float4 ta = asfloat(t_ray_records.Load4(at + 16));
+        float4 tb = asfloat(t_ray_records.Load4(at + 48));
+        float4 td = asfloat(t_ray_records.Load4(at + 80));
+        float4 tex = ta + (tb - ta) * bary.x + (td - ta) * bary.y;
+        float2 uv = float2(tex[c.w >> 4 & 3], tex[c.w >> 6 & 3]);
+        albedo = t_heap[NonUniformResourceIndex(c.y)].SampleLevel(s_heap, uv, kHitLod).rgb;
+    }
+    float3 incoming = amb.rgb;
+    if (amb.w > 0) {
+        float facing = saturate(dot(n, normalize(sun[2].xyz)));
+        incoming += suncolour.rgb * facing * SunLit(sunmap, p + n * 0.05);
+    }
+    return Linear(albedo * incoming);
 }
 // out: the light reaching the pixel, the share of its rays that reach the sky; -1 where no draw left an albedo
 float4 gi_trace(float4 pos : SV_Position) : SV_Target {
-    float3 c = View(pos.xy);
-    if (Albedo(int2(pos.xy)).a == 0) return float4(0, 0, 0, -1);
+    int2 full = Full(int2(pos.xy));
+    if (Albedo(full).a == 0) return float4(0, 0, 0, -1);
+    float3 c = View(full);
     float pixel = c.z * proj.x * abs(ndc.x);
     // a pixel this wide sees nothing within the rays' length, the sky
     if (pixel > opt.x * 0.25) return float4(0, 0, 0, 1);
-    float3 n = Normal(pos.xy, c);
+    float3 n = Normal(full, c);
     if (dot(n, c) > 0) n = -n;
     float3 t = normalize(cross(n, abs(n.y) < 0.9 ? float3(0, 1, 0) : float3(1, 0, 0)));
     float3 b = cross(n, t);
@@ -899,41 +947,49 @@ float4 gi_trace(float4 pos : SV_Position) : SV_Target {
             sky += 1;
             continue;
         }
-        sum += Seen(ray.Origin + ray.Direction * q.CommittedRayT());
+        float3 p = ray.Origin + ray.Direction * q.CommittedRayT();
+        float3 seen;
+        if (Seen(p, seen)) {
+            sum += seen;
+            continue;
+        }
+        uint caster = q.CommittedInstanceID() + q.CommittedGeometryIndex();
+        sum += Bounced(caster, q.CommittedPrimitiveIndex(), q.CommittedTriangleBarycentrics(), p, ray.Direction);
     }
     return float4(sum / 4, sky / 4);
 }
-// opt.zw: step; 9 taps, twice the dither's period, depth edges and pixels without albedo left out
-float4 Smooth(float2 pos) {
-    int2 p = int2(pos);
-    int2 lo = int2(vp.xy);
-    int2 hi = int2(vp.xy + vp.zw) - 1;
-    float z = View(pos).z;
+// h a half resolution pixel weighed against view distance z; opt.zw: step; 9 taps, twice the dither's period, depth
+// edges and pixels without albedo left out
+float4 Smooth(int2 h, float z) {
+    int2 lo = int2(vp.xy) / 2;
+    int2 hi = (int2(vp.xy + vp.zw) + 1) / 2 - 1;
     float4 sum = 0;
     float n = 0;
     for (int i = -4; i <= 4; i++) {
-        int2 at = clamp(p + i * int2(opt.zw), lo, hi);
+        int2 at = clamp(h + i * int2(opt.zw), lo, hi);
         float4 s = light.Load(int3(at, 0));
         if (s.w < 0) continue;
-        float w = (abs(i) == 4 ? 0.5 : 1) * saturate(2 - abs(View(at).z - z) / (z * 0.02));
+        float w = (abs(i) == 4 ? 0.5 : 1) * saturate(2 - abs(View(Full(at)).z - z) / (z * 0.02));
         sum += s * w;
         n += w;
     }
     return n > 0 ? sum / n : float4(0, 0, 0, 1);
 }
 float4 gi_blur(float4 pos : SV_Position) : SV_Target {
-    if (light.Load(int3(pos.xy, 0)).w < 0) return float4(0, 0, 0, -1);
-    return Smooth(pos.xy);
+    int2 h = int2(pos.xy);
+    if (light.Load(int3(h, 0)).w < 0) return float4(0, 0, 0, -1);
+    return Smooth(h, View(Full(h)).z);
 }
-// the scene's colour lit again, written over it with its alpha kept
+// the scene's colour lit again, written over it with its alpha kept; the half resolution light is taken up within
+// the pixel's depth
 float4 gi_apply(float4 pos : SV_Position) : SV_Target {
-    float4 l = Smooth(pos.xy);
-    float4 a = Albedo(int2(pos.xy));
     float z = View(pos.xy).z;
+    float4 l = Smooth(int2(pos.xy) / 2, z);
+    float4 a = Albedo(int2(pos.xy));
     float keep = a.a * (1 - saturate(fog.x * z + fog.y));
     float3 c = colour.Load(int3(pos.xy, 0)).rgb;
     float3 lit = max(c - a.rgb * amb.rgb * (1 - l.w) * keep, 0);
-    float3 bounce = pow(a.rgb, 2.2) * l.rgb * keep;
+    float3 bounce = pow(a.rgb, 2.2) * l.rgb * kBounce * keep;
     return float4(pow(Linear(lit) + bounce, 1 / opt.y), 0);
 }
 )";
@@ -946,20 +1002,8 @@ Texture2D<float> sunmap : register(t2);
 static const int kSteps = 16;
 static const float kReach = 250;      // world units marched
 static const float kThinning = 0.02;  // density falloff a unit up
-// 1 where the sun reaches p, a view space point; off the map counts as lit, no map as shaded
-float SunLit(float3 p) {
-    if (opt.x == 0) return 0;
-    float4 at = float4(p, 1);
-    float4 c = float4(dot(at, sun[0]), dot(at, sun[1]), dot(at, sun[2]), dot(at, sun[3]));
-    float3 n = c.xyz / c.w;
-    float2 uv = float2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5);
-    if (any(uv <= 0) || any(uv >= 1) || n.z <= 0 || n.z >= 1) return 1;
-    uint w;
-    uint h;
-    sunmap.GetDimensions(w, h);
-    // reversed depth: a caster nearer the sun is deeper
-    return n.z >= sunmap.Load(int3(int2(uv * float2(w, h)), 0)) - 0.001 ? 1 : 0;
-}
+// no map counts as shaded
+float FogSunLit(float3 p) { return opt.x == 0 ? 0 : SunLit(sunmap, p); }
 // a pixel's view space point; the sky, depth 0, at the march's reach
 float3 Seen(float2 px) {
     int2 p = clamp(int2(px), int2(vp.xy), int2(vp.xy + vp.zw) - 1);
@@ -988,7 +1032,7 @@ float4 fog_march(float4 pos : SV_Position) : SV_Target {
         float above = max(dot(float4(p, 1), height), 0);
         // steps spread by s squared: this one spans (2i + 1) / kSteps^2 of the reach
         float ext = sigma * exp(-kThinning * above) * reach * (2 * i + 1) / (kSteps * kSteps);
-        light += trans * ext * (sunlight * SunLit(p) + ambient);
+        light += trans * ext * (sunlight * FogSunLit(p) + ambient);
         trans *= exp(-ext);
     }
     return float4(light, trans);
@@ -1032,6 +1076,7 @@ constexpr uint32_t kCasterStride = 32;
 constexpr uint64_t kCasterRecords = 8ull << 20;  // 2.8M triangles a frame, 256 MB
 constexpr uint32_t kCasterDraws = 16384;
 constexpr uint32_t kCasterBytes = 16;     // a caster as kRayShadowPrelude reads it
+constexpr uint32_t kCasterTextured = 8;   // compare bit: its fetch is a colour map global illumination reads
 constexpr uint32_t kDivideChunk = 65535 * 64;  // records one dispatch divides at most
 constexpr uint64_t kRayIdleFrames = 60;   // a map's scene is freed once unresolved this long
 constexpr uint32_t kStreamRtao = 1;       // PipelineKey::stream_out
@@ -1594,6 +1639,7 @@ private:
         DXGI_FORMAT colour_format = DXGI_FORMAT_UNKNOWN;
         bool fog = false;        // kFogHlsl's, the sun map at t2
         Resolved* sun = nullptr;  // the far sun map
+        bool half = false;        // drawn to a target of half the depth's size
     };
     void Occlusion(const State& s, const OcclusionArgs& a);
     void BeginRayScene();
@@ -1604,9 +1650,12 @@ private:
     void BeginIllumination(const State& s);
     void Illumination(const State& s, const OcclusionArgs& a);
     bool EnsureIlluminationTargets(const Target& rt);
+    uint32_t LightW() const { return (gi_.w + 1) / 2; }
+    uint32_t LightH() const { return (gi_.h + 1) / 2; }
     bool AlbedoWanted(const State& s, const ShaderInfo& ps) const;
     void AlbedoFlags(const State& s, const ShaderInfo& ps, ShaderOptions& opt) const;
     bool SceneCaster(const PipelineKey& k, const Bound& b) const;
+    bool FirstTextureAlbedo(const State& s) const;
     void DivideView(const OcclusionArgs& a);
     void TargetView(ID3D12Resource* res, DXGI_FORMAT fmt, uint32_t samples, uint32_t slot);
     void CapIllumination(const State& s, const PipelineKey& k, const Bound& b, const CasterDraw& caster);
@@ -4150,6 +4199,9 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
         TargetView(p.colour, p.colour_format, 1, views + used++);
         CasterViews(views + used);
         used += 2;
+        if (p.sun) SunMapView(*p.sun, ViewCpu(views + used));
+        else NullViews(views + used, 1);
+        used++;
         D3D12_GPU_DESCRIPTOR_HANDLE heap = view_heap_->GetGPUDescriptorHandleForHeapStart();
         cl_->SetGraphicsRootDescriptorTable(kRootHeap, heap);
     }
@@ -4160,9 +4212,12 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
     }
     NullViews(views + used, kPsTextures - used);
     cl_->OMSetRenderTargets(1, &p.rtv, FALSE, nullptr);
-    D3D12_VIEWPORT vp{0, 0, float(depth.w), float(depth.h), 0, 1};
+    uint32_t shift = p.half ? 1 : 0;
+    D3D12_VIEWPORT vp{0, 0, float((depth.w + shift) >> shift), float((depth.h + shift) >> shift), 0, 1};
+    D3D12_RECT scissor{rect.left >> shift, rect.top >> shift, (rect.right + LONG(shift)) >> shift,
+                       (rect.bottom + LONG(shift)) >> shift};
     cl_->RSSetViewports(1, &vp);
-    cl_->RSSetScissorRects(1, &rect);
+    cl_->RSSetScissorRects(1, &scissor);
     cl_->SetPipelineState(pso);
     cl_->SetGraphicsRootConstantBufferView(kRootFlow, UploadConstants(c, kAoConstants * sizeof(float)));
     cl_->SetGraphicsRootDescriptorTable(kRootPsViews, ViewGuest(views));
@@ -4281,11 +4336,17 @@ void D3D12Backend::Illumination(const State& s, const OcclusionArgs& a) {
     bool encoded = rt->fmt == DXGI_FORMAT_R8G8B8A8_UNORM || rt->fmt == DXGI_FORMAT_R10G10B10A2_UNORM;
     c[17] = encoded ? kGiGamma : 1.0f;
     std::copy(std::begin(gi_.ambient), std::end(gi_.ambient), c + 28);
+    FogView view = FogViewAt(a.method);
+    Resolved* sun = view.shadowed ? SunMap(fcip::SunMapsDrawn().far_base) : nullptr;
+    c[31] = sun ? 1.0f : 0.0f;
+    std::copy(std::begin(view.sun), std::end(view.sun), c + 32);
+    std::copy(std::begin(view.sun_colour), std::end(view.sun_colour), c + 52);
     D3D12_GPU_VIRTUAL_ADDRESS scene = gi_.top->GetGPUVirtualAddress();
     AoPass trace{.entry = "gi_trace", .out = kGiFormat, .rtv = Rtv(kGiRtv), .scene = scene, .gi = true,
-                 .colour = colour, .colour_format = rt->fmt};
+                 .colour = colour, .colour_format = rt->fmt, .sun = sun, .half = true};
     AoPass across{.entry = "gi_blur", .out = kGiFormat, .rtv = Rtv(kGiRtv + 1), .src = gi_.light[0].Get(),
-                  .step_x = 1, .src_format = kGiFormat, .gi = true, .colour = colour, .colour_format = rt->fmt};
+                  .step_x = 1, .src_format = kGiFormat, .gi = true, .colour = colour, .colour_format = rt->fmt,
+                  .half = true};
     AoPass down{.entry = "gi_apply", .out = rt->fmt, .samples = rt->samples, .rtv = Rtv(rt->view),
                 .src = gi_.light[1].Get(), .step_y = 1, .src_format = kGiFormat, .rgb = true, .gi = true,
                 .colour = colour, .colour_format = rt->fmt};
@@ -4305,18 +4366,18 @@ void D3D12Backend::Illumination(const State& s, const OcclusionArgs& a) {
         std::snprintf(name, sizeof(name), "%04u_albedo", cap_i_++);
         CapSave(gi_.albedo.Get(), gi_.albedo_state, kAlbedoFormat, gi_.samples, false, gi_.w, gi_.h, 1, name);
         std::snprintf(name, sizeof(name), "%04u_bounce", cap_i_++);
-        CapSave(gi_.light[1].Get(), gi_.light_state[1], kGiFormat, 1, false, gi_.w, gi_.h, 1, name);
+        CapSave(gi_.light[1].Get(), gi_.light_state[1], kGiFormat, 1, false, LightW(), LightH(), 1, name);
         // the share of rays reaching the sky, as grey
         std::snprintf(name, sizeof(name), "%04u_sky", cap_i_++);
         UINT alpha = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(3, 3, 3, 3);
-        CapSave(gi_.light[1].Get(), gi_.light_state[1], kGiFormat, 1, false, gi_.w, gi_.h, 1, name, alpha);
+        CapSave(gi_.light[1].Get(), gi_.light_state[1], kGiFormat, 1, false, LightW(), LightH(), 1, name, alpha);
         const float* amb = gi_.ambient;
         std::fprintf(cap_, "illumination: %zu draws in the scene, ambient %g %g %g\n", gi_.draws.size(), amb[0],
                      amb[1], amb[2]);
     }
 }
 
-// the albedo at the colour target's size and samples, the light at its size
+// the albedo at the colour target's size and samples, the light at half its size
 bool D3D12Backend::EnsureIlluminationTargets(const Target& rt) {
     if (gi_.albedo && gi_.w == rt.w && gi_.h == rt.h && gi_.samples == rt.samples) return true;
     gi_.w = 0;
@@ -4326,7 +4387,8 @@ bool D3D12Backend::EnsureIlluminationTargets(const Target& rt) {
     ComPtr<ID3D12Resource>* res[3] = {&gi_.albedo, &gi_.light[0], &gi_.light[1]};
     D3D12_RESOURCE_STATES* state[3] = {&gi_.albedo_state, &gi_.light_state[0], &gi_.light_state[1]};
     for (uint32_t i = 0; i < 3; i++) {
-        D3D12_RESOURCE_DESC d = TextureDesc(i ? kGiFormat : kAlbedoFormat, rt.w, rt.h);
+        D3D12_RESOURCE_DESC d = TextureDesc(kAlbedoFormat, rt.w, rt.h);
+        if (i) d = TextureDesc(kGiFormat, (rt.w + 1) / 2, (rt.h + 1) / 2);
         d.SampleDesc.Count = i ? 1 : rt.samples;
         d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         if (*res[i]) Release(std::move(*res[i]));
@@ -5052,7 +5114,23 @@ uint32_t D3D12Backend::CasterVertices(const State& s, const DrawArgs& a, const P
         caster.info[2] = std::bit_cast<uint32_t>(ref);
         caster.info[3] = compare | uint32_t(f.x) << 4 | uint32_t(f.y) << 6;
     }
+    // global illumination reads a hidden hit's colour from the same fetch
+    if (view && f.reg >= 0 && FirstTextureAlbedo(s)) {
+        caster.stream = kStreamCaster + 1 + uint32_t(f.reg);
+        caster.info[1] = binds_.stages[1].table;
+        caster.info[3] |= kCasterTextured | uint32_t(f.x) << 4 | uint32_t(f.y) << 6;
+    }
     return vertices;
+}
+
+// the pixel shader's first texture, which its first fetch reads, is a colour map
+bool D3D12Backend::FirstTextureAlbedo(const State& s) const {
+    if (!s.ps || s.ps->info.textures.empty()) return false;
+    const auto& t = s.ps->info.textures[0];
+    if (t.dimension != uint8_t(xenos::Dimension::D2)) return false;
+    uint32_t fetch[6];
+    ReadFetch(s, t.fetch, fetch);
+    return AlbedoFormat(xenos::DecodeTextureFetch(fetch).format);
 }
 
 // a camera pass draw of the world, opaque, alpha tested or depth only, while global illumination's scene is captured

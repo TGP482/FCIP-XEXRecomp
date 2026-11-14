@@ -615,21 +615,29 @@ void MarkScene(uint32_t dev, uint32_t flag, const gpu::OcclusionArgs& a) {
 }  // namespace
 
 void Occlusion(uint32_t dev, const gpu::OcclusionArgs& a) { MarkScene(dev, gpu::kClearOcclusion, a); }
-void Illumination(uint32_t dev, const gpu::OcclusionArgs& a) { MarkScene(dev, gpu::kClearIllumination, a); }
 
 namespace {
 
-constexpr uint32_t kFogViews = 8;  // past the frame the render thread may run behind
+constexpr uint32_t kFogViews = 16;  // two a frame, past the frames the render thread may run behind
 gpu::FogView g_fog_views[kFogViews];
 uint32_t g_fog_next = 0;
+
+// a marker naming its view by the slot FogViewAt reads
+void MarkView(uint32_t dev, uint32_t flag, const gpu::OcclusionArgs& a, const gpu::FogView& v) {
+    gpu::OcclusionArgs marked = a;
+    marked.method = g_fog_next++ % kFogViews;
+    g_fog_views[marked.method] = v;
+    MarkScene(dev, flag, marked);
+}
 
 }  // namespace
 
 void VolumetricFog(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v) {
-    gpu::OcclusionArgs marked = a;
-    marked.method = g_fog_next++ % kFogViews;
-    g_fog_views[marked.method] = v;
-    MarkScene(dev, gpu::kClearFog, marked);
+    MarkView(dev, gpu::kClearFog, a, v);
+}
+
+void Illumination(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v) {
+    MarkView(dev, gpu::kClearIllumination, a, v);
 }
 
 void IlluminationWorld(uint32_t dev, const float ambient[3]) {

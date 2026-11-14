@@ -13,7 +13,7 @@ constexpr uint32_t kClearOcclusion = 0x100;
 constexpr uint32_t kClearOcclusionScene = 0x200;  // RTAO traces the world drawn from here to the occlusion
 // global illumination: the world's draws stream into its scene and write their albedo, the draws past the world clear
 // theirs and the world's end brings the game's ambient in its colour, then the scene's light is traced and added after
-// its last draw
+// its last draw, its method the FogViewAt slot of the sun that lights hidden hits
 constexpr uint32_t kClearIlluminationScene = 0x10000;
 constexpr uint32_t kClearIlluminationWorld = 0x20000;
 constexpr uint32_t kClearIllumination = 0x40000;
@@ -35,14 +35,14 @@ struct OcclusionArgs {
     uint32_t method = 0;      // kAo*
 };
 
-// volumetric fog, from the renderer's view space (x right, y up, z the distance)
+// volumetric fog and global illumination's sun, from the renderer's view space (x right, y up, z the distance)
 struct FogView {
     float sun[16] = {};     // into the far sun map's clip space, column j from sun[j * 4]
     float height[4] = {};   // to the height over the sea
     float sun_colour[4] = {};
     bool shadowed = false;  // without a sun map the sun lights none of it
 };
-// render thread: the view a kClearFog marker names
+// render thread: the view a kClearFog or kClearIllumination marker names
 FogView FogViewAt(uint32_t slot);
 
 inline void PackOcclusion(const OcclusionArgs& a, float color[4], float& z, uint32_t& stencil, Rect& r) {
@@ -75,7 +75,7 @@ void OcclusionScene(uint32_t dev);
 // on the title's thread before the camera pass's list, after its world and after its last item
 void IlluminationScene(uint32_t dev);
 void IlluminationWorld(uint32_t dev, const float ambient[3]);
-void Illumination(uint32_t dev, const gpu::OcclusionArgs& a);
+void Illumination(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);
 // on the title's thread after the camera pass's last item
 void VolumetricFog(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);
 }  // namespace d3d

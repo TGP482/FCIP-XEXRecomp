@@ -201,12 +201,6 @@ void EndWorld(PPCContext& ctx) {
     d3d::IlluminationWorld(R32(SYM_Device_pointer), ambient);
 }
 
-void Illuminate(PPCContext& ctx) {
-    if (t_world_list) EndWorld(ctx);
-    gpu::OcclusionArgs a;
-    if (SceneArgs(a)) d3d::Illumination(R32(SYM_Device_pointer), a);
-}
-
 // the camera's view inverted, a rotation and a translation, with the renderer's z, the distance, turned back into the
 // view's, which runs the other way: the renderer's view space into the world, row major
 bool ViewToWorld(float out[16]) {
@@ -244,14 +238,27 @@ void FogMatrices(gpu::FogView& v) {
     v.shadowed = true;
 }
 
-// over the camera's whole list, lit by the sun's colour as the receivers read it
-void Fog() {
-    gpu::OcclusionArgs a;
-    if (!SceneArgs(a)) return;
+// the sun as the receivers read its colour
+gpu::FogView SunView() {
     gpu::FogView v;
     FogMatrices(v);
     uint32_t dev = R32(SYM_Device_pointer);
     for (uint32_t i = 0; i < 3; i++) v.sun_colour[i] = GF(dev + kDevPsConstants + kPsSunColour * 16 + i * 4);
+    return v;
+}
+
+void Illuminate(PPCContext& ctx) {
+    if (t_world_list) EndWorld(ctx);
+    gpu::OcclusionArgs a;
+    if (SceneArgs(a)) d3d::Illumination(R32(SYM_Device_pointer), a, SunView());
+}
+
+// over the camera's whole list, lit by the sun
+void Fog() {
+    gpu::OcclusionArgs a;
+    if (!SceneArgs(a)) return;
+    gpu::FogView v = SunView();
+    uint32_t dev = R32(SYM_Device_pointer);
     static float logged[3] = {-1, -1, -1};
     const float* c = v.sun_colour;
     if (std::fabs(c[0] - logged[0]) + std::fabs(c[1] - logged[1]) + std::fabs(c[2] - logged[2]) > 0.02f) {
