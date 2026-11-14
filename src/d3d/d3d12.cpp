@@ -37,6 +37,7 @@
 #include "d3d/motion.h"
 #include "d3d/occlusion.h"
 #include "d3d/readback.h"
+#include "d3d/cas_shader.h"
 #include "d3d/smaa_shader.h"
 #include "d3d/smaa_textures.h"
 #include "backends/imgui_impl_dx12.h"
@@ -493,6 +494,29 @@ float4 ps(O i) : SV_Target {
 
 // Context::Blit: taps per axis averaged, colour times mul, sRGB encoded when asked
 // HDR10 output: the frame with the panel over it, its highlights stretched towards the display's peak
+// AMD CAS around ffx_a.h and ffx_cas.h: the upscaled frame sharpened in place, a pixel each
+const char* kCasDefines = "#define A_GPU 1\n#define A_HLSL 1\n";
+const char* kCasLoad = R"(
+cbuffer P : register(b1) { uint4 const0; uint4 const1; };
+Texture2D img : register(t0);
+AF3 CasLoad(ASU2 p) { return img.Load(int3(p, 0)).rgb; }
+void CasInput(inout AF1 r, inout AF1 g, inout AF1 b) {}
+)";
+const char* kCasPass = R"(
+struct O { float4 p : SV_Position; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    float2 t = float2((id << 1) & 2, id & 2);
+    o.p = float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float4 cas(O i) : SV_Target {
+    AF3 c;
+    CasFilter(c.r, c.g, c.b, AU2(i.p.xy), const0, const1, true);
+    return float4(c, img.Load(int3(i.p.xy, 0)).a);
+}
+)";
+
 const char* kHdrHlsl = R"(
 cbuffer P : register(b1) { float4 p0; float4 p1; };
 Texture2D frame : register(t0);
@@ -1282,6 +1306,7 @@ private:
     void EndScene();
     bool EnsureUpscaled(uint32_t w, uint32_t h);
     void DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, uint32_t taps, Target& out);
+    bool DrawSharpened(Target& out);
     uint32_t RayVertices(const DrawArgs& a, const PipelineKey& k, D3D12_PRIMITIVE_TOPOLOGY topo, uint32_t count,
                          bool alpha_test) const;
     void StreamOut(const DrawConstants& c, uint32_t vertices);
@@ -3904,8 +3929,8 @@ void D3D12Backend::EndScene() {
     else std::snprintf(what, sizeof(what), "not upscaling, %s", upscale_.motion ? "FSR failed" : "no motion vectors");
     LogUpscale(what);
     upscale_.reset = !ok;
-    if (ok) DrawUpscaled(upscale_.out.Get(), upscale_.out_state, kUpscaledFormat, 1, *out);
-    else DrawUpscaled(in.res.Get(), in.state, ReadFormat(in), 1, *out);
+    if (!ok) DrawUpscaled(in.res.Get(), in.state, ReadFormat(in), 1, *out);
+    else if (!DrawSharpened(*out)) DrawUpscaled(upscale_.out.Get(), upscale_.out_state, kUpscaledFormat, 1, *out);
 }
 
 // once a frame before its present through frame generation's swap chain
@@ -4061,6 +4086,20 @@ void D3D12Backend::DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& stat
     cl_->RSSetScissorRects(1, &sc);
     const float whole[4] = {0, 0, 1, 1};
     Blit(src, fmt, whole, false, true, taps, 1, out.fmt);
+}
+
+// FSR's output into the scene's target through AMD CAS; false when its pipeline cannot be made
+bool D3D12Backend::DrawSharpened(Target& out) {
+    static const std::string hlsl = std::string(kCasDefines) + kFfxA + kCasLoad + kFfxCas + kCasPass;
+    // CasSetup (ffx_cas.h) without scaling, at sharpness 0, AMD's default with the least ringing
+    constexpr float kSharpness = 0.0f;
+    float sharp = -1.0f / std::lerp(8.0f, 5.0f, kSharpness);
+    const float p[8] = {1, 1, 0, 0, sharp, 0, 8, 0};
+    Transition(upscale_.out.Get(), upscale_.out_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(out.res.Get(), out.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ID3D12Resource* const src[3] = {upscale_.out.Get(), nullptr, nullptr};
+    const DXGI_FORMAT fmt[3] = {kUpscaledFormat, kSwapFormat, kSwapFormat};
+    return Pass(hlsl.c_str(), "vs", "cas", out.fmt, Rtv(out.view), out.w, out.h, src, fmt, p, -1);
 }
 
 // RTAO

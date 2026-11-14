@@ -139,7 +139,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kAmbientOcclusion, "AMBIENT OCCLUSION",
      "Shades the world's creases and corners, SSAO, the more accurate GTAO or ray traced RTAO, characters and fog left alone"},
     {Kind::Value, kAntiAliasing, "ANTI ALIASING",
-     "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, or AMD FSR from the render resolution, NATIVE AA at 100%"},
+     "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, or AMD FSR 3 from the render resolution, sharpened by AMD CAS"},
     {Kind::Value, kFrameGeneration, "FRAME GENERATION",
      "Generates a frame between each two rendered ones with AMD FSR Frame Generation, with FSR on"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
@@ -379,10 +379,8 @@ void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
         Get().fsr = i == kMsaaCount;
         s.msaa = Get().fsr ? 0 : kMsaaValues[i];
     }
-    // FSR at 100% render resolution is native AA
-    const char* name = s.render_percent >= fsr::kMaxPercent ? "FSR NATIVE AA" : "FSR";
     if (i < kMsaaCount) std::snprintf(text, sizeof(text), "%s", kMsaaNames[i]);
-    else std::snprintf(text, sizeof(text), "%s%s", name, fsr::StatusNote(fsr::UpscalingStatus()));
+    else std::snprintf(text, sizeof(text), "FSR3%s", fsr::StatusNote(fsr::UpscalingStatus()));
 }
 
 void StepFrameGeneration(int step, char (&text)[64]) {
