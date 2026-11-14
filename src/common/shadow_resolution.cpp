@@ -167,10 +167,10 @@ struct Span {
     }
 };
 
-// as the game's snap: the position moved down to a whole number of texels along the axis
-void SnapAlong(Vec& p, Vec axis, double texel) {
+// as the game's snap: the position moved to a whole number of texels along the axis, the floor taken bias further on
+void SnapAlong(Vec& p, Vec axis, double texel, double bias) {
     double d = Dot(p, axis);
-    double off = d - std::floor(d / texel) * texel;
+    double off = d - std::floor((d + bias) / texel) * texel;
     p = {p.x - axis.x * off, p.y - axis.y * off, p.z - axis.z * off};
 }
 
@@ -340,14 +340,18 @@ PPC_FUNC(GUEST(Shadow_Snap)) {
     WF(view + kViewShadowRadius, radius);
     WF(view_cam + kCameraFov, fov);
 
+    // the far map inside a vis area has half the side: its grid holds every map's, so all runs share one centre
     double width = GF(cam + kCameraOrthoWidth);
-    double far_texel = width * distance / double(uint32_t(args[2]));
+    double far_texel = 2.0 * width * distance / double(fcip::SunShadowSide());
+    // the runs arrive snapped to the stock grid of their own side, both on the far grid's lines; half a full side
+    // stock texel keeps the floor off those lines, so float error never splits the runs a far texel apart
+    double bias = 0.5 * width / double(fcip::SunShadowSide());
     Vec forward = Unit(GV(cam + kCameraForward));
     Vec up = Unit(GV(cam + kCameraUp));
     Vec right = Unit(Cross(forward, up));
     Vec p = GV(cam + kCameraPosition);
-    SnapAlong(p, right, far_texel);
-    SnapAlong(p, up, far_texel);
+    SnapAlong(p, right, far_texel, bias);
+    SnapAlong(p, up, far_texel, bias);
     WF(cam + kCameraPosition, float(p.x));
     WF(cam + kCameraPosition + 4, float(p.y));
     WF(cam + kCameraPosition + 8, float(p.z));
