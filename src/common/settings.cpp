@@ -31,7 +31,7 @@ void LoadSettings(const void* table) {
     s.frame_generation = t["frame_generation"].value_or(s.frame_generation);
     s.ambient_occlusion = std::min(t["ambient_occlusion"].value_or(s.ambient_occlusion), 3u);
     s.shadow_resolution = std::min(t["shadow_resolution"].value_or(s.shadow_resolution), 8192u);
-    s.shadow_filter = std::min(t["shadow_filter"].value_or(s.shadow_filter), 1u);
+    s.shadow_filter = std::min(t["shadow_filter"].value_or(s.shadow_filter), uint32_t(kFilterPcss));
     s.draw_distance = std::clamp(t["draw_distance"].value_or(s.draw_distance), 1u, 32u);
     s.blur = t["aim_and_sprint_blur"].value_or(s.blur);
     // a file from before the split keeps its one sensitivity for both axes

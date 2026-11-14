@@ -32,6 +32,7 @@ struct SunMaps {
     uint32_t distance = 0;
     uint32_t side = 0;       // the far map's guest side, half inside a vis area
     uint32_t near_side = 0;  // the sharper maps' guest side
+    float depth_ratio = 0;   // the far map's depth range over its width
 };
 constexpr int kSunFar = int(kSunMaps);  // SunResolved's answer for the far map
 
@@ -43,5 +44,6 @@ constexpr uint8_t kSunCascade = 1;     // ShaderOptions::tex_flags on a fetch of
 constexpr uint8_t kSunSoft = 2;        // the same, with the soft filter on
 constexpr uint8_t kShadowSoft = 4;     // another light's shadow map, soft
 constexpr uint8_t kShadowHalf = 8;     // that map drawn as one of four inside a vis area, 672 at stock
+constexpr uint8_t kSunPcss = 16;       // the far sun map with PCSS on
 
 }  // namespace fcip

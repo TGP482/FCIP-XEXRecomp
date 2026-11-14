@@ -36,7 +36,7 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 - **Subpixel Morphological Antialiasing (SMAA)** - Enables SMAA to smooth jagged edges across the whole frame with a softer image. SMAA also smooths alpha-tested edges such as fences and foliage, and can be combined with MSAA.
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures.
 - **Shadow Resolution** - Sets the sun shadow resolution from 1024x1024 up to 8192x8192.
-- **Shadow Filtering** - Choose between Sharp, the game's own shadow edges, and Soft.
+- **Shadow Filtering** - Choose between Sharp, the game's own shadow edges, Soft and PCSS.
 - **Draw Distance** - Increases how far objects, grass, vegetation and shadows are drawn up to 32x.
 - **Aim and Sprint Blur** - Toggles the blur effect while aiming down a scope and during feral run.
 

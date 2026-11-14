@@ -52,7 +52,7 @@ const char* const kMsaaNames[] = {"OFF", "2X MSAA", "4X MSAA", "8X MSAA"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
 const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
 const char* const kAmbientOcclusionNames[] = {"OFF", "SSAO", "GTAO", "RTAO"};
-const char* const kShadowFilterNames[] = {"SHARP (DEFAULT)", "SOFT"};
+const char* const kShadowFilterNames[] = {"SHARP (DEFAULT)", "SOFT", "PCSS"};
 constexpr uint32_t kAudioOutputs[] = {audio::kOutputAuto, audio::kOutputMono, audio::kOutputStereo,
                                       audio::kOutputSurround};
 const char* const kAudioOutputNames[] = {"AUTOMATIC", "MONO", "2.0 STEREO", "5.1 SURROUND"};
@@ -147,7 +147,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},
     {Kind::Value, kShadowFilter, "SHADOW FILTERING",
-     "Sharp keeps the game's own shadow edges, soft blurs them by the same amount at every resolution"},
+     "Sharp keeps the game's own shadow edges, soft blurs them by the same amount at every resolution, PCSS widens sun shadows the further they fall from what casts them"},
     {Kind::Value, kDrawDistance, "DRAW DISTANCE",
      "Scales how far objects, grass and vegetation are drawn up to 8x and the area casting sun shadows up to 32x"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},

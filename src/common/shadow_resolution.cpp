@@ -103,6 +103,7 @@ thread_local bool t_sun = false;
 std::atomic<uint32_t> g_distance{0};  // the far map's radius over the stock one, 0 without sharper maps
 std::atomic<uint32_t> g_maps{0};      // sharper maps drawn
 std::atomic<uint32_t> g_side{0};      // the sun map's guest side, as ShadowMatrix takes it
+std::atomic<float> g_depth{0};        // the far sun camera's depth range over its width
 uint32_t g_pool_side = 0;             // the sun map side the pool's surfaces were made for
 std::atomic<float> g_water{std::numeric_limits<float>::quiet_NaN()};  // the last reflection's water height
 
@@ -114,6 +115,7 @@ struct SunResolve {
     uint32_t count = 0;
     uint32_t distance = 0;
     uint32_t side = 0;
+    float depth = 0;
 };
 constexpr uint32_t kResolveRing = 64;  // several frames of sun map resolves
 SunResolve g_ring[kResolveRing];
@@ -310,6 +312,17 @@ PPC_FUNC(GUEST(Shadow_Viewport)) {
     GUEST_ORIG(Shadow_Viewport)(ctx, base);
 }
 
+namespace {
+
+// the far sun camera's depth range over its width, which PCSS turns a blocker's depth into a penumbra by
+void LatchDepthRatio(uint32_t cam) {
+    if (t_map != kFarMap) return;
+    double range = GF(cam + kCameraFar) - GF(cam + kCameraNear);
+    g_depth = float(range / GF(cam + kCameraOrthoWidth));
+}
+
+}  // namespace
+
 // sun shadow camera, texel snapping, r4 the view, r5 r6 the size, r7 the camera
 PPC_FUNC(GUEST(Shadow_Snap)) {
     uint32_t view = uint32_t(ctx.r[4]);
@@ -322,6 +335,7 @@ PPC_FUNC(GUEST(Shadow_Snap)) {
         uint32_t map_side = uint32_t(ctx.r[5]);
         GUEST_ORIG(Shadow_Snap)(ctx, base);
         CullToView(view, cam, map_side);
+        LatchDepthRatio(cam);
         return;
     }
     uint64_t args[6];
@@ -362,6 +376,7 @@ PPC_FUNC(GUEST(Shadow_Snap)) {
     WF(cam + kCameraFarCopy, far_plane);
     CallGuest(ctx, SYM_CCamera_Update, {cam});
     CullToView(view, cam, uint32_t(args[2]));
+    LatchDepthRatio(cam);
 }
 
 // draw extent, vtable +0x1E8
@@ -431,7 +446,7 @@ PPC_FUNC(GUEST(Shadow_Resolve)) {
     if (ok && w == h && t_sun && t_map != kNoMap) {
         uint32_t at = mem::PhysicalFromVirtual(R32(tex + XDK_Texture_FetchConstant + kFetchAddress) & 0xFFFFF000);
         uint32_t n = g_issued.load(std::memory_order_relaxed);
-        g_ring[n % kResolveRing] = {at, t_map, g_maps, g_distance, g_side};
+        g_ring[n % kResolveRing] = {at, t_map, g_maps, g_distance, g_side, g_depth};
         g_issued.store(n + 1, std::memory_order_release);
         t_sun = false;  // the lights after the sun in a quad run
     }
@@ -496,6 +511,7 @@ int fcip::SunResolved(uint32_t address) {
         g_drawn.count = r.count;
         g_drawn.distance = r.distance;
         g_drawn.side = r.side;
+        g_drawn.depth_ratio = r.depth;
         return r.map;
     }
     return kNoMap;

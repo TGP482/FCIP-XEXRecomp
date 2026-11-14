@@ -481,6 +481,23 @@ float SunSoft(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 
     }
     return below / 16;
 }
+
+// PCSS: the mean depth of the blockers over the widest disc sets the penumbra, spread uv per unit of depth past them
+float SunPcss(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 slope, float spread, float2 radii) {
+    float sum = 0;
+    float count = 0;
+    [unroll] for (int i = 0; i < 16; i++) {
+        float angle = i * 2.39996323;
+        float2 off = sqrt((i + 0.5) / 16) * radii.y * float2(cos(angle), sin(angle));
+        float4 d = map.GatherRed(s, uv + off);
+        float4 hit = float4(d <= z + dot(slope, off));
+        sum += dot(d, hit);
+        count += dot(hit, 1);
+    }
+    if (count == 0) return 0;
+    float radius = clamp(abs(z - sum / count) * spread, radii.x, radii.y);
+    return SunSoft(map, s, uv, z, slope, radius);
+}
 )";
 
 class Translator {
@@ -864,8 +881,8 @@ void Translator::EmitTextureFetch(const Fetch& f) {
 }
 
 // a fetch of the far sun map reads the sharper maps over it, coarsest first, each where it covers the point: g_ext.x
-// is the far map's radius over the stock one, g_ext.y the sharper map count, g_ext.z the far map's guest side and g_ext.w
-// the sharper maps', map sk at 2^sk the stock radius. Scaled about the centre, the fetch's own offset kept in texels, a texel and a half inside its
+// is the far map's radius over the stock one, g_ext.y the sharper map count, g_ext.z the far map's guest side and the
+// sharper maps' packed, map sk at 2^sk the stock radius. Scaled about the centre, the fetch's own offset kept in texels, a texel and a half inside its
 // edge for the taps around it
 void Translator::EmitSunMaps(uint32_t t, bool weights) {
     OpenSunMap("3 / ns");
@@ -884,8 +901,10 @@ void Translator::OpenSunMap(const std::string& margin) {
     Open(F("[unroll] for (int sk = %u; sk >= 0; sk--)", fcip::kSunMaps - 1));
     Open("if (sk < g_ext.y)");
     Line("float2 ns; t_sun[sk].GetDimensions(ns.x, ns.y);");
+    // the far map's guest side in eighths whole, the sharper maps' as the fraction
+    Line("float2 sides = float2(floor(g_ext.z), frac(g_ext.z) * 2048) * 8;");
     // ShadowMatrix maps the centre to 0.5 + 0.5 / side, the guest side, not the host's
-    Line("float2 un = (tc.xy - 0.5 - 0.5 / g_ext.z) * (g_ext.x / exp2(sk)) + 0.5 + 0.5 / g_ext.w;");
+    Line("float2 un = (tc.xy - 0.5 - 0.5 / sides.x) * (g_ext.x / exp2(sk)) + 0.5 + 0.5 / sides.y;");
     // the outer fifth hands over to the next coarser map: depths and weights blended, so shadow edges morph across it
     Line("float2 ne = abs(un - 0.5) * 2 + " + margin + ";");
     Line("float nw = 1 - saturate((max(ne.x, ne.y) - 0.8) / 0.2);");
@@ -895,6 +914,18 @@ void Translator::OpenSunMap(const std::string& margin) {
 // takes the 1x map's texels in every map, so the cascades and the vis area's half side map all match
 constexpr double kSoftRadius = 3.0 / 1344;
 constexpr double kSoftRadiusHalf = 3.0 / 672;
+// PCSS: penumbra radius per world unit from blocker to receiver, and its bounds in the 1x map's uv, one to twelve
+// stock texels; the blockers are searched over the widest
+constexpr double kPcssSpread = 0.02;
+constexpr double kPcssMin = 1.0 / 1344;
+constexpr double kPcssMax = 12.0 / 1344;
+
+// the sun's filter call on a map at point p, whose uv spans s stock radii
+std::string SunFilter(const std::string& map, uint32_t t, const char* p, const char* slope, const char* s, bool pcss) {
+    if (!pcss) return F("SunSoft(%s, s%u, %s, tc.z, %s, %.9g / %s)", map.c_str(), t, p, slope, kSoftRadius, s);
+    return F("SunPcss(%s, s%u, %s, tc.z, %s, spread * scale / %s, float2(%.9g, %.9g) / %s)", map.c_str(), t, p, slope,
+             s, kPcssMin, kPcssMax, s);
+}
 
 // soft shadows through the receiver's own filter, four taps half a texel either way blended by the weights fetch:
 // the weights fetch gives as its y weight the share of a disc of compares at or below the receiver's depth tc.z, and
@@ -908,13 +939,16 @@ void Translator::EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags
     sun_soft_ = true;
     Line("float2 slope = SunSlope(float3(uv, tc.z));");
     if (flags & fcip::kSunSoft) {
+        bool pcss = flags & fcip::kSunPcss;
         // the far map spans scale stock radii, map sk 2^sk
         Line("float scale = max(g_ext.x, 1);");
-        Line(F("float below = SunSoft(t%u, s%u, uv, tc.z, slope, %.9g / scale);", t, t, kSoftRadius));
-        OpenSunMap(F("3 / ns + %.9g / exp2(sk)", 2 * kSoftRadius));
-        Line("float2 nslope = slope * exp2(sk) / scale;");
-        Line(F("float nr = %.9g / exp2(sk);", kSoftRadius));
-        Line(F("if (nw > 0) below = lerp(below, SunSoft(t_sun[sk], s%u, un, tc.z, nslope, nr), nw);", t));
+        // far map uv per unit of depth past a blocker
+        if (pcss) Line(F("float spread = g_ext.w * %.9g;", kPcssSpread));
+        Line("float below = " + SunFilter(F("t%u", t), t, "uv", "slope", "scale", pcss) + ";");
+        OpenSunMap(F("3 / ns + %.9g / exp2(sk)", 2 * (pcss ? kPcssMax : kSoftRadius)));
+        Line("float nscale = exp2(sk);");
+        Line("float2 nslope = slope * nscale / scale;");
+        Line("if (nw > 0) below = lerp(below, " + SunFilter("t_sun[sk]", t, "un", "nslope", "nscale", pcss) + ", nw);");
         Close();
         Close();
     } else {
