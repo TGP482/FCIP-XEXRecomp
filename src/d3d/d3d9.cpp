@@ -596,7 +596,10 @@ void ResolveTo(uint32_t dev, const ResolveCall& c) {
 
 }  // namespace
 
-void Occlusion(uint32_t dev, const gpu::OcclusionArgs& a) {
+namespace {
+
+// a marker clear carrying the camera's projection and fog, over dev's bound colour and depth targets
+void MarkScene(uint32_t dev, uint32_t flag, const gpu::OcclusionArgs& a) {
     if (!R32(dev + kDevTargets) || !R32(dev + kDevDepth)) return;
     float color[4];
     float z = 0;
@@ -606,7 +609,20 @@ void Occlusion(uint32_t dev, const gpu::OcclusionArgs& a) {
     std::lock_guard lock(g_lock);
     gpu::State s;
     ReadRegisters(dev, s);
-    Backend()->Clear(s, gpu::kClearOcclusion, color, z, stencil, &rect);
+    Backend()->Clear(s, flag, color, z, stencil, &rect);
+}
+
+}  // namespace
+
+void Occlusion(uint32_t dev, const gpu::OcclusionArgs& a) { MarkScene(dev, gpu::kClearOcclusion, a); }
+void Illumination(uint32_t dev, const gpu::OcclusionArgs& a) { MarkScene(dev, gpu::kClearIllumination, a); }
+
+void IlluminationWorld(uint32_t dev, const float ambient[3]) {
+    const float color[4] = {ambient[0], ambient[1], ambient[2], 0};
+    std::lock_guard lock(g_lock);
+    gpu::State s;
+    ReadRegisters(dev, s);
+    Backend()->Clear(s, gpu::kClearIlluminationWorld, color, 0, 0, nullptr);
 }
 
 void OcclusionScene(uint32_t dev) {
@@ -646,6 +662,7 @@ void SceneEnd(uint32_t dev) { Mark(dev, gpu::kClearSceneEnd); }
 void HudBegin(uint32_t dev) { Mark(dev, gpu::kClearHudBegin); }
 void MotionPause(uint32_t dev) { Mark(dev, gpu::kClearMotionPause); }
 void MotionResume(uint32_t dev) { Mark(dev, gpu::kClearMotionResume); }
+void IlluminationScene(uint32_t dev) { Mark(dev, gpu::kClearIlluminationScene); }
 
 // Shaders: the library makes its object, the host translates the container's microcode as created
 HLE_AFTER(D3DDevice_CreateVertexShader) { CreateShader(a[0], uint32_t(ctx.r[3]), true); }

@@ -50,6 +50,14 @@ constexpr uint8_t kShadowRay = 32;     // any shadow map, traced against its cas
 constexpr uint32_t kRaySlotShift = 6;
 constexpr uint32_t kRayScenes = 4;      // shadow maps one draw traces at most
 constexpr uint32_t kRayFirstSlot = 25;  // pixel shader views: casters, their records, then the scenes through 30
+// global illumination: a colour texture, never a shadow map, whose first fetch is the albedo; set on kAlbedoOut it
+// writes the albedo target, which no draw reaches as a texture of its own
+constexpr uint8_t kAlbedoFetch = 64;
+constexpr uint32_t kAlbedoOut = 31;
+constexpr uint32_t kAlbedoTarget = 5;  // past the motion target
+
+// HLSL of CasterHit(caster, prim, bary): t_ray_casters and t_ray_records declared before it
+extern const char* const kCasterHitHlsl;
 
 // what a pixel shader's first instruction fetches its first texture at: an interpolator and two of its components,
 // reg -1 when that instruction is no such fetch

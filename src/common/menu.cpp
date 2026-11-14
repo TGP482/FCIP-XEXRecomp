@@ -118,7 +118,7 @@ enum RowId {
     kBlur, kDrawDistance,
     kInvincible, kNoclip, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kFrameGeneration, kSmaa, kAmbientOcclusion,
-    kAudioOutput
+    kAudioOutput, kGlobalIllumination
 };
 
 constexpr Row kSettingsRows[] = {
@@ -136,9 +136,11 @@ constexpr Row kSettingsRows[] = {
      "Caps the frame rate to your monitor's refresh rate or a custom value, or removes the cap"},
     {Kind::Value, kFpsCounter, "FPS COUNTER", "Displays the frame rate on screen"},
     {Kind::Value, kColourBlind, "COLOUR BLIND MODE", "Adjusts the colours for protanopia, deuteranopia or tritanopia"},
-    {Kind::Heading, -1, "GRAPHICS", "Antialiasing, ambient occlusion, texture filtering, shadows and draw distance"},
+    {Kind::Heading, -1, "GRAPHICS", "Antialiasing, ambient occlusion, global illumination, texture filtering, shadows and draw distance"},
     {Kind::Value, kAmbientOcclusion, "AMBIENT OCCLUSION",
      "Shades the world's creases and corners, SSAO, the more accurate GTAO or ray traced RTAO, characters and fog left alone"},
+    {Kind::Value, kGlobalIllumination, "GLOBAL ILLUMINATION",
+     "Ray traces the light surfaces bounce onto each other, so a wall takes on the colour of the sand beside it"},
     {Kind::Value, kAntiAliasing, "ANTI ALIASING",
      "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, or AMD FSR 3 from the render resolution, sharpened by AMD CAS"},
     {Kind::Value, kFrameGeneration, "FRAME GENERATION",
@@ -491,6 +493,13 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             StepName(Get().shadow_filter, kShadowFilterNames, step, text);
             if (Get().shadow_filter == kFilterRay && !gpu::RayTracing()) {
                 std::snprintf(text, sizeof(text), "RAY TRACED (NOT SUPPORTED)");
+            }
+            break;
+        case kGlobalIllumination:
+            Flip(Get().global_illumination, step);
+            std::snprintf(text, sizeof(text), "%s", OnOff(Get().global_illumination));
+            if (Get().global_illumination && !gpu::RayTracing()) {
+                std::snprintf(text, sizeof(text), "ON (NOT SUPPORTED)");
             }
             break;
         case kAmbientOcclusion:

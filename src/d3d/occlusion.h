@@ -4,12 +4,18 @@
 
 #include "gpu/state.h"
 
-// Ambient occlusion reaches the renderer as a clear with a flag no D3DCLEAR value uses, so the render thread keeps it
-// in order with the draws; what it needs rides in the clear's colour, depth, stencil and rect
+// Ambient occlusion and global illumination reach the renderer as a clear with a flag no D3DCLEAR value uses, so the
+// render thread keeps it in order with the draws; what it needs rides in the clear's colour, depth, stencil and rect
 namespace gpu {
 
 constexpr uint32_t kClearOcclusion = 0x100;
 constexpr uint32_t kClearOcclusionScene = 0x200;  // RTAO traces the world drawn from here to the occlusion
+// global illumination: the world's draws stream into its scene and write their albedo, the draws past the world clear
+// theirs and the world's end brings the game's ambient in its colour, then the scene's light is traced and added after
+// its last draw
+constexpr uint32_t kClearIlluminationScene = 0x10000;
+constexpr uint32_t kClearIlluminationWorld = 0x20000;
+constexpr uint32_t kClearIllumination = 0x40000;
 
 // the ambient occlusion setting
 enum : uint32_t { kAoSsao = 1, kAoGtao = 2, kAoRtao = 3 };
@@ -53,4 +59,8 @@ namespace d3d {
 void Occlusion(uint32_t dev, const gpu::OcclusionArgs& a);
 // on the title's thread before the world's draws RTAO traces
 void OcclusionScene(uint32_t dev);
+// on the title's thread before the camera pass's list, after its world and after its last item
+void IlluminationScene(uint32_t dev);
+void IlluminationWorld(uint32_t dev, const float ambient[3]);
+void Illumination(uint32_t dev, const gpu::OcclusionArgs& a);
 }  // namespace d3d

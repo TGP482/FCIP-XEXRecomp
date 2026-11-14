@@ -501,38 +501,12 @@ float SunPcss(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 
 )";
 
 // ray traced shadows: a map's casters as triangles in its uv and depth, with records of their clip position and the
-// interpolator an alpha tested one reads. A caster is x its first record, y its alpha texture in the heap, z the alpha
-// reference and w the compare, then the interpolator's two components
+// interpolator an alpha tested one reads; CasterHit is fcip::kCasterHitHlsl
 const char* kRayShadowPrelude = R"(
-Texture2D<float4> t_heap[] : register(t0, space3);
-SamplerState s_heap : register(s0, space3);
 static uint g_ray_done = 0;
 static float3 g_ray_at[4];
 static float g_ray_lit[4];
 static float2 g_frag;  // the pixel, which turns its rays
-
-// an alpha tested caster's test where the ray crosses its triangle prim
-bool CasterHit(uint caster, uint prim, float2 bary) {
-    uint4 c = t_ray_casters.Load4(caster * 16);
-    uint at = (c.x + prim * 3) * 32 + 16;
-    float4 a = asfloat(t_ray_records.Load4(at));
-    float4 b = asfloat(t_ray_records.Load4(at + 32));
-    float4 d = asfloat(t_ray_records.Load4(at + 64));
-    float4 tex = a + (b - a) * bary.x + (d - a) * bary.y;
-    float2 uv = float2(tex[c.w >> 4 & 3], tex[c.w >> 6 & 3]);
-    float alpha = t_heap[NonUniformResourceIndex(c.y)].SampleLevel(s_heap, uv, 0).a;
-    float ref = asfloat(c.z);
-    switch (c.w & 7) {
-        case 0: return false;
-        case 1: return alpha < ref;
-        case 2: return alpha == ref;
-        case 3: return alpha <= ref;
-        case 4: return alpha > ref;
-        case 5: return alpha != ref;
-        case 6: return alpha >= ref;
-    }
-    return true;
-}
 
 // nothing between the point and the light, which lies along +z in the map's space: the title's depth is reversed, a
 // map is cleared to 0 and keeps its largest depth. Casters nearer than the map's near plane count; past its edge is lit
@@ -613,6 +587,8 @@ private:
     std::string Head() const;
     std::string Entry() const;
     std::string MotionEntry() const;
+    // pixel: the first colour texture fetched also goes to the albedo target
+    bool Albedo() const { return Pixel() && (opt_.tex_flags[fcip::kAlbedoOut] & fcip::kAlbedoFetch); }
 
     ShaderStage stage_;
     const uint32_t* code_;
@@ -946,6 +922,12 @@ void Translator::EmitTextureFetch(const Fetch& f) {
         } else {
             Line("float4 ft = " + fetch + ";");
             if (sun_op && (sun & fcip::kSunCascade)) EmitSunMaps(t, op == kGetWeights);
+            if (op == kTextureFetch && (sun & fcip::kAlbedoFetch) && Albedo()) {
+                Open("if (!g_albedo_set)");
+                Line("g_albedo = ft;");
+                Line("g_albedo_set = true;");
+                Close();
+            }
         }
         std::string fetched = op == kTextureFetch ? Hooks().Fetched(t, opt_.tex_flags[t & 31]) : std::string();
         if (!fetched.empty()) Line(fetched);
@@ -1237,8 +1219,10 @@ void CommitAlu() {
             if (!(ray_slots_ >> i & 1)) continue;
             s += F("RaytracingAccelerationStructure t_ray%u : register(t%u);\n", i, fcip::kRayFirstSlot + 2 + i);
         }
+        s += fcip::kCasterHitHlsl;
         s += kRayShadowPrelude;
     }
+    if (Albedo()) s += "static float4 g_albedo = 0;\nstatic bool g_albedo_set = false;\n";
     return s;
 }
 
@@ -1341,6 +1325,7 @@ struct POut {
     if (info_.writes_depth) s += "    float depth : SV_Depth;\n";
     if (!info_.exports && !info_.writes_depth) s += "    float4 c0 : SV_Target0;\n";
     if (opt_.motion) s += F("    float2 motion : SV_Target%u;\n", kMotionTarget);
+    if (Albedo()) s += F("    float4 albedo : SV_Target%u;\n", fcip::kAlbedoTarget);
     s += R"(};
 
 POut main(PIn i) {
@@ -1381,6 +1366,7 @@ POut main(PIn i) {
         // behind the camera last frame or past two screens: off screen, finite for FSR and half floats
         s += "    o.motion = i.prev.w > 0 ? clamp(mv, -2, 2) : 2;\n";
     }
+    if (Albedo()) s += "    o.albedo = g_albedo_set ? float4(g_albedo.rgb, 1) : float4(0, 0, 0, 0);\n";
     s += "    return o;\n}\n";
     return s;
 }
@@ -1405,6 +1391,37 @@ std::string TranslateShader(ShaderStage stage, const uint32_t* code, size_t dwor
 }
 
 }  // namespace gpu
+
+// the camera's and the shadow maps' ray traced casters: records of their clip position and the interpolator an alpha
+// tested one reads. A caster is x its first record, y its alpha texture in the heap, z the alpha reference and w the
+// compare, then the interpolator's two components
+const char* const fcip::kCasterHitHlsl = R"(
+Texture2D<float4> t_heap[] : register(t0, space3);
+SamplerState s_heap : register(s0, space3);
+
+// an alpha tested caster's test where the ray crosses its triangle prim
+bool CasterHit(uint caster, uint prim, float2 bary) {
+    uint4 c = t_ray_casters.Load4(caster * 16);
+    uint at = (c.x + prim * 3) * 32 + 16;
+    float4 a = asfloat(t_ray_records.Load4(at));
+    float4 b = asfloat(t_ray_records.Load4(at + 32));
+    float4 d = asfloat(t_ray_records.Load4(at + 64));
+    float4 tex = a + (b - a) * bary.x + (d - a) * bary.y;
+    float2 uv = float2(tex[c.w >> 4 & 3], tex[c.w >> 6 & 3]);
+    float alpha = t_heap[NonUniformResourceIndex(c.y)].SampleLevel(s_heap, uv, 0).a;
+    float ref = asfloat(c.z);
+    switch (c.w & 7) {
+        case 0: return false;
+        case 1: return alpha < ref;
+        case 2: return alpha == ref;
+        case 3: return alpha <= ref;
+        case 4: return alpha > ref;
+        case 5: return alpha != ref;
+        case 6: return alpha >= ref;
+    }
+    return true;
+}
+)";
 
 // the fetch an alpha tested shadow caster's test reads, when the shader opens with it
 fcip::FirstFetch fcip::FindFirstFetch(const uint32_t* code, size_t dwords) {

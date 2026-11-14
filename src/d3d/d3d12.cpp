@@ -112,6 +112,12 @@ constexpr uint32_t kAoRtv = kSmaaRtv + kSmaaTargets;  // ambient occlusion's raw
 constexpr uint32_t kMotionRtv = kAoRtv + kAoTargets;  // motion vectors as the draws wrote them, then completed
 constexpr DXGI_FORMAT kMotionFormat = DXGI_FORMAT_R16G16_FLOAT;
 constexpr uint32_t kHudlessRtv = kMotionRtv + 2;  // frame generation's two back buffers without the HUD
+constexpr uint32_t kAlbedoRtv = kHudlessRtv + 2;   // global illumination's albedo, then its traced light and first blur
+constexpr uint32_t kGiRtv = kAlbedoRtv + 1;
+constexpr int kGiTargets = 2;
+constexpr uint32_t kRtvSlots = kGiRtv + kGiTargets;
+constexpr DXGI_FORMAT kAlbedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+constexpr DXGI_FORMAT kGiFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 constexpr float kNoMotion = 32768;  // the drawn motion's clear: no draw wrote the pixel
 constexpr uint64_t kSceneTarget = 1ull << 62;  // targets_ key bit of a target at the scene's scale, before FSR
 constexpr DXGI_FORMAT kUpscaledFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -369,11 +375,14 @@ struct PipelineKey {
     uint32_t topology = 0;
     uint32_t strip_cut = 0;
     uint32_t stream_out = 0;  // kStreamRtao or a kStreamCaster
-    uint32_t motion = 0;      // kMotionTarget's format, 0 none; no padding: the key is hashed and compared as bytes
+    uint32_t motion = 0;      // kMotionTarget's format, 0 none
+    uint32_t albedo = 0;      // fcip::kAlbedoTarget's use, kAlbedo*
+    uint32_t unused = 0;      // no padding: the key is hashed and compared as bytes
 };
+enum : uint32_t { kAlbedoWrite = 1, kAlbedoClear = 2 };
 
 // cache/pipelines.bin: the header, then per pipeline its record, the shaders' DXIL and the driver's blob
-constexpr uint32_t kPipelineCacheMagic = 0x32505358;
+constexpr uint32_t kPipelineCacheMagic = 0x33505358;
 struct PipelineRecord {
     PipelineKey key;
     uint32_t vs_size = 0;
@@ -411,7 +420,7 @@ struct Frame {
 
 // a draw's render targets as OMSetRenderTargets takes them, 0 for none
 struct TargetViews {
-    SIZE_T rtv[kMotionTarget + 1] = {};
+    SIZE_T rtv[fcip::kAlbedoTarget + 1] = {};
     SIZE_T dsv = 0;
 };
 
@@ -613,10 +622,18 @@ float4 smaa_weights(SmaaWeightV i) : SV_Target { return SMAABlendingWeightCalcul
 float4 smaa_blend(SmaaBlendV i) : SV_Target { return SMAANeighborhoodBlendingPS(i.uv, i.o, tex0, tex1); }
 )";
 
-// Ambient occlusion from the scene's depth: occlusion pass, then a blur across and one down that multiplies it into
-// the colour. The sky is far: a pixel's samples there span less than one pixel and it stays lit
-const char* kAoHlsl = R"(
-cbuffer A : register(b1) { float4 proj; float4 zp; float4 ndc; float4 vp; float4 opt; float4 fog; float4 fogcolor; };
+// the scene's view space from its depth, shared by ambient occlusion and global illumination
+const char* kViewHlsl = R"(
+cbuffer A : register(b1) {
+    float4 proj;
+    float4 zp;
+    float4 ndc;
+    float4 vp;
+    float4 opt;
+    float4 fog;
+    float4 fogcolor;
+    float4 amb;
+};
 #ifdef MS
 Texture2DMS<float> depth : register(t0);
 float Raw(int2 p) { return depth.Load(p, 0); }
@@ -624,7 +641,6 @@ float Raw(int2 p) { return depth.Load(p, 0); }
 Texture2D<float> depth : register(t0);
 float Raw(int2 p) { return depth.Load(int3(p, 0)); }
 #endif
-Texture2D<float2> ao : register(t1);
 float4 vs(uint id : SV_VertexID) : SV_Position {
     float2 t = float2((id << 1) & 2, id & 2);
     return float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
@@ -650,6 +666,12 @@ float3 Normal(float2 pos, float3 c) {
     return normalize(cross(dx, dy));
 }
 static const float kDither[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+)";
+
+// Ambient occlusion from the scene's depth: occlusion pass, then a blur across and one down that multiplies it into
+// the colour. The sky is far: a pixel's samples there span less than one pixel and it stays lit
+const char* kAoHlsl = R"(
+Texture2D<float2> ao : register(t1);
 // opt: world radius, most pixels it may span; out: occlusion, view distance
 float2 occlusion(float4 pos : SV_Position) : SV_Target {
     float3 c = View(pos.xy);
@@ -803,7 +825,117 @@ float4 occlusion_apply(float4 pos : SV_Position) : SV_Target {
     return float4(fogcolor.rgb * fogged * (1 - a), a);
 }
 )";
-constexpr int kAoConstants = 28;  // kAoHlsl's b1
+
+// Global illumination: one bounce of the light the scene's surfaces throw onto each other. 4 cosine weighted rays a
+// pixel through the camera pass's world, turned and spread by the 4x4 dither, each hit lit by the colour the screen
+// shows where it sees that point; a hidden or off screen hit adds nothing. The game lights everything with a flat
+// ambient, its sky: the share of rays that hit something takes that share of it away, in the game's own colour space.
+// Blurred across and down within depth edges, then the pixel's albedo times the bounce is added under the fog. Light
+// adds in linear space: the scene's colour and the textures are gamma encoded. opt.x the ray length, opt.y the scene's
+// gamma, 1 where its target holds linear colour, amb the game's ambient. Then come fcip::kCasterHitHlsl and kGiHlsl
+const char* kGiViewsHlsl = R"(
+Texture2D<float4> light : register(t1);
+RaytracingAccelerationStructure scene : register(t2);
+#ifdef MS
+Texture2DMS<float4> albedo : register(t3);
+float4 Albedo(int2 p) { return albedo.Load(p, 0); }
+#else
+Texture2D<float4> albedo : register(t3);
+float4 Albedo(int2 p) { return albedo.Load(int3(p, 0)); }
+#endif
+Texture2D<float4> colour : register(t4);  // the scene before it, resolved
+float3 Linear(float3 c) { return pow(max(c, 0), opt.y); }
+ByteAddressBuffer t_ray_casters : register(t5);
+ByteAddressBuffer t_ray_records : register(t6);
+)";
+const char* kGiHlsl = R"(
+// the screen's colour at p, a view space point, where the screen sees that point
+float3 Seen(float3 p) {
+    if (p.z <= 0) return 0;
+    float2 px = (p.xy / (proj.xy * p.z) + proj.zw - ndc.zw) / ndc.xy;
+    if (any(px < vp.xy) || any(px >= vp.xy + vp.zw)) return 0;
+    if (abs(View(px).z - p.z) > 0.05 + p.z * 0.02) return 0;
+    return Linear(colour.Load(int3(px, 0)).rgb);
+}
+// out: the light reaching the pixel, the share of its rays that reach the sky; -1 where no draw left an albedo
+float4 gi_trace(float4 pos : SV_Position) : SV_Target {
+    float3 c = View(pos.xy);
+    if (Albedo(int2(pos.xy)).a == 0) return float4(0, 0, 0, -1);
+    float pixel = c.z * proj.x * abs(ndc.x);
+    // a pixel this wide sees nothing within the rays' length, the sky
+    if (pixel > opt.x * 0.25) return float4(0, 0, 0, 1);
+    float3 n = Normal(pos.xy, c);
+    if (dot(n, c) > 0) n = -n;
+    float3 t = normalize(cross(n, abs(n.y) < 0.9 ? float3(0, 1, 0) : float3(1, 0, 0)));
+    float3 b = cross(n, t);
+    int2 cell = int2(pos.xy) & 3;
+    float turn = kDither[cell.y * 4 + cell.x] * (6.2831853 / 16);
+    float spread = kDither[cell.x * 4 + cell.y] / 16;
+    RayDesc ray;
+    // two pixels off the surface, past the depth's own error
+    ray.Origin = c + n * (pixel * 2 + 0.01);
+    ray.TMin = 0;
+    ray.TMax = opt.x;
+    float3 sum = 0;
+    float sky = 0;
+    for (int i = 0; i < 4; i++) {
+        float u = (i + spread) / 4;
+        float phi = i * 2.3999632 + turn;
+        float r = sqrt(u);
+        ray.Direction = t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(1 - u);
+        RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
+        q.TraceRayInline(scene, RAY_FLAG_NONE, 0xFF, ray);
+        while (q.Proceed()) {
+            uint caster = q.CandidateInstanceID() + q.CandidateGeometryIndex();
+            float2 bary = q.CandidateTriangleBarycentrics();
+            if (CasterHit(caster, q.CandidatePrimitiveIndex(), bary)) q.CommitNonOpaqueTriangleHit();
+        }
+        if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
+            sky += 1;
+            continue;
+        }
+        sum += Seen(ray.Origin + ray.Direction * q.CommittedRayT());
+    }
+    return float4(sum / 4, sky / 4);
+}
+// opt.zw: step; 9 taps, twice the dither's period, depth edges and pixels without albedo left out
+float4 Smooth(float2 pos) {
+    int2 p = int2(pos);
+    int2 lo = int2(vp.xy);
+    int2 hi = int2(vp.xy + vp.zw) - 1;
+    float z = View(pos).z;
+    float4 sum = 0;
+    float n = 0;
+    for (int i = -4; i <= 4; i++) {
+        int2 at = clamp(p + i * int2(opt.zw), lo, hi);
+        float4 s = light.Load(int3(at, 0));
+        if (s.w < 0) continue;
+        float w = (abs(i) == 4 ? 0.5 : 1) * saturate(2 - abs(View(at).z - z) / (z * 0.02));
+        sum += s * w;
+        n += w;
+    }
+    return n > 0 ? sum / n : float4(0, 0, 0, 1);
+}
+float4 gi_blur(float4 pos : SV_Position) : SV_Target {
+    if (light.Load(int3(pos.xy, 0)).w < 0) return float4(0, 0, 0, -1);
+    return Smooth(pos.xy);
+}
+// the scene's colour lit again, written over it with its alpha kept
+float4 gi_apply(float4 pos : SV_Position) : SV_Target {
+    float4 l = Smooth(pos.xy);
+    float4 a = Albedo(int2(pos.xy));
+    float z = View(pos.xy).z;
+    float keep = a.a * (1 - saturate(fog.x * z + fog.y));
+    float3 c = colour.Load(int3(pos.xy, 0)).rgb;
+    float3 lit = max(c - a.rgb * amb.rgb * (1 - l.w) * keep, 0);
+    float3 bounce = pow(a.rgb, 2.2) * l.rgb * keep;
+    return float4(pow(Linear(lit) + bounce, 1 / opt.y), 0);
+}
+)";
+constexpr float kGiRadius = 32.0f;  // world units the bounce reaches
+constexpr float kGiGamma = 2.2f;
+
+constexpr int kAoConstants = 32;  // kAoHlsl's b1
 constexpr DXGI_FORMAT kAoFormat = DXGI_FORMAT_R16G16_FLOAT;
 constexpr float kAoRadius = 0.8f;    // world units, the engine's are metres
 constexpr float kAoMaxSpan = 0.15f;  // of the view's height, the most one pixel's samples may cover
@@ -864,6 +996,27 @@ void OcclusionBlend(D3D12_RENDER_TARGET_BLEND_DESC& b) {
     b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
 }
 
+// a colour map's formats, not a normal map's two channels or a mask's one
+bool AlbedoFormat(xenos::TexFormat f) {
+    switch (f) {
+        case xenos::TexFormat::k_1_5_5_5:
+        case xenos::TexFormat::k_5_6_5:
+        case xenos::TexFormat::k_8_8_8_8:
+        case xenos::TexFormat::k_4_4_4_4:
+        case xenos::TexFormat::k_DXT1:
+        case xenos::TexFormat::k_DXT2_3:
+        case xenos::TexFormat::k_DXT4_5:
+        case xenos::TexFormat::k_8_8_8_8_AS_16_16_16_16:
+        case xenos::TexFormat::k_DXT1_AS_16_16_16_16:
+        case xenos::TexFormat::k_DXT2_3_AS_16_16_16_16:
+        case xenos::TexFormat::k_DXT4_5_AS_16_16_16_16:
+            return true;
+        default:
+            return false;
+    }
+}
+
+
 // a draw RTAO streamed out: its vertices and the viewport FillDrawConstants gave it
 struct RayDraw {
     uint64_t first = 0;
@@ -881,10 +1034,12 @@ struct CasterDraw {
     uint32_t stream = 0;  // PipelineKey::stream_out
     bool alpha = false;
     uint32_t info[4] = {};  // kCasterBytes: first record, alpha view, alpha reference, compare and uv components
+    bool view = false;      // a camera pass draw for global illumination, divided into view space
+    float ndc[4] = {};      // its ndc scale and offset over x and y
 };
 
 // records' clip positions divided into a map's uv and depth: first record, count, then the uv scale and offset over
-// ndc x and y
+// ndc x and y. In view mode the camera's view space instead, x and y scaled and offset by w, which is the distance
 const char* kDivideHlsl = R"(
 RWByteAddressBuffer records : register(u0);
 cbuffer C : register(b0) {
@@ -892,6 +1047,7 @@ cbuffer C : register(b0) {
     uint count;
     float2 scale;
     float2 offset;
+    uint view;
 };
 [numthreads(64, 1, 1)]
 void main(uint id : SV_DispatchThreadID) {
@@ -900,10 +1056,11 @@ void main(uint id : SV_DispatchThreadID) {
     float4 p = asfloat(records.Load4(at));
     // a vertex at or behind the light leaves its triangle out
     float3 q = p.w > 0 ? float3(p.xy / p.w * scale + offset, p.z / p.w) : asfloat(0x7FC00000u).xxx;
+    if (view) q = float3(p.xy * scale + offset * p.w, p.w);
     records.Store3(at, asuint(q));
 }
 )";
-constexpr uint32_t kDivideConstants = 6;
+constexpr uint32_t kDivideConstants = 7;
 
 // a caster's clip position, then the interpolator its alpha test reads or nothing
 D3D12_STREAM_OUTPUT_DESC CasterOutput(uint32_t stream) {
@@ -1296,8 +1453,10 @@ private:
         Target* rt = nullptr;  // the first colour target
         Target* ds = nullptr;
         bool motion = false;  // the motion target bound at kMotionTarget
+        bool albedo = false;  // the albedo target bound at fcip::kAlbedoTarget
     };
-    bool BindTargets(const State& s, const ShaderInfo& ps, PipelineKey& k, Bound& b, bool motion = false);
+    bool BindTargets(const State& s, const ShaderInfo& ps, PipelineKey& k, Bound& b, bool motion = false,
+                     bool albedo = false);
     void FillDrawConstants(const State& s, const Bound& b, DrawConstants& c) const;
     Rect GuestScissor(const State& s, uint32_t w, uint32_t h) const;
     D3D12_RECT HostRect(const Rect& r, float scale) const;
@@ -1347,9 +1506,25 @@ private:
         float step_x = 0;
         float step_y = 0;
         D3D12_GPU_VIRTUAL_ADDRESS scene = 0;
+        DXGI_FORMAT src_format = kAoFormat;
+        bool rgb = false;  // colour written alone, the alpha kept
+        bool gi = false;   // kGiHlsl's, with its views from t3
+        ID3D12Resource* colour = nullptr;  // the scene kGiHlsl reads, a copy
+        DXGI_FORMAT colour_format = DXGI_FORMAT_UNKNOWN;
     };
     void Occlusion(const State& s, const OcclusionArgs& a);
     void BeginRayScene();
+
+    // global illumination of the camera pass: its draws' albedo beside the colour, its world's triangles traced
+    void BeginIllumination(const State& s);
+    void Illumination(const State& s, const OcclusionArgs& a);
+    bool EnsureIlluminationTargets(const Target& rt);
+    bool AlbedoWanted(const State& s, const ShaderInfo& ps) const;
+    void AlbedoFlags(const State& s, const ShaderInfo& ps, ShaderOptions& opt) const;
+    bool SceneCaster(const PipelineKey& k, const Bound& b) const;
+    void DivideView(const OcclusionArgs& a);
+    void TargetView(ID3D12Resource* res, DXGI_FORMAT fmt, uint32_t samples, uint32_t slot);
+    void CapIllumination(const State& s, const PipelineKey& k, const Bound& b, const CasterDraw& caster);
 
     // motion vectors of the camera pass's world, for FSR
     void BeginMotion(const State& s);
@@ -1390,12 +1565,18 @@ private:
     bool EnsureCasterBuffers();
     uint32_t CasterVertices(const State& s, const DrawArgs& a, const PipelineKey& k, D3D12_PRIMITIVE_TOPOLOGY topo,
                             uint32_t count, const Bound& b, bool alpha_test, CasterDraw& caster);
-    void StreamOutCasters(CasterDraw caster);
+    void StreamOutCasters(CasterDraw caster, const DrawConstants& c);
     void DropCasters(const Target* t);
     void BuildRayShadow(const Target& src, const ResolveArgs& r);
+    bool BuildCasterScene(const std::vector<CasterDraw>& draws, bool opaque, ComPtr<ID3D12Resource>& bottom_out,
+                          ComPtr<ID3D12Resource>& top_out);
     void DivideCasters(const std::vector<CasterDraw>& draws, const ResolveArgs& r);
+    void BeginDivide();
+    void DivideRecords(uint32_t first, uint32_t count, const float scale_offset[4], uint32_t view);
+    void EndDivide();
     void RayShadows(const State& s, const ShaderInfo& info, ShaderOptions& opt);
     void RayViews(uint32_t table, const D3D12_GPU_VIRTUAL_ADDRESS* rays);
+    void CasterViews(uint32_t at);
     float RaySpread(uint32_t base, const fcip::SunMaps& sun) const;
     // buffers are back in COMMON once a list ran
     void BuffersDecayed() {
@@ -1441,7 +1622,8 @@ private:
     void CapStep(Target* rt);
     void CapTextures(const State& s, const ShaderInfo& ps);
     void CapSave(ID3D12Resource* res, D3D12_RESOURCE_STATES& state, DXGI_FORMAT view, uint32_t samples, bool depth,
-                 uint32_t w, uint32_t h, float mul, const std::string& name);
+                 uint32_t w, uint32_t h, float mul, const std::string& name,
+                 UINT mapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING);
     void CapSave(Target& t, const std::string& name, float mul);
     void CapFinite(ID3D12Resource* res, D3D12_RESOURCE_STATES& state, const char* what);
     FILE* cap_ = nullptr;
@@ -1491,6 +1673,25 @@ private:
         uint32_t matched = 0;
     } motion_;
     MotionHistory motion_history_;
+    // global illumination: the world's draws streamed into casters, the albedo its draws wrote, the traced light
+    struct Gi {
+        bool capture = false;  // the camera pass's world streams out, from kClearIlluminationScene to its world's end
+        uint32_t mode = 0;     // the albedo draws take, kAlbedo*, 0 outside the camera's pass
+        uint64_t rt_key = 0;   // the scene's colour target
+        uint64_t ds_key = 0;   // and depth target, which depth only draws write alone
+        float ambient[3] = {};  // the game's, as the world's end brought it
+        std::vector<CasterDraw> draws;
+        size_t divided = 0;  // draws in view space
+        ComPtr<ID3D12Resource> bottom;
+        ComPtr<ID3D12Resource> top;
+        ComPtr<ID3D12Resource> albedo;
+        D3D12_RESOURCE_STATES albedo_state = D3D12_RESOURCE_STATE_COMMON;
+        ComPtr<ID3D12Resource> light[kGiTargets];  // traced, then blurred across
+        D3D12_RESOURCE_STATES light_state[kGiTargets] = {};
+        uint32_t w = 0;
+        uint32_t h = 0;
+        uint32_t samples = 0;
+    } gi_;
     // FSR: the scene's targets and camera as EndMotion left them, the upscaled frame
     struct Upscale {
         bool scene = false;   // between kClearSceneBegin and kClearSceneEnd
@@ -1806,7 +2007,7 @@ void D3D12Backend::CreateHeaps() {
     };
     view_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kViewsPerFrame * kFrames, true, view_heap_);
     sampler_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCount, true, sampler_heap_);
-    rtv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kHudlessRtv + 2, false, rtv_heap_);
+    rtv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kRtvSlots, false, rtv_heap_);
     dsv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvCount, false, dsv_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true, ui_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kPsTextures + kFrames, false, copy_heap_);
@@ -2385,6 +2586,18 @@ void FillBlend(const PipelineKey& k, D3D12_BLEND_DESC& d) {
         rt.RenderTargetWriteMask = UINT8(Bits(k.color_mask, 4 * i, 4));
     }
     if (k.motion) d.RenderTarget[kMotionTarget].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    if (!k.albedo) return;
+    D3D12_RENDER_TARGET_BLEND_DESC& albedo = d.RenderTarget[fcip::kAlbedoTarget];
+    albedo.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    if (k.albedo != kAlbedoClear) return;
+    // a draw past the world zeroes the albedo the world left under it
+    albedo.BlendEnable = TRUE;
+    albedo.SrcBlend = D3D12_BLEND_ZERO;
+    albedo.DestBlend = D3D12_BLEND_ZERO;
+    albedo.BlendOp = D3D12_BLEND_OP_ADD;
+    albedo.SrcBlendAlpha = D3D12_BLEND_ZERO;
+    albedo.DestBlendAlpha = D3D12_BLEND_ZERO;
+    albedo.BlendOpAlpha = D3D12_BLEND_OP_ADD;
 }
 
 // RB_DEPTHCONTROL: stencil 0, z 1, z write 2, z func 4, back stencil 7, stencil func, fail, pass, z fail from 8,
@@ -2436,6 +2649,11 @@ void D3D12Backend::FillPipelineDesc(const PipelineKey& k, D3D12_GRAPHICS_PIPELIN
         for (uint32_t i = d.NumRenderTargets; i < kMotionTarget; i++) d.RTVFormats[i] = kNullRtvFormat;
         d.RTVFormats[kMotionTarget] = DXGI_FORMAT(k.motion);
         d.NumRenderTargets = kMotionTarget + 1;
+    }
+    if (k.albedo) {
+        for (uint32_t i = d.NumRenderTargets; i < fcip::kAlbedoTarget; i++) d.RTVFormats[i] = kNullRtvFormat;
+        d.RTVFormats[fcip::kAlbedoTarget] = kAlbedoFormat;
+        d.NumRenderTargets = fcip::kAlbedoTarget + 1;
     }
     d.DSVFormat = DXGI_FORMAT(k.ds_format);
     d.SampleDesc.Count = k.samples;
@@ -3033,9 +3251,10 @@ void D3D12Backend::FillKeyStates(const State& s, PipelineKey& k) const {
 }
 
 // the colour targets the pixel shader writes and the mask lets through, and the depth target when tested
-bool D3D12Backend::BindTargets(const State& s, const ShaderInfo& ps, PipelineKey& k, Bound& b, bool motion) {
+bool D3D12Backend::BindTargets(const State& s, const ShaderInfo& ps, PipelineKey& k, Bound& b, bool motion,
+                               bool albedo) {
     uint32_t height = TargetHeight(s);
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv[kMotionTarget + 1];
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv[fcip::kAlbedoTarget + 1];
     uint32_t count = 0;
     b = {TargetWidth(s), height, scale_};
     k.samples = HostSamples(SurfaceSamples(s));
@@ -3072,6 +3291,17 @@ bool D3D12Backend::BindTargets(const State& s, const ShaderInfo& ps, PipelineKey
         rtv[count++] = Rtv(kMotionRtv);
         k.motion = kMotionFormat;
         b.motion = true;
+    }
+    if (albedo && ds && b.rt && MapKey(*b.rt) == gi_.rt_key && b.rt->samples == gi_.samples) {
+        // the motion slot's null format is FillPipelineDesc's
+        while (count < fcip::kAlbedoTarget) {
+            if (count < std::size(k.rt_formats)) k.rt_formats[count] = kNullRtvFormat;
+            rtv[count++] = Rtv(kNullRtv);
+        }
+        Transition(gi_.albedo.Get(), gi_.albedo_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        rtv[count++] = Rtv(kAlbedoRtv);
+        k.albedo = gi_.mode;
+        b.albedo = true;
     }
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = ds ? Dsv(ds->view) : D3D12_CPU_DESCRIPTOR_HANDLE{};
     TargetViews views;
@@ -3508,14 +3738,18 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     PipelineKey unbound = k;
     bool motion = MotionWanted(s, ps_info);
     if (cap_ && motion_.active && !motion) std::fprintf(cap_, "     motion: none, blended or no depth write\n");
-    if (!BindTargets(s, ps_info, k, bound, motion)) return;
+    bool albedo = AlbedoWanted(s, ps_info);
+    if (!BindTargets(s, ps_info, k, bound, motion, albedo)) return;
     if (ext_ && ext_->Bound(*this, s, bound.rt, bound.ds)) {
         k = unbound;
-        if (!BindTargets(s, ps_info, k, bound, motion)) return;
+        if (!BindTargets(s, ps_info, k, bound, motion, albedo)) return;
     }
     if (bound.motion) {
         vs_opt.motion = true;
         ps_opt.motion = true;
+    }
+    if (bound.albedo) AlbedoFlags(s, ps_info, ps_opt);
+    if (bound.motion || bound.albedo) {
         vs = EnsureVariant(s.vs, vs_opt);
         ps = EnsureVariant(s.ps, ps_opt);
         if (!vs || !ps) return;
@@ -3579,7 +3813,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         shadow_drawn_ = true;
     }
     if (ray_vertices) StreamOut(c, ray_vertices);
-    if (caster_vertices) StreamOutCasters(caster);
+    if (caster_vertices) StreamOutCasters(caster, c);
     cl_->DrawIndexedInstanced(count, 1, 0, a.base_vertex, 0);
     if (ray_vertices || caster_vertices) cl_->SOSetTargets(0, 1, nullptr);
     binds_.valid = true;
@@ -3592,8 +3826,24 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         const Rect& p = s.predicated;
         std::fprintf(cap_, "     scissor %ld,%ld,%ld,%ld tiles %d,%d,%d,%d\n", sc.left, sc.top, sc.right, sc.bottom, p.x1,
                      p.y1, p.x2, p.y2);
+        if (gi_.mode) CapIllumination(s, k, bound, caster);
         CapTextures(s, ps_info);
     }
+}
+
+// F3: what a camera pass draw gave global illumination
+void D3D12Backend::CapIllumination(const State& s, const PipelineKey& k, const Bound& b, const CasterDraw& caster) {
+    const char* albedo = b.albedo ? (k.albedo == kAlbedoClear ? "cleared" : "written") : "none";
+    if (caster.view) {
+        const char* kind = caster.alpha ? "alpha tested" : "opaque";
+        std::fprintf(cap_, "     illumination: albedo %s, scene %s, %u records from %u\n", albedo, kind, caster.count,
+                     caster.info[0]);
+        return;
+    }
+    int first = s.ps ? s.ps->first_fetch.reg : -1;
+    std::fprintf(cap_, "     illumination: albedo %s, scene none (capture %u, z write %u, blend %08x, coverage %u, "
+                 "first fetch %d)\n", albedo, gi_.capture ? 1u : 0u, Bits(k.depth_control, 2, 1), k.blend[0],
+                 Bits(k.color_control, 4, 1), first);
 }
 
 // D3D Clear, within the scissor: a whole target clear also clears the targets its EDRAM range holds
@@ -3605,6 +3855,20 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
     }
     if (flags & kClearOcclusionScene) {
         BeginRayScene();
+        return;
+    }
+    if (flags & kClearIlluminationScene) {
+        BeginIllumination(s);
+        return;
+    }
+    if (flags & kClearIlluminationWorld) {
+        std::copy(color, color + 3, gi_.ambient);
+        gi_.capture = false;
+        if (gi_.mode) gi_.mode = kAlbedoClear;
+        return;
+    }
+    if (flags & kClearIllumination) {
+        if (rect) Illumination(s, UnpackOcclusion(color, z, stencil, *rect));
         return;
     }
     if (flags & kClearMotionBegin) {
@@ -3730,14 +3994,17 @@ bool D3D12Backend::EnsureOcclusionTargets(uint32_t w, uint32_t h) {
 ID3D12PipelineState* D3D12Backend::EnsureOcclusionPipeline(const AoPass& p, bool ms_depth) {
     bool rt = p.scene != 0;
     uint64_t seed = uint64_t(p.out) | uint64_t(p.samples) << 8 | uint64_t(p.blend) << 16 | uint64_t(ms_depth) << 17;
+    seed |= uint64_t(p.rgb) << 18;
     auto& pso = ao_pipelines_[Hash64(p.entry, std::strlen(p.entry), seed)];
     if (pso) return pso.Get();
-    std::string src = std::string(ms_depth ? "#define MS 1\n" : "") + (rt ? "#define RT 1\n" : "") + kAoHlsl;
+    std::string src = std::string(ms_depth ? "#define MS 1\n" : "") + (rt ? "#define RT 1\n" : "") + kViewHlsl;
+    if (p.gi) src += std::string(kGiViewsHlsl) + fcip::kCasterHitHlsl + kGiHlsl;
+    else src += kAoHlsl;
     std::vector<uint8_t> vs;
     std::vector<uint8_t> ps;
     std::string entry = std::string("#define ") + p.entry + " main\n";
     if (!CompileHlsl("#define vs main\n" + src, L"vs_6_0", vs)) return nullptr;
-    if (!CompileHlsl(entry + src, rt ? L"ps_6_5" : L"ps_6_0", ps)) return nullptr;
+    if (!CompileHlsl(entry + src, rt || p.gi ? L"ps_6_5" : L"ps_6_0", ps)) return nullptr;
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
     d.pRootSignature = root_.Get();
     d.VS = {vs.data(), vs.size()};
@@ -3745,6 +4012,9 @@ ID3D12PipelineState* D3D12Backend::EnsureOcclusionPipeline(const AoPass& p, bool
     D3D12_RENDER_TARGET_BLEND_DESC& b = d.BlendState.RenderTarget[0];
     b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     if (p.blend) OcclusionBlend(b);
+    // a UNORM target clamps a blend's source to 0, so light taken away is written whole
+    if (p.rgb) b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN |
+                                         D3D12_COLOR_WRITE_ENABLE_BLUE;
     d.SampleMask = UINT_MAX;
     d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
@@ -3769,7 +4039,7 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
     v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     v.Texture2D.MipLevels = 1;
     dev_->CreateShaderResourceView(depth.res.Get(), &v, ViewCpu(views));
-    ShaderView(p.src, kAoFormat, views + 1);
+    ShaderView(p.src, p.src_format, views + 1);
     uint32_t used = 2;
     if (p.scene) {
         D3D12_SHADER_RESOURCE_VIEW_DESC r{};
@@ -3777,6 +4047,16 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
         r.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         r.RaytracingAccelerationStructure.Location = p.scene;
         dev_->CreateShaderResourceView(nullptr, &r, ViewCpu(views + used++));
+    }
+    if (p.gi) {
+        // kGiViewsHlsl's: the albedo, the scene's colour, the casters and their records
+        if (!p.scene) NullViews(views + used++, 1);
+        TargetView(gi_.albedo.Get(), kAlbedoFormat, gi_.samples, views + used++);
+        TargetView(p.colour, p.colour_format, 1, views + used++);
+        CasterViews(views + used);
+        used += 2;
+        D3D12_GPU_DESCRIPTOR_HANDLE heap = view_heap_->GetGPUDescriptorHandleForHeapStart();
+        cl_->SetGraphicsRootDescriptorTable(kRootHeap, heap);
     }
     NullViews(views + used, kPsTextures - used);
     cl_->OMSetRenderTargets(1, &p.rtv, FALSE, nullptr);
@@ -3789,6 +4069,148 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
     cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cl_->DrawInstanced(3, 1, 0, 0);
     return true;
+}
+
+// Global illumination
+
+// the camera pass's colour target: the world's draws stream into the scene and every draw writes its albedo beside it
+void D3D12Backend::BeginIllumination(const State& s) {
+    gi_.capture = false;
+    gi_.mode = 0;
+    gi_.draws.clear();
+    gi_.divided = 0;
+    if (!divide_pso_) return;
+    uint32_t height = TargetHeight(s);
+    Target* rt = ColorTarget(s, 0, height);
+    Target* ds = DepthTarget(s, height);
+    if (!rt || !ds || !EnsureIlluminationTargets(*rt)) return;
+    Transition(gi_.albedo.Get(), gi_.albedo_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    const float none[4] = {};
+    cl_->ClearRenderTargetView(Rtv(kAlbedoRtv), none, 0, nullptr);
+    gi_.rt_key = MapKey(*rt);
+    gi_.ds_key = MapKey(*ds);
+    gi_.capture = true;
+    gi_.mode = kAlbedoWrite;
+}
+
+// the scene's light traced from the bound depth, blurred across and down, and added into the bound colour target
+void D3D12Backend::Illumination(const State& s, const OcclusionArgs& a) {
+    bool open = gi_.mode != 0;
+    gi_.capture = false;
+    gi_.mode = 0;
+    if (!open) return;
+    uint32_t height = TargetHeight(s);
+    Target* rt = ColorTarget(s, 0, height);
+    Target* ds = DepthTarget(s, height);
+    if (!rt || !ds || MapKey(*rt) != gi_.rt_key || rt->w != ds->w || rt->h != ds->h) return;
+    if (rt->samples != ds->samples || rt->samples != gi_.samples || rt->w != gi_.w || rt->h != gi_.h) return;
+    Bound b{TargetWidth(s), height, rt->scale};
+    DrawConstants d;
+    FillDrawConstants(s, b, d);
+    D3D12_RECT rect = HostRect(GuestScissor(s, b.w, b.h), b.scale);
+    if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+    DivideView(a);
+    if (gi_.draws.empty() || !BuildCasterScene(gi_.draws, false, gi_.bottom, gi_.top)) return;
+    ID3D12Resource* colour = Feedback(*rt);
+    if (!colour) return;
+    float c[kAoConstants];
+    OcclusionConstants(a, d, rect, rt->w, rt->h, c);
+    c[16] = kGiRadius;
+    // an sRGB view or a float target reads linear colour
+    bool encoded = rt->fmt == DXGI_FORMAT_R8G8B8A8_UNORM || rt->fmt == DXGI_FORMAT_R10G10B10A2_UNORM;
+    c[17] = encoded ? kGiGamma : 1.0f;
+    std::copy(std::begin(gi_.ambient), std::end(gi_.ambient), c + 28);
+    D3D12_GPU_VIRTUAL_ADDRESS scene = gi_.top->GetGPUVirtualAddress();
+    AoPass trace{.entry = "gi_trace", .out = kGiFormat, .rtv = Rtv(kGiRtv), .scene = scene, .gi = true,
+                 .colour = colour, .colour_format = rt->fmt};
+    AoPass across{.entry = "gi_blur", .out = kGiFormat, .rtv = Rtv(kGiRtv + 1), .src = gi_.light[0].Get(),
+                  .step_x = 1, .src_format = kGiFormat, .gi = true, .colour = colour, .colour_format = rt->fmt};
+    AoPass down{.entry = "gi_apply", .out = rt->fmt, .samples = rt->samples, .rtv = Rtv(rt->view),
+                .src = gi_.light[1].Get(), .step_y = 1, .src_format = kGiFormat, .rgb = true, .gi = true,
+                .colour = colour, .colour_format = rt->fmt};
+    Transition(ds->res.Get(), ds->state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(gi_.albedo.Get(), gi_.albedo_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(gi_.light[0].Get(), gi_.light_state[0], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    bool ok = OcclusionPass(trace, *ds, c, rect);
+    Transition(gi_.light[0].Get(), gi_.light_state[0], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(gi_.light[1].Get(), gi_.light_state[1], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ok = ok && OcclusionPass(across, *ds, c, rect);
+    Transition(gi_.light[1].Get(), gi_.light_state[1], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (ok) OcclusionPass(down, *ds, c, rect);
+    Unbind();
+    if (cap_) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "%04u_albedo", cap_i_++);
+        CapSave(gi_.albedo.Get(), gi_.albedo_state, kAlbedoFormat, gi_.samples, false, gi_.w, gi_.h, 1, name);
+        std::snprintf(name, sizeof(name), "%04u_bounce", cap_i_++);
+        CapSave(gi_.light[1].Get(), gi_.light_state[1], kGiFormat, 1, false, gi_.w, gi_.h, 1, name);
+        // the share of rays reaching the sky, as grey
+        std::snprintf(name, sizeof(name), "%04u_sky", cap_i_++);
+        UINT alpha = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(3, 3, 3, 3);
+        CapSave(gi_.light[1].Get(), gi_.light_state[1], kGiFormat, 1, false, gi_.w, gi_.h, 1, name, alpha);
+        const float* amb = gi_.ambient;
+        std::fprintf(cap_, "illumination: %zu draws in the scene, ambient %g %g %g\n", gi_.draws.size(), amb[0],
+                     amb[1], amb[2]);
+    }
+}
+
+// the albedo at the colour target's size and samples, the light at its size
+bool D3D12Backend::EnsureIlluminationTargets(const Target& rt) {
+    if (gi_.albedo && gi_.w == rt.w && gi_.h == rt.h && gi_.samples == rt.samples) return true;
+    gi_.w = 0;
+    gi_.h = 0;
+    gi_.samples = 0;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    ComPtr<ID3D12Resource>* res[3] = {&gi_.albedo, &gi_.light[0], &gi_.light[1]};
+    D3D12_RESOURCE_STATES* state[3] = {&gi_.albedo_state, &gi_.light_state[0], &gi_.light_state[1]};
+    for (uint32_t i = 0; i < 3; i++) {
+        D3D12_RESOURCE_DESC d = TextureDesc(i ? kGiFormat : kAlbedoFormat, rt.w, rt.h);
+        d.SampleDesc.Count = i ? 1 : rt.samples;
+        d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        if (*res[i]) Release(std::move(*res[i]));
+        *state[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, *state[i], nullptr,
+                                                 IID_PPV_ARGS(&*res[i])))) {
+            LOGE("D3D12: no %ux%u global illumination target", rt.w, rt.h);
+            return false;
+        }
+        dev_->CreateRenderTargetView(res[i]->Get(), nullptr, Rtv(kAlbedoRtv + i));
+    }
+    gi_.w = rt.w;
+    gi_.h = rt.h;
+    gi_.samples = rt.samples;
+    return true;
+}
+
+// a draw writing its colour unblended over a tested depth while the camera pass keeps an albedo
+bool D3D12Backend::AlbedoWanted(const State& s, const ShaderInfo& ps) const {
+    if (!gi_.mode || !(ps.exports & 1) || !Bits(s.Reg(kRbColorMask), 0, 4)) return false;
+    bool blended = (s.Reg(kRbBlendControl0) & 0x1FFF1FFF) != 0x00010001;
+    return Bits(s.Reg(kRbDepthControl), 1, 1) && !blended;
+}
+
+// the pixel shader writes the albedo, from the first of its 2D colour textures it fetches
+void D3D12Backend::AlbedoFlags(const State& s, const ShaderInfo& ps, ShaderOptions& opt) const {
+    opt.tex_flags[fcip::kAlbedoOut] |= fcip::kAlbedoFetch;
+    size_t count = std::min<size_t>(ps.textures.size(), fcip::kAlbedoOut);
+    for (size_t i = 0; i < count; i++) {
+        // shadow maps carry flags of their own
+        if (ps.textures[i].dimension != uint8_t(xenos::Dimension::D2) || opt.tex_flags[i]) continue;
+        uint32_t fetch[6];
+        ReadFetch(s, ps.textures[i].fetch, fetch);
+        if (AlbedoFormat(xenos::DecodeTextureFetch(fetch).format)) opt.tex_flags[i] |= fcip::kAlbedoFetch;
+    }
+}
+
+// a colour target's view, a multisampled one read by sample
+void D3D12Backend::TargetView(ID3D12Resource* res, DXGI_FORMAT fmt, uint32_t samples, uint32_t slot) {
+    D3D12_SHADER_RESOURCE_VIEW_DESC v{};
+    v.Format = fmt;
+    v.ViewDimension = samples > 1 ? D3D12_SRV_DIMENSION_TEXTURE2DMS : D3D12_SRV_DIMENSION_TEXTURE2D;
+    v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    v.Texture2D.MipLevels = 1;
+    dev_->CreateShaderResourceView(res, &v, ViewCpu(slot));
 }
 
 // Motion vectors
@@ -4313,8 +4735,12 @@ void D3D12Backend::StreamOut(const DrawConstants& c, uint32_t vertices) {
 }
 
 // one bottom level structure of the streamed out draws, each moved into view space as it is built, held once by the
-// top level one the rays trace
+// top level one the rays trace. With global illumination the world streamed out as its casters, the opaque ones taken
 D3D12_GPU_VIRTUAL_ADDRESS D3D12Backend::BuildRayScene(const OcclusionArgs& a) {
+    if (gi_.capture) {
+        DivideView(a);
+        return BuildCasterScene(gi_.draws, true, ray_bottom_, ray_top_) ? ray_top_->GetGPUVirtualAddress() : 0;
+    }
     ComPtr<ID3D12GraphicsCommandList4> cl4;
     if (ray_draws_.empty() || FAILED(cl_.As(&cl4))) return 0;
     Alloc transforms = Upload(ray_draws_.size() * kRayTransformBytes, 16);
@@ -4428,35 +4854,55 @@ bool D3D12Backend::EnsureCasterBuffers() {
     return casters_ || MakeBuffer(casters_, kCasterDraws * kCasterBytes, common);
 }
 
-// records a shadow map draw streams out, filling its caster; none without ray traced shadows or past the frame's room.
-// An alpha tested one is traced through its first fetch only, the texture its shader opens with
+// records a shadow map draw or a camera pass world draw streams out, filling its caster; none without ray traced
+// shadows or global illumination, or past the frame's room. An alpha tested one, or one whose alpha covers samples, is
+// traced through its first fetch only, the texture its shader opens with
 uint32_t D3D12Backend::CasterVertices(const State& s, const DrawArgs& a, const PipelineKey& k,
                                       D3D12_PRIMITIVE_TOPOLOGY topo, uint32_t count, const Bound& b, bool alpha_test,
                                       CasterDraw& caster) {
-    if (!divide_pso_ || fcip::Get().shadow_filter != fcip::kFilterRay) return 0;
-    if (!b.ds || !ShadowWidth(b.ds->width) || !Bits(k.depth_control, 2, 1)) return 0;
+    if (!divide_pso_ || !b.ds || !Bits(k.depth_control, 2, 1)) return 0;
+    bool view = SceneCaster(k, b);
+    bool shadow = fcip::Get().shadow_filter == fcip::kFilterRay && ShadowWidth(b.ds->width);
+    if (!view && !shadow) return 0;
+    fcip::FirstFetch f = s.ps ? s.ps->first_fetch : fcip::FirstFetch{};
+    bool coverage = view && !alpha_test && Bits(k.color_control, 4, 1);
+    if (coverage && f.reg < 0) return 0;
     uint32_t vertices = TriangleVertices(a, topo, count, k.strip_cut != 0);
     if (!vertices || !EnsureCasterBuffers()) return 0;
-    if (caster_slots_ >= kCasterDraws || casters_used_ + vertices > kCasterRecords) return 0;
+    if (caster_slots_ >= kCasterDraws || casters_used_ + vertices > kCasterRecords) {
+        static bool logged = false;
+        if (view && !std::exchange(logged, true)) LOGR("D3D12: global illumination scene full, draws past it left out");
+        return 0;
+    }
     caster.target = b.ds;
     caster.w = b.w;
     caster.h = b.h;
     caster.count = vertices;
     caster.stream = kStreamCaster;
+    caster.view = view;
     caster.info[3] = 7;  // D3DCMP_ALWAYS
-    fcip::FirstFetch f = s.ps ? s.ps->first_fetch : fcip::FirstFetch{};
-    if (alpha_test && f.reg >= 0) {
+    if ((alpha_test || coverage) && f.reg >= 0) {
+        // alpha to coverage keeps the samples whose alpha reaches their share: at least half for the pixel
+        float ref = coverage ? 0.5f : s.RegF(kRbAlphaRef);
+        uint32_t compare = coverage ? 6 : Bits(s.Reg(kRbColorControl), 0, 3);
         caster.alpha = true;
         caster.stream = kStreamCaster + 1 + uint32_t(f.reg);
         caster.info[1] = binds_.stages[1].table;  // the first fetch's view leads the pixel shader's table
-        caster.info[2] = std::bit_cast<uint32_t>(s.RegF(kRbAlphaRef));
-        caster.info[3] = Bits(s.Reg(kRbColorControl), 0, 3) | uint32_t(f.x) << 4 | uint32_t(f.y) << 6;
+        caster.info[2] = std::bit_cast<uint32_t>(ref);
+        caster.info[3] = compare | uint32_t(f.x) << 4 | uint32_t(f.y) << 6;
     }
     return vertices;
 }
 
-// the draw's records after the last one's, from a zeroed counter
-void D3D12Backend::StreamOutCasters(CasterDraw caster) {
+// a camera pass draw of the world, opaque, alpha tested or depth only, while global illumination's scene is captured
+bool D3D12Backend::SceneCaster(const PipelineKey& k, const Bound& b) const {
+    if (!gi_.capture || MapKey(*b.ds) != gi_.ds_key) return false;
+    if (!b.rt) return true;
+    return MapKey(*b.rt) == gi_.rt_key && (k.blend[0] & 0x1FFF1FFF) == 0x00010001;
+}
+
+// the draw's records after the last one's, from a zeroed counter; c maps its ndc
+void D3D12Backend::StreamOutCasters(CasterDraw caster, const DrawConstants& c) {
     if (!caster_slots_) {
         uint64_t bytes = kCasterDraws * kRayCounter;
         Alloc zeros = Upload(bytes, kRayCounter);
@@ -4474,7 +4920,13 @@ void D3D12Backend::StreamOutCasters(CasterDraw caster) {
     cl_->SOSetTargets(0, 1, &v);
     casters_used_ += caster.count;
     caster_slots_++;
-    caster_draws_.push_back(caster);
+    if (!caster.view) {
+        caster_draws_.push_back(caster);
+        return;
+    }
+    const float ndc[4] = {c.ndc_scale[0], c.ndc_scale[1], c.ndc_offset[0], c.ndc_offset[1]};
+    std::copy(std::begin(ndc), std::end(ndc), caster.ndc);
+    gi_.draws.push_back(caster);
 }
 
 void D3D12Backend::DropCasters(const Target* t) {
@@ -4482,7 +4934,7 @@ void D3D12Backend::DropCasters(const Target* t) {
 }
 
 // the casters drawn into src since it last resolved or cleared, divided into the uv and depth of the map r makes and
-// built into that map's scene; the instance id is its first caster, a geometry per draw after it
+// built into that map's scene
 void D3D12Backend::BuildRayShadow(const Target& src, const ResolveArgs& r) {
     std::vector<CasterDraw>& draws = caster_build_;
     draws.clear();
@@ -4491,18 +4943,23 @@ void D3D12Backend::BuildRayShadow(const Target& src, const ResolveArgs& r) {
         draws.push_back(d);
         return true;
     });
-    ComPtr<ID3D12GraphicsCommandList4> cl4;
-    if (draws.empty() || casters_built_ + draws.size() > kCasterDraws || FAILED(cl_.As(&cl4))) return;
+    if (draws.empty() || casters_built_ + draws.size() > kCasterDraws) return;
     DivideCasters(draws, r);
+    RayShadow& scene = ray_shadows_[r.dst_base];
+    if (BuildCasterScene(draws, false, scene.bottom, scene.top)) scene.frame = frame_;
+}
+
+// the draws' divided casters built into one scene: the instance id is its first caster, a geometry per draw after it.
+// Opaque keeps only the draws without an alpha test, which take no caster
+bool D3D12Backend::BuildCasterScene(const std::vector<CasterDraw>& draws, bool opaque,
+                                    ComPtr<ID3D12Resource>& bottom_out, ComPtr<ID3D12Resource>& top_out) {
+    ComPtr<ID3D12GraphicsCommandList4> cl4;
+    if (draws.empty() || FAILED(cl_.As(&cl4))) return false;
     uint32_t first = casters_built_;
-    casters_built_ += uint32_t(draws.size());
-    uint64_t bytes = draws.size() * kCasterBytes;
-    Alloc infos = Upload(bytes, kCasterBytes);
     D3D12_GPU_VIRTUAL_ADDRESS records = caster_records_->GetGPUVirtualAddress();
     ray_geometry_.clear();
-    for (size_t i = 0; i < draws.size(); i++) {
-        const CasterDraw& d = draws[i];
-        std::memcpy(infos.cpu + i * kCasterBytes, d.info, kCasterBytes);
+    for (const CasterDraw& d : draws) {
+        if (opaque && d.alpha) continue;
         D3D12_RAYTRACING_GEOMETRY_DESC& g = ray_geometry_.emplace_back();
         g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
         g.Flags = d.alpha ? D3D12_RAYTRACING_GEOMETRY_FLAG_NONE : D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
@@ -4510,25 +4967,33 @@ void D3D12Backend::BuildRayShadow(const Target& src, const ResolveArgs& r) {
         g.Triangles.VertexCount = d.count;
         g.Triangles.VertexBuffer = {records + uint64_t(d.info[0]) * kCasterStride, kCasterStride};
     }
-    Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_COPY_DEST);
-    cl_->CopyBufferRegion(casters_.Get(), uint64_t(first) * kCasterBytes, infos.res, infos.offset, bytes);
+    if (ray_geometry_.empty()) return false;
+    if (!opaque) {
+        casters_built_ += uint32_t(draws.size());
+        uint64_t bytes = draws.size() * kCasterBytes;
+        Alloc infos = Upload(bytes, kCasterBytes);
+        for (size_t i = 0; i < draws.size(); i++) {
+            std::memcpy(infos.cpu + i * kCasterBytes, draws[i].info, kCasterBytes);
+        }
+        Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_COPY_DEST);
+        cl_->CopyBufferRegion(casters_.Get(), uint64_t(first) * kCasterBytes, infos.res, infos.offset, bytes);
+    }
     Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-    RayShadow& scene = ray_shadows_[r.dst_base];
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottom{};
     bottom.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
     bottom.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
     bottom.NumDescs = UINT(ray_geometry_.size());
     bottom.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     bottom.pGeometryDescs = ray_geometry_.data();
-    if (!BuildStructure(cl4.Get(), bottom, scene.bottom)) return;
+    if (!BuildStructure(cl4.Get(), bottom, bottom_out)) return false;
     D3D12_RAYTRACING_INSTANCE_DESC instance{};
     instance.Transform[0][0] = 1;
     instance.Transform[1][1] = 1;
     instance.Transform[2][2] = 1;
     instance.InstanceID = first;
     instance.InstanceMask = 0xFF;
-    instance.AccelerationStructure = scene.bottom->GetGPUVirtualAddress();
+    instance.AccelerationStructure = bottom_out->GetGPUVirtualAddress();
     Alloc held = Upload(sizeof(instance), D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT);
     std::memcpy(held.cpu, &instance, sizeof(instance));
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS top{};
@@ -4537,17 +5002,13 @@ void D3D12Backend::BuildRayShadow(const Target& src, const ResolveArgs& r) {
     top.NumDescs = 1;
     top.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     top.InstanceDescs = held.gpu;
-    if (!BuildStructure(cl4.Get(), top, scene.top)) return;
-    scene.frame = frame_;
+    return BuildStructure(cl4.Get(), top, top_out);
 }
 
 // each run of records over one target size divided into the map's uv and depth: the host's ndc spans the target's
 // title pixels, and the resolve moves its rect to the texture's dst point
 void D3D12Backend::DivideCasters(const std::vector<CasterDraw>& draws, const ResolveArgs& r) {
-    Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    cl_->SetComputeRootSignature(divide_root_.Get());
-    cl_->SetPipelineState(divide_pso_.Get());
-    cl_->SetComputeRootUnorderedAccessView(0, caster_records_->GetGPUVirtualAddress());
+    BeginDivide();
     float tw = float(std::max(r.dst_pitch, 1u));
     float th = float(std::max(r.dst_height, 1u));
     for (size_t i = 0; i < draws.size();) {
@@ -4560,20 +5021,59 @@ void D3D12Backend::DivideCasters(const std::vector<CasterDraw>& draws, const Res
             count += draws[end].count;
             end++;
         }
-        float sx = 0.5f * float(d.w) / tw;
-        float sy = -0.5f * float(d.h) / th;
-        float ox = (0.5f * float(d.w) - float(r.rect.x1) + float(r.dst_x)) / tw;
-        float oy = (0.5f * float(d.h) - float(r.rect.y1) + float(r.dst_y)) / th;
-        for (uint32_t done = 0; done < count; done += kDivideChunk) {
-            uint32_t n = std::min(count - done, kDivideChunk);
-            const uint32_t c[kDivideConstants] = {d.info[0] + done,           n,
-                                                  std::bit_cast<uint32_t>(sx), std::bit_cast<uint32_t>(sy),
-                                                  std::bit_cast<uint32_t>(ox), std::bit_cast<uint32_t>(oy)};
-            cl_->SetComputeRoot32BitConstants(1, kDivideConstants, c, 0);
-            cl_->Dispatch((n + 63) / 64, 1, 1);
-        }
+        const float scale_offset[4] = {0.5f * float(d.w) / tw, -0.5f * float(d.h) / th,
+                                       (0.5f * float(d.w) - float(r.rect.x1) + float(r.dst_x)) / tw,
+                                       (0.5f * float(d.h) - float(r.rect.y1) + float(r.dst_y)) / th};
+        DivideRecords(d.info[0], count, scale_offset, 0);
         i = end;
     }
+    EndDivide();
+}
+
+// the camera pass's draws not yet divided, into the view space kAoHlsl's View() makes: a host clip position goes back
+// through its draw's ndc mapping and the projection, linear in x, y and w, the distance
+void D3D12Backend::DivideView(const OcclusionArgs& a) {
+    if (gi_.divided == gi_.draws.size()) return;
+    BeginDivide();
+    for (size_t i = gi_.divided; i < gi_.draws.size();) {
+        const CasterDraw& d = gi_.draws[i];
+        uint32_t count = d.count;
+        size_t end = i + 1;
+        while (end < gi_.draws.size() && std::equal(d.ndc, d.ndc + 4, gi_.draws[end].ndc) &&
+               gi_.draws[end].info[0] == d.info[0] + count) {
+            count += gi_.draws[end].count;
+            end++;
+        }
+        const float scale_offset[4] = {a.proj[0] / d.ndc[0], a.proj[1] / d.ndc[1],
+                                       -a.proj[0] * (d.ndc[2] / d.ndc[0] + a.proj[2]),
+                                       -a.proj[1] * (d.ndc[3] / d.ndc[1] + a.proj[3])};
+        DivideRecords(d.info[0], count, scale_offset, 1);
+        i = end;
+    }
+    EndDivide();
+    gi_.divided = gi_.draws.size();
+}
+
+void D3D12Backend::BeginDivide() {
+    Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cl_->SetComputeRootSignature(divide_root_.Get());
+    cl_->SetPipelineState(divide_pso_.Get());
+    cl_->SetComputeRootUnorderedAccessView(0, caster_records_->GetGPUVirtualAddress());
+}
+
+// count records from first, in dispatches of at most kDivideChunk
+void D3D12Backend::DivideRecords(uint32_t first, uint32_t count, const float scale_offset[4], uint32_t view) {
+    for (uint32_t done = 0; done < count; done += kDivideChunk) {
+        uint32_t n = std::min(count - done, kDivideChunk);
+        uint32_t c[kDivideConstants] = {first + done, n};
+        std::memcpy(c + 2, scale_offset, 4 * sizeof(float));
+        c[6] = view;
+        cl_->SetComputeRoot32BitConstants(1, kDivideConstants, c, 0);
+        cl_->Dispatch((n + 63) / 64, 1, 1);
+    }
+}
+
+void D3D12Backend::EndDivide() {
     D3D12_RESOURCE_BARRIER uav{};
     uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     uav.UAV.pResource = caster_records_.Get();
@@ -4621,15 +5121,7 @@ float D3D12Backend::RaySpread(uint32_t base, const fcip::SunMaps& sun) const {
 
 // the casters, their records and the scenes a draw traces, in its pixel shader's views from kRayFirstSlot
 void D3D12Backend::RayViews(uint32_t table, const D3D12_GPU_VIRTUAL_ADDRESS* rays) {
-    D3D12_SHADER_RESOURCE_VIEW_DESC raw{};
-    raw.Format = DXGI_FORMAT_R32_TYPELESS;
-    raw.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    raw.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    raw.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-    raw.Buffer.NumElements = UINT(kCasterDraws * kCasterBytes / 4);
-    dev_->CreateShaderResourceView(casters_.Get(), &raw, ViewCpu(table + fcip::kRayFirstSlot));
-    raw.Buffer.NumElements = UINT(kCasterRecords * kCasterStride / 4);
-    dev_->CreateShaderResourceView(caster_records_.Get(), &raw, ViewCpu(table + fcip::kRayFirstSlot + 1));
+    CasterViews(table + fcip::kRayFirstSlot);
     D3D12_SHADER_RESOURCE_VIEW_DESC scene{};
     scene.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
     scene.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -4638,6 +5130,19 @@ void D3D12Backend::RayViews(uint32_t table, const D3D12_GPU_VIRTUAL_ADDRESS* ray
         scene.RaytracingAccelerationStructure.Location = rays[i];
         dev_->CreateShaderResourceView(nullptr, &scene, ViewCpu(table + fcip::kRayFirstSlot + 2 + i));
     }
+}
+
+// the casters and their records, as CasterHit reads them, in views at and after at
+void D3D12Backend::CasterViews(uint32_t at) {
+    D3D12_SHADER_RESOURCE_VIEW_DESC raw{};
+    raw.Format = DXGI_FORMAT_R32_TYPELESS;
+    raw.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    raw.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    raw.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    raw.Buffer.NumElements = UINT(kCasterDraws * kCasterBytes / 4);
+    dev_->CreateShaderResourceView(casters_.Get(), &raw, ViewCpu(at));
+    raw.Buffer.NumElements = UINT(kCasterRecords * kCasterStride / 4);
+    dev_->CreateShaderResourceView(caster_records_.Get(), &raw, ViewCpu(at + 1));
 }
 
 // D3D Resolve: the target's rect to the texture at dst_base, held on the host and read in place of guest memory
@@ -5366,6 +5871,9 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     }
     DropIdleShadowMaps();
     caster_draws_.clear();
+    gi_.draws.clear();
+    gi_.capture = false;
+    gi_.mode = 0;
     casters_used_ = 0;
     caster_slots_ = 0;
     casters_built_ = 0;
@@ -5619,7 +6127,7 @@ void D3D12Backend::Capture(Target& t, const char* tag, float mul) {
 
 // drawn into an 8 bit copy, read back and written as a BMP; waits for the GPU
 void D3D12Backend::CapSave(ID3D12Resource* res, D3D12_RESOURCE_STATES& state, DXGI_FORMAT view, uint32_t samples,
-                           bool depth, uint32_t w, uint32_t h, float mul, const std::string& name) {
+                           bool depth, uint32_t w, uint32_t h, float mul, const std::string& name, UINT mapping) {
     constexpr DXGI_FORMAT kBgra = DXGI_FORMAT_B8G8R8A8_UNORM;
     ID3D12PipelineState* pso = EnsureResolvePipeline(kBgra, samples > 1);
     if (!pso || !w || !h || free_rtv_.empty()) return;
@@ -5646,7 +6154,7 @@ void D3D12Backend::CapSave(ID3D12Resource* res, D3D12_RESOURCE_STATES& state, DX
     D3D12_SHADER_RESOURCE_VIEW_DESC v{};
     v.Format = view;
     v.ViewDimension = samples > 1 ? D3D12_SRV_DIMENSION_TEXTURE2DMS : D3D12_SRV_DIMENSION_TEXTURE2D;
-    v.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    v.Shader4ComponentMapping = mapping;
     v.Texture2D.MipLevels = 1;
     Transition(res, state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     dev_->CreateShaderResourceView(res, &v, ViewCpu(views));

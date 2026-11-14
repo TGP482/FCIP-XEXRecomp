@@ -107,7 +107,8 @@ UIWidget_CanFocus = 0x8246B950
 PlayMovie = 0x8233FFA0
 RaiseStartupScreen = 0x821558C8
 
-# CryRender and Cry3DEngine: aspect, field of view, blur, shadows, draw distance, grass, fps counter, ambient occlusion
+# CryRender and Cry3DEngine: aspect, field of view, blur, shadows, draw distance, grass, fps counter, ambient occlusion,
+# global illumination
 Bink_DrawFrame = 0x8234DDB8
 C3DEngine_RenderWorld = 0x825EDB98
 CCamera_Update = 0x825C37D8
@@ -153,6 +154,7 @@ Shadow_Viewport = 0x8236A0E8
 UIRect_Draw = 0x823C8410
 UIWidget_Draw = 0x82479130
 UI_DrawQuad = 0x823809D8
+VisArea_Find = 0x825FC6D8
 
 # CryGame, the debug page: the game's update, command queue, story start, loading screen minimum, the player
 # script's property writes and an entity's EnablePhysics
@@ -201,7 +203,9 @@ IntroMovie_return = 0x8220CDA8
 LogoScreen_return = 0x823160CC
 UbisoftMovie_return = 0x82315F58
 
-# CryRender and Cry3DEngine: the display block, the engine, object manager and renderer objects and the bound depth texture
+# CryRender and Cry3DEngine: the display block, the engine, object manager and renderer objects, the bound depth texture
+# and the ambient's outdoor addition and floor
+Ambient_pointer = 0x82913484
 C3DEngine_pointer = 0x829122C8
 Device_pointer = 0x829161B4
 DisplayBlock = 0x829161A0
