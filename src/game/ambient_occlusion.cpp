@@ -5,10 +5,12 @@
 // the characters, the blended layers and the ocean land on top. The fog is linear over view distance, from the
 // renderer's constant block. RTAO traces the world's draws from the start of the camera's list to that point. Global
 // illumination traces every world layer, the characters included, and is added after the list's last item wherever a
-// world draw left its albedo. Volumetric fog goes in after that, over the whole list, through the far sun map.
+// draw left its albedo, the first person weapon's past the world too but not the ocean's. Volumetric fog goes in after
+// that, over the whole list, through the far sun map.
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <utility>
 
 #include "common/render_pass.h"
 #include "common/settings.h"
@@ -73,6 +75,8 @@ thread_local uint32_t t_sort_list = 0;  // the camera pass's list while its keys
 thread_local Pipelines t_pipelines;
 thread_local uint32_t t_draw_list = 0;  // the camera pass's list while it is drawn, until occlusion went in
 thread_local uint32_t t_world_list = 0;  // the same while its world layers stream into global illumination's scene
+thread_local uint32_t t_past_list = 0;   // the same past its world, whose draws but the ocean's keep their albedo
+thread_local bool t_ocean = false;
 
 bool Enabled() { return fcip::Get().ambient_occlusion && fcip::SubmittedPass() == fcip::kPassCamera; }
 bool Illuminated() { return fcip::Get().global_illumination && fcip::SubmittedPass() == fcip::kPassCamera; }
@@ -195,10 +199,20 @@ bool Ambient(PPCContext& ctx, float out[3]) {
 
 // the world ends where the first item past it is popped, else with the list; the ambient goes with it
 void EndWorld(PPCContext& ctx) {
-    t_world_list = 0;
+    t_past_list = std::exchange(t_world_list, 0);
     float ambient[3] = {};
     Ambient(ctx, ambient);
     d3d::IlluminationWorld(R32(SYM_Device_pointer), ambient);
+}
+
+// past the world, the ocean's layers clear the albedo the others write
+void UpdateOcean(uint32_t list) {
+    uint32_t key = 0;
+    if (!NextKey(list, key)) return;
+    bool ocean = kOceanLayers >> (key >> kLayerShift & kLayerMask) & 1;
+    if (ocean == t_ocean) return;
+    t_ocean = ocean;
+    d3d::IlluminationOcean(R32(SYM_Device_pointer), ocean);
 }
 
 // the camera's view inverted, a rotation and a translation, with the renderer's z, the distance, turned back into the
@@ -312,6 +326,8 @@ PPC_FUNC(GUEST(Scene_Draw)) {
     GUEST_ORIG(Scene_Draw)(ctx, base);
     if (t_draw_list) Occlude();
     if (lit) Illuminate(ctx);
+    t_past_list = 0;
+    t_ocean = false;
     if (fogged) Fog();
     fcip::MotionSceneDone();
 }
@@ -321,6 +337,7 @@ PPC_FUNC(GUEST(Scene_Pop)) {
     uint32_t list = uint32_t(ctx.r[3]);
     if (t_draw_list && t_draw_list == list && PastWorld(list, false)) Occlude();
     if (t_world_list && t_world_list == list && PastWorld(list, true)) EndWorld(ctx);
+    if (t_past_list && t_past_list == list) UpdateOcean(list);
     fcip::MotionScenePop(list);
     GUEST_ORIG(Scene_Pop)(ctx, base);
 }

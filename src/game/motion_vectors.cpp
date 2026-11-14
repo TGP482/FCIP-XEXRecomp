@@ -16,8 +16,6 @@ using namespace fcip::scene;
 
 namespace {
 
-constexpr uint32_t kOceanLayers = 1u << 7 | 1u << 11;
-
 thread_local uint32_t t_list = 0;  // the camera pass's list
 thread_local bool t_paused = false;
 

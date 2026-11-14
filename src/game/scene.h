@@ -21,6 +21,7 @@ constexpr uint32_t kListEntrySize = 0xC;
 constexpr uint32_t kLayerShift = 16;
 constexpr uint32_t kLayerMask = 0xF;
 constexpr uint32_t kLastWorldLayer = 4;
+constexpr uint32_t kOceanLayers = 1u << 7 | 1u << 11;  // a bit per layer
 
 // the camera of the pass being submitted, 0 outside one
 inline uint32_t Camera() {

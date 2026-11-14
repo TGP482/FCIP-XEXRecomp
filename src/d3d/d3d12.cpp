@@ -2745,7 +2745,7 @@ void FillBlend(const PipelineKey& k, D3D12_BLEND_DESC& d) {
     D3D12_RENDER_TARGET_BLEND_DESC& albedo = d.RenderTarget[fcip::kAlbedoTarget];
     albedo.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     if (k.albedo != kAlbedoClear) return;
-    // a draw past the world zeroes the albedo the world left under it
+    // an ocean draw zeroes the albedo the world left under it
     albedo.BlendEnable = TRUE;
     albedo.SrcBlend = D3D12_BLEND_ZERO;
     albedo.DestBlend = D3D12_BLEND_ZERO;
@@ -4019,7 +4019,10 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
     if (flags & kClearIlluminationWorld) {
         std::copy(color, color + 3, gi_.ambient);
         gi_.capture = false;
-        if (gi_.mode) gi_.mode = kAlbedoClear;
+        return;
+    }
+    if (flags & (kClearIlluminationOcean | kClearIlluminationPastOcean)) {
+        if (gi_.mode) gi_.mode = (flags & kClearIlluminationOcean) ? kAlbedoClear : kAlbedoWrite;
         return;
     }
     if (flags & kClearIllumination) {

@@ -11,12 +11,15 @@ namespace gpu {
 
 constexpr uint32_t kClearOcclusion = 0x100;
 constexpr uint32_t kClearOcclusionScene = 0x200;  // RTAO traces the world drawn from here to the occlusion
-// global illumination: the world's draws stream into its scene and write their albedo, the draws past the world clear
-// theirs and the world's end brings the game's ambient in its colour, then the scene's light is traced and added after
-// its last draw, its method the FogViewAt slot of the sun that lights hidden hits
+// global illumination: the world's draws stream into its scene and write their albedo, the draws past the world write
+// theirs too, the first person weapon among them, but the ocean's clear it; the world's end brings the game's ambient
+// in its colour, then the scene's light is traced and added after its last draw, its method the FogViewAt slot of the
+// sun that lights hidden hits
 constexpr uint32_t kClearIlluminationScene = 0x10000;
 constexpr uint32_t kClearIlluminationWorld = 0x20000;
 constexpr uint32_t kClearIllumination = 0x40000;
+constexpr uint32_t kClearIlluminationOcean = 0x100000;  // the ocean's draws, until kClearIlluminationPastOcean
+constexpr uint32_t kClearIlluminationPastOcean = 0x200000;
 // volumetric fog after the camera pass's last draw, its method the FogViewAt slot
 constexpr uint32_t kClearFog = 0x80000;
 
@@ -75,6 +78,8 @@ void OcclusionScene(uint32_t dev);
 // on the title's thread before the camera pass's list, after its world and after its last item
 void IlluminationScene(uint32_t dev);
 void IlluminationWorld(uint32_t dev, const float ambient[3]);
+// past the world, on the ocean's first draw and the first after it
+void IlluminationOcean(uint32_t dev, bool ocean);
 void Illumination(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);
 // on the title's thread after the camera pass's last item
 void VolumetricFog(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);
