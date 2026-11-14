@@ -1,5 +1,6 @@
 // the pass the renderer's pass submit (vtable +0x2C, 82367D68) is drawing
 #pragma once
+#include <cstddef>
 #include <cstdint>
 
 struct PPCContext;
@@ -45,5 +46,18 @@ constexpr uint8_t kSunSoft = 2;        // the same, with the soft filter on
 constexpr uint8_t kShadowSoft = 4;     // another light's shadow map, soft
 constexpr uint8_t kShadowHalf = 8;     // that map drawn as one of four inside a vis area, 672 at stock
 constexpr uint8_t kSunPcss = 16;       // the far sun map with PCSS on
+constexpr uint8_t kShadowRay = 32;     // any shadow map, traced against its casters; the scene's slot in the top bits
+constexpr uint32_t kRaySlotShift = 6;
+constexpr uint32_t kRayScenes = 4;      // shadow maps one draw traces at most
+constexpr uint32_t kRayFirstSlot = 25;  // pixel shader views: casters, their records, then the scenes through 30
+
+// what a pixel shader's first instruction fetches its first texture at: an interpolator and two of its components,
+// reg -1 when that instruction is no such fetch
+struct FirstFetch {
+    int8_t reg = -1;
+    uint8_t x = 0;
+    uint8_t y = 1;
+};
+FirstFetch FindFirstFetch(const uint32_t* code, size_t dwords);
 
 }  // namespace fcip

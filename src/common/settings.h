@@ -39,7 +39,7 @@ struct Settings {
 
 Settings& Get();
 
-enum : uint32_t { kFilterSharp, kFilterSoft, kFilterPcss };
+enum : uint32_t { kFilterSharp, kFilterSoft, kFilterPcss, kFilterRay };
 
 constexpr uint32_t kMaxWorldDistance = 8;  // past it only the shadow distance grows
 

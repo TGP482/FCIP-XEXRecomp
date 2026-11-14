@@ -500,6 +500,78 @@ float SunPcss(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 
 }
 )";
 
+// ray traced shadows: a map's casters as triangles in its uv and depth, with records of their clip position and the
+// interpolator an alpha tested one reads. A caster is x its first record, y its alpha texture in the heap, z the alpha
+// reference and w the compare, then the interpolator's two components
+const char* kRayShadowPrelude = R"(
+Texture2D<float4> t_heap[] : register(t0, space3);
+SamplerState s_heap : register(s0, space3);
+static uint g_ray_done = 0;
+static float3 g_ray_at[4];
+static float g_ray_lit[4];
+static float2 g_frag;  // the pixel, which turns its rays
+
+// an alpha tested caster's test where the ray crosses its triangle prim
+bool CasterHit(uint caster, uint prim, float2 bary) {
+    uint4 c = t_ray_casters.Load4(caster * 16);
+    uint at = (c.x + prim * 3) * 32 + 16;
+    float4 a = asfloat(t_ray_records.Load4(at));
+    float4 b = asfloat(t_ray_records.Load4(at + 32));
+    float4 d = asfloat(t_ray_records.Load4(at + 64));
+    float4 tex = a + (b - a) * bary.x + (d - a) * bary.y;
+    float2 uv = float2(tex[c.w >> 4 & 3], tex[c.w >> 6 & 3]);
+    float alpha = t_heap[NonUniformResourceIndex(c.y)].SampleLevel(s_heap, uv, 0).a;
+    float ref = asfloat(c.z);
+    switch (c.w & 7) {
+        case 0: return false;
+        case 1: return alpha < ref;
+        case 2: return alpha == ref;
+        case 3: return alpha <= ref;
+        case 4: return alpha > ref;
+        case 5: return alpha != ref;
+        case 6: return alpha >= ref;
+    }
+    return true;
+}
+
+// nothing between the point and the light, which lies along +z in the map's space: the title's depth is reversed, a
+// map is cleared to 0 and keeps its largest depth. Casters nearer than the map's near plane count; past its edge is lit
+bool RayLit(RaytracingAccelerationStructure scene, float3 p, float3 dir, float tmin) {
+    if (any(p.xy < 0) || any(p.xy > 1)) return true;
+    RayDesc ray;
+    ray.Origin = p;
+    ray.Direction = dir;
+    ray.TMin = tmin;
+    ray.TMax = 1e30;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
+    q.TraceRayInline(scene, RAY_FLAG_NONE, 0xFF, ray);
+    while (q.Proceed()) {
+        uint caster = q.CandidateInstanceID() + q.CandidateGeometryIndex();
+        float2 bary = q.CandidateTriangleBarycentrics();
+        if (CasterHit(caster, q.CandidatePrimitiveIndex(), bary)) q.CommitNonOpaqueTriangleHit();
+    }
+    return q.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+// the share of the light a point sees, from rays spread over the light: spread > 0 a cone over the sun's disc, uv per
+// unit of depth toward it, so penumbrae widen with the distance to what casts them; < 0 parallel rays over a disc of
+// that radius in uv. The disc is turned per pixel; when the first four rays agree the rest are skipped
+float RayShare(RaytracingAccelerationStructure scene, float3 p, float tmin, float spread) {
+    float turn = 6.2831853 * frac(52.9829189 * frac(dot(g_frag, float2(0.06711056, 0.00583715))));
+    float lit = 0;
+    for (int i = 0; i < 16; i++) {
+        // golden angle turns, the same area per ray; radii in steps of 5 so the first four span the disc
+        float angle = i * 2.39996323 + turn;
+        float2 o = sqrt(((i * 5) % 16 + 0.5) / 16) * float2(cos(angle), sin(angle));
+        float3 at = spread < 0 ? float3(p.xy - o * spread, p.z) : p;
+        float3 dir = float3(spread > 0 ? o * spread : 0, 1);
+        lit += RayLit(scene, at, dir, tmin) ? 1 : 0;
+        if (i == 3 && (lit == 0 || lit == 4)) return lit / 4;
+    }
+    return lit / 16;
+}
+)";
+
 class Translator {
 public:
     Translator(ShaderStage stage, const uint32_t* code, size_t dwords, const ShaderOptions& opt, ShaderInfo& info)
@@ -529,6 +601,7 @@ private:
     void OpenSunMap(const std::string& margin);
     void EmitSunMaps(uint32_t t, bool weights);
     void EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags);
+    void EmitRayShadow(uint32_t slot, bool weights, int32_t oy);
     void EmitExport(const Alu& a, bool vector, bool scalar);
     void EmitWrite(const std::string& dst, uint32_t swizzle, const char* src);
 
@@ -550,6 +623,7 @@ private:
     int indent_ = 0;
     bool sun_maps_ = false;  // t_sun declared
     bool sun_soft_ = false;  // SunSoft declared
+    uint32_t ray_slots_ = 0;  // a bit per scene traced
 };
 
 std::string Translator::Reg(uint32_t index, bool rel) const {
@@ -865,7 +939,9 @@ void Translator::EmitTextureFetch(const Fetch& f) {
         bool sun_op = op == kTextureFetch || op == kGetWeights;
         uint8_t sun = Pixel() && dim == kDim2D && !f.Unnormalized() ? opt_.tex_flags[t & 31] : 0;
         bool soft = sun_op && (sun & (fcip::kSunSoft | fcip::kShadowSoft)) && (op == kGetWeights || oy);
-        if (soft) {
+        if (sun_op && (sun & fcip::kShadowRay)) {
+            EmitRayShadow(sun >> fcip::kRaySlotShift, op == kGetWeights, oy);
+        } else if (soft) {
             EmitSunSoft(t, op == kGetWeights, oy, sun);
         } else {
             Line("float4 ft = " + fetch + ";");
@@ -919,6 +995,9 @@ constexpr double kSoftRadiusHalf = 3.0 / 672;
 constexpr double kPcssSpread = 0.02;
 constexpr double kPcssMin = 1.0 / 1344;
 constexpr double kPcssMax = 12.0 / 1344;
+// a traced point's lead toward the light: its surface's depth change over this many pixels, and a floor
+constexpr double kRayPixels = 1.5;
+constexpr double kRayBias = 1e-6;
 
 // the sun's filter call on a map at point p, whose uv spans s stock radii
 std::string SunFilter(const std::string& map, uint32_t t, const char* p, const char* slope, const char* s, bool pcss) {
@@ -956,6 +1035,25 @@ void Translator::EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags
         Line(F("float below = SunSoft(t%u, s%u, uv, tc.z, slope, %.9g);", t, t, radius));
     }
     Line("float4 ft = float4(0, 1 - below, 0, 0);");
+}
+
+// a shadow map fetch traced instead, once per point. The receiver's own compare is lit where its depth is at or past
+// the map's. As the soft filter: the weights fetch gives the shadowed share as its y weight and each tap row a depth on
+// its side of tc.z. A lone fetch reads a depth below the receiver's when mostly lit, above it when mostly shadowed
+void Translator::EmitRayShadow(uint32_t slot, bool weights, int32_t oy) {
+    ray_slots_ |= 1u << slot;
+    if (!weights && oy) {
+        Line(F("float4 ft = (tc.z %c 1).xxxx;", oy > 0 ? '+' : '-'));
+        return;
+    }
+    Line(F("float tmin = fwidth(tc.z) * %g + %g;", kRayPixels, kRayBias));
+    Open(F("if (!(g_ray_done >> %u & 1) || any(g_ray_at[%u] != tc))", slot, slot));
+    Line(F("g_ray_done |= %uu;", 1u << slot));
+    Line(F("g_ray_at[%u] = tc;", slot));
+    Line(F("g_ray_lit[%u] = RayShare(t_ray%u, tc, tmin, g_ext.%c);", slot, slot, kComp[slot]));
+    Close();
+    if (weights) Line(F("float4 ft = float4(0, 1 - g_ray_lit[%u], 0, 0);", slot));
+    else Line(F("float4 ft = (tc.z + (g_ray_lit[%u] >= 0.5 ? -1 : 1)).xxxx;", slot));
 }
 
 void Translator::EmitExec(const Cf& cf) {
@@ -1132,6 +1230,15 @@ void CommitAlu() {
     }
     if (sun_maps_) s += F("Texture2D<float4> t_sun[%u] : register(t%u);\n", fcip::kSunMaps, fcip::kSunFirstSlot);
     if (sun_soft_) s += kSunSoftPrelude;
+    if (ray_slots_) {
+        s += F("ByteAddressBuffer t_ray_casters : register(t%u);\n", fcip::kRayFirstSlot);
+        s += F("ByteAddressBuffer t_ray_records : register(t%u);\n", fcip::kRayFirstSlot + 1);
+        for (uint32_t i = 0; i < fcip::kRayScenes; i++) {
+            if (!(ray_slots_ >> i & 1)) continue;
+            s += F("RaytracingAccelerationStructure t_ray%u : register(t%u);\n", i, fcip::kRayFirstSlot + 2 + i);
+        }
+        s += kRayShadowPrelude;
+    }
     return s;
 }
 
@@ -1244,6 +1351,7 @@ POut main(PIn i) {
         s += "    float2 vpos = floor(i.pos.xy * g_vpos_scale);\n";
         s += F("    r[%d] = float4(i.front ? vpos.x : -vpos.x, vpos.y, 0, 0);\n", opt_.vpos_reg & 63);
     }
+    if (ray_slots_) s += "    g_frag = i.pos.xy;\n";
     s += "    Run();\n";
     s += Hooks().Output();
     if (opt_.alpha_test) {
@@ -1297,3 +1405,21 @@ std::string TranslateShader(ShaderStage stage, const uint32_t* code, size_t dwor
 }
 
 }  // namespace gpu
+
+// the fetch an alpha tested shadow caster's test reads, when the shader opens with it
+fcip::FirstFetch fcip::FindFirstFetch(const uint32_t* code, size_t dwords) {
+    using namespace gpu;
+    for (const Cf& cf : ParseControlFlow(code, dwords)) {
+        if (cf.Branches()) return {};
+        if (!cf.IsExec()) continue;
+        bool plain = cf.Op() == kCfExec || cf.Op() == kCfExecEnd;
+        if (!plain || !cf.Count() || !(cf.Serialize() & 1) || size_t(cf.Address()) * 3 + 3 > dwords) return {};
+        const uint32_t* w = code + cf.Address() * 3;
+        Fetch f{w[0], w[1], w[2]};
+        bool interpolated = f.Src() < kInterpolators && !f.SrcRel();
+        bool plain_2d = f.Dimension() == kDim2D && !f.Unnormalized() && !f.Predicated();
+        if (f.Op() != kTextureFetch || !interpolated || !plain_2d) return {};
+        return {int8_t(f.Src()), uint8_t(f.CoordComponent(0)), uint8_t(f.CoordComponent(1))};
+    }
+    return {};
+}

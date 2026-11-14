@@ -69,6 +69,7 @@ struct Shader {
     std::unordered_map<uint64_t, std::unique_ptr<Variant>> variants;
     ShaderOptions last_opt;  // the last variant asked for, found again without a hash
     Variant* last = nullptr;
+    fcip::FirstFetch first_fetch;  // pixel: what an alpha tested shadow caster's test reads
 };
 
 namespace {
@@ -127,6 +128,7 @@ enum : uint32_t {
     kRootPsSamplers,
     kRootPrevConsts,  // a motion draw's vertex constants last frame
     kRootMotion,
+    kRootHeap,  // the whole view heap, for ray traced shadows' alpha tests; only with ray tracing
     kRootCount,
 };
 
@@ -366,7 +368,7 @@ struct PipelineKey {
     float poly_scale = 0;
     uint32_t topology = 0;
     uint32_t strip_cut = 0;
-    uint32_t stream_out = 0;  // RTAO's
+    uint32_t stream_out = 0;  // kStreamRtao or a kStreamCaster
     uint32_t motion = 0;      // kMotionTarget's format, 0 none; no padding: the key is hashed and compared as bytes
 };
 
@@ -811,6 +813,19 @@ constexpr uint64_t kRayVertices = 6ull << 20;  // 2M triangles, 72 MB
 constexpr uint32_t kRayDraws = 4096;
 constexpr uint32_t kRayCounter = 8;  // bytes of a draw's stream output counter
 constexpr uint32_t kRayTransformBytes = 12 * sizeof(float);
+// ray traced shadows: each shadow map's draws stream out their clip position and the interpolator an alpha test reads,
+// divided into the map's uv and depth at its resolve and built into the scene its receivers trace
+constexpr uint32_t kCasterStride = 32;
+constexpr uint64_t kCasterRecords = 8ull << 20;  // 2.8M triangles a frame, 256 MB
+constexpr uint32_t kCasterDraws = 16384;
+constexpr uint32_t kCasterBytes = 16;     // a caster as kRayShadowPrelude reads it
+constexpr uint32_t kDivideChunk = 65535 * 64;  // records one dispatch divides at most
+constexpr uint64_t kRayIdleFrames = 60;   // a map's scene is freed once unresolved this long
+constexpr uint32_t kStreamRtao = 1;       // PipelineKey::stream_out
+constexpr uint32_t kStreamCaster = 2;     // then kStreamCaster + 1 + n with interpolator n
+constexpr float kRaySunSpread = 0.02f;    // tan of the sun's angular radius, as PCSS's
+constexpr float kRayDisc = 2.0f;          // another light's disc radius, in stock texels of its map
+constexpr float kStockSide = 1344.0f;     // a stock sun map; inside a vis area the maps are half
 
 // a channel of 0xRRGGBB, 0 to 1
 float Channel(uint32_t rgb, uint32_t shift) { return float(rgb >> shift & 0xFF) / 255.0f; }
@@ -857,6 +872,53 @@ struct RayDraw {
     float ndc_offset[3] = {};
 };
 
+// a shadow map draw streamed out, kept until its target resolves or clears
+struct CasterDraw {
+    const Target* target = nullptr;
+    uint32_t w = 0;  // the target's title pixels, which its ndc spans
+    uint32_t h = 0;
+    uint32_t count = 0;  // records
+    uint32_t stream = 0;  // PipelineKey::stream_out
+    bool alpha = false;
+    uint32_t info[4] = {};  // kCasterBytes: first record, alpha view, alpha reference, compare and uv components
+};
+
+// records' clip positions divided into a map's uv and depth: first record, count, then the uv scale and offset over
+// ndc x and y
+const char* kDivideHlsl = R"(
+RWByteAddressBuffer records : register(u0);
+cbuffer C : register(b0) {
+    uint first;
+    uint count;
+    float2 scale;
+    float2 offset;
+};
+[numthreads(64, 1, 1)]
+void main(uint id : SV_DispatchThreadID) {
+    if (id >= count) return;
+    uint at = (first + id) * 32;
+    float4 p = asfloat(records.Load4(at));
+    // a vertex at or behind the light leaves its triangle out
+    float3 q = p.w > 0 ? float3(p.xy / p.w * scale + offset, p.z / p.w) : asfloat(0x7FC00000u).xxx;
+    records.Store3(at, asuint(q));
+}
+)";
+constexpr uint32_t kDivideConstants = 6;
+
+// a caster's clip position, then the interpolator its alpha test reads or nothing
+D3D12_STREAM_OUTPUT_DESC CasterOutput(uint32_t stream) {
+    static const auto kDecls = [] {
+        std::array<std::array<D3D12_SO_DECLARATION_ENTRY, 2>, 17> d{};
+        for (uint32_t i = 0; i < d.size(); i++) {
+            d[i][0] = {0, "SV_Position", 0, 0, 4, 0};
+            d[i][1] = {0, i ? "TEXCOORD" : nullptr, i ? i - 1 : 0, 0, 4, 0};
+        }
+        return d;
+    }();
+    static const UINT kStrides[] = {kCasterStride};
+    return {kDecls[stream - kStreamCaster].data(), 2, kStrides, 1, 0};
+}
+
 // a draw's host clip x, y and z to the view space kAoHlsl's View() makes: the title's z is m32 - m22 * w (823B0580
 // flips it to w - z), so the distance w comes back from z alone
 void RayTransform(const OcclusionArgs& a, const RayDraw& d, uint8_t* out) {
@@ -883,6 +945,14 @@ uint32_t StripTriangles(const DrawArgs& a, uint32_t count, bool cut) {
         if (run >= 3) triangles++;
     }
     return triangles;
+}
+
+// vertices a triangle draw streams out, none for other primitives
+uint32_t TriangleVertices(const DrawArgs& a, D3D12_PRIMITIVE_TOPOLOGY topo, uint32_t count, bool cut) {
+    uint32_t triangles = 0;
+    if (topo == D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) triangles = count / 3;
+    if (topo == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP) triangles = StripTriangles(a, count, cut);
+    return triangles * 3;
 }
 
 // the motion vectors the scene's draws left, with the depth reprojected from last frame's camera where none did.
@@ -1316,10 +1386,24 @@ private:
                         ComPtr<ID3D12Resource>& dst);
     bool Grow(ComPtr<ID3D12Resource>& r, uint64_t bytes, D3D12_RESOURCE_STATES state);
     bool MakeBuffer(ComPtr<ID3D12Resource>& r, uint64_t bytes, D3D12_RESOURCE_STATES state);
+    bool CreateDividePipeline();
+    bool EnsureCasterBuffers();
+    uint32_t CasterVertices(const State& s, const DrawArgs& a, const PipelineKey& k, D3D12_PRIMITIVE_TOPOLOGY topo,
+                            uint32_t count, const Bound& b, bool alpha_test, CasterDraw& caster);
+    void StreamOutCasters(CasterDraw caster);
+    void DropCasters(const Target* t);
+    void BuildRayShadow(const Target& src, const ResolveArgs& r);
+    void DivideCasters(const std::vector<CasterDraw>& draws, const ResolveArgs& r);
+    void RayShadows(const State& s, const ShaderInfo& info, ShaderOptions& opt);
+    void RayViews(uint32_t table, const D3D12_GPU_VIRTUAL_ADDRESS* rays);
+    float RaySpread(uint32_t base, const fcip::SunMaps& sun) const;
     // buffers are back in COMMON once a list ran
     void BuffersDecayed() {
         ray_vertices_state_ = D3D12_RESOURCE_STATE_COMMON;
         ray_counters_state_ = D3D12_RESOURCE_STATE_COMMON;
+        caster_records_state_ = D3D12_RESOURCE_STATE_COMMON;
+        caster_counters_state_ = D3D12_RESOURCE_STATE_COMMON;
+        casters_state_ = D3D12_RESOURCE_STATE_COMMON;
     }
     bool EnsureOcclusionTargets(uint32_t w, uint32_t h);
     ID3D12PipelineState* EnsureOcclusionPipeline(const AoPass& p, bool ms_depth);
@@ -1452,6 +1536,28 @@ private:
     ComPtr<ID3D12Resource> ray_bottom_;
     ComPtr<ID3D12Resource> ray_top_;
     ComPtr<ID3D12Resource> ray_scratch_;
+    // ray traced shadows: this frame's shadow map draws not yet resolved, and the scene each map's resolve built
+    struct RayShadow {
+        ComPtr<ID3D12Resource> bottom;
+        ComPtr<ID3D12Resource> top;
+        uint64_t frame = 0;
+    };
+    std::unordered_map<uint32_t, RayShadow> ray_shadows_;  // by map address
+    std::vector<CasterDraw> caster_draws_;
+    std::vector<CasterDraw> caster_build_;
+    uint64_t casters_used_ = 0;   // records this frame
+    uint32_t caster_slots_ = 0;   // draws this frame, a stream output counter each
+    uint32_t casters_built_ = 0;  // casters this frame's scenes hold
+    ComPtr<ID3D12Resource> caster_records_;
+    ComPtr<ID3D12Resource> caster_counters_;
+    ComPtr<ID3D12Resource> casters_;
+    D3D12_RESOURCE_STATES caster_records_state_ = D3D12_RESOURCE_STATE_COMMON;
+    D3D12_RESOURCE_STATES caster_counters_state_ = D3D12_RESOURCE_STATE_COMMON;
+    D3D12_RESOURCE_STATES casters_state_ = D3D12_RESOURCE_STATE_COMMON;
+    ComPtr<ID3D12RootSignature> divide_root_;
+    ComPtr<ID3D12PipelineState> divide_pso_;
+    D3D12_GPU_VIRTUAL_ADDRESS ray_scenes_[fcip::kRayScenes] = {};  // the scenes the draw's pixel shader traces
+    float ray_spread_[fcip::kRayScenes] = {};  // their lights' spread, as kRayShadowPrelude's RayShare takes it
     D3D12_RESOURCE_STATES out_state_[kOutTargets] = {};
     uint32_t out_w_ = 0, out_h_ = 0;
     ComPtr<ID3D12Device> dev_;
@@ -1552,6 +1658,7 @@ private:
             uint32_t table = 0;
             D3D12_GPU_DESCRIPTOR_HANDLE samplers{};
             const Resolved* sun[fcip::kSunMaps] = {};
+            D3D12_GPU_VIRTUAL_ADDRESS rays[fcip::kRayScenes] = {};
         } stages[2];
     } binds_;
     // true where now differs from what the last draw set, which keeps it
@@ -1600,6 +1707,7 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
     if (!CreateDevice() || !CreateSwapChain()) return false;
     CreateHeaps();
     if (!CreateRootSignature()) return false;
+    if (dev5_) CreateDividePipeline();
     CreateFrames();
     LoadPipelineCache();
     ImGui_ImplDX12_Init(dev_.Get(), kFrames, kSwapFormat, ui_heap_.Get(),
@@ -1754,10 +1862,22 @@ bool D3D12Backend::CreateRootSignature() {
     table(kRootPsViews, &ps_views, 1, D3D12_SHADER_VISIBILITY_PIXEL);
     table(kRootVsSamplers, &vs_samplers, 1, D3D12_SHADER_VISIBILITY_VERTEX);
     table(kRootPsSamplers, &ps_samplers, 1, D3D12_SHADER_VISIBILITY_PIXEL);
+    D3D12_DESCRIPTOR_RANGE heap{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, UINT_MAX, 0, 3, 0};
+    table(kRootHeap, &heap, 1, D3D12_SHADER_VISIBILITY_PIXEL);
+    D3D12_STATIC_SAMPLER_DESC alpha{};
+    alpha.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    alpha.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    alpha.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    alpha.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    alpha.MaxLOD = D3D12_FLOAT32_MAX;
+    alpha.RegisterSpace = 3;
+    alpha.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsd{};
-    rsd.NumParameters = kRootCount;
+    rsd.NumParameters = dev5_ ? kRootCount : kRootHeap;
     rsd.pParameters = p;
+    rsd.NumStaticSamplers = dev5_ ? 1 : 0;
+    rsd.pStaticSamplers = &alpha;
     rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT;  // RTAO's world draws
     ComPtr<ID3DBlob> blob;
     ComPtr<ID3DBlob> err;
@@ -2198,6 +2318,7 @@ Shader* D3D12Backend::CreateShader(ShaderStage stage, const uint32_t* code, size
     s->code.assign(code, code + dwords);
     s->hash = Hash64(code, dwords * 4);
     TranslateShader(stage, code, dwords, ShaderOptions{}, s->info);
+    if (stage == ShaderStage::Pixel) s->first_fetch = fcip::FindFirstFetch(code, dwords);
     if (s->info.unknown) LOGR("shader: %u instructions not understood", s->info.unknown);
     if (s->info.memexport) LOGR("shader: memory export left out");
     shaders_.push_back(std::move(s));
@@ -2229,7 +2350,10 @@ Variant* D3D12Backend::FindVariant(Shader* s, const ShaderOptions& opt) {
     if (v) return v.get();
     v = std::make_unique<Variant>();
     std::string hlsl = TranslateShader(s->stage, s->code.data(), s->code.size(), opt, v->info);
-    const wchar_t* profile = s->stage == ShaderStage::Vertex ? L"vs_6_0" : L"ps_6_0";
+    auto traced = [](uint8_t flags) { return (flags & fcip::kShadowRay) != 0; };
+    bool rays = std::any_of(std::begin(opt.tex_flags), std::end(opt.tex_flags), traced);
+    const wchar_t* profile = L"vs_6_0";
+    if (s->stage == ShaderStage::Pixel) profile = rays ? L"ps_6_5" : L"ps_6_0";
     g_perf.shaders++;
     if (FindHlsl(hlsl, profile, v->dxil)) {
         v->key = Hash64(v->dxil.data(), v->dxil.size());
@@ -2317,7 +2441,8 @@ void D3D12Backend::FillPipelineDesc(const PipelineKey& k, D3D12_GRAPHICS_PIPELIN
     d.SampleDesc.Count = k.samples;
     static const D3D12_SO_DECLARATION_ENTRY kRayPosition{0, "SV_Position", 0, 0, 3, 0};
     static const UINT kRayStrides[] = {kRayStride};
-    if (k.stream_out) d.StreamOutput = {&kRayPosition, 1, kRayStrides, 1, 0};
+    if (k.stream_out == kStreamRtao) d.StreamOutput = {&kRayPosition, 1, kRayStrides, 1, 0};
+    if (k.stream_out >= kStreamCaster) d.StreamOutput = CasterOutput(k.stream_out);
 }
 
 ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PipelineKey& k, const Variant& vs, const Variant* ps) {
@@ -2448,6 +2573,8 @@ DXGI_FORMAT HostTextureFormat(const xenos::TextureFetch& t) {
 
 Texture* D3D12Backend::EnsureTexture(const xenos::TextureFetch& t) {
     if (!t.base || xenos::Info(t.format).convert == xenos::Convert::Unsupported) return nullptr;
+    // rows shorter than the width: a rescaled shadow map read before its first resolve, backed only at the stock side
+    if (t.pitch && t.pitch < t.width) return nullptr;
     std::vector<xenos::Level> levels = xenos::Levels(t);
     if (levels.empty()) return nullptr;
     uint64_t key = Hash64(&levels[0], levels.size() * sizeof(xenos::Level),
@@ -2694,7 +2821,8 @@ Resolved* D3D12Backend::SunMap(uint32_t base) {
 // reads no far sun map
 bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
     fcip::SunMaps m = fcip::SunMapsDrawn();
-    bool soft = fcip::Get().shadow_filter != fcip::kFilterSharp;
+    uint32_t filter = fcip::Get().shadow_filter;
+    bool soft = filter == fcip::kFilterSoft || filter == fcip::kFilterPcss;
     if ((!m.count && !soft) || info.textures.size() > fcip::kSunFirstSlot) return false;
     // a missing map would read zero depth: it and the coarser ones are left to the far map
     Resolved* maps[fcip::kSunMaps] = {};
@@ -2858,6 +2986,9 @@ uint32_t D3D12Backend::BindTextures(const State& s, const ShaderInfo& info, Shad
     Resolved* const* sun = stage == ShaderStage::Pixel ? sun_ : kNoSun;
     bool same = !ext_ && kept.info == &info && kept.aniso == app::Get().aniso;
     same = same && std::equal(sun, sun + fcip::kSunMaps, kept.sun);
+    static const D3D12_GPU_VIRTUAL_ADDRESS kNoRays[fcip::kRayScenes] = {};
+    const D3D12_GPU_VIRTUAL_ADDRESS* rays = stage == ShaderStage::Pixel ? ray_scenes_ : kNoRays;
+    same = same && std::equal(rays, rays + fcip::kRayScenes, kept.rays);
     if (same && std::memcmp(kept.fetch, fetch, fetch_bytes) == 0) {
         samplers = kept.samplers;
         return kept.table;
@@ -2874,9 +3005,13 @@ uint32_t D3D12Backend::BindTextures(const State& s, const ShaderInfo& info, Shad
     for (uint32_t i = 0; i < fcip::kSunMaps; i++) {
         if (sun[i]) SunMapView(*sun[i], ViewCpu(table + first + fcip::kSunFirstSlot + i));
     }
+    if (std::any_of(rays, rays + fcip::kRayScenes, [](D3D12_GPU_VIRTUAL_ADDRESS a) { return a != 0; })) {
+        RayViews(table + first, rays);
+    }
     samplers = EnsureSamplers(descs);
     kept.info = &info;
     std::copy(sun, sun + fcip::kSunMaps, kept.sun);
+    std::copy(rays, rays + fcip::kRayScenes, kept.rays);
     kept.aniso = app::Get().aniso;
     std::memcpy(kept.fetch, fetch, fetch_bytes);
     kept.table = table;
@@ -3320,6 +3455,8 @@ void D3D12Backend::BindViews(const State& s, const ShaderInfo& vs, const ShaderI
     if (Latch(binds_.roots[kRootPsSamplers], ps_samplers.ptr)) {
         cl_->SetGraphicsRootDescriptorTable(kRootPsSamplers, ps_samplers);
     }
+    D3D12_GPU_DESCRIPTOR_HANDLE heap = view_heap_->GetGPUDescriptorHandleForHeapStart();
+    if (dev5_ && Latch(binds_.roots[kRootHeap], heap.ptr)) cl_->SetGraphicsRootDescriptorTable(kRootHeap, heap);
 }
 
 D3D12_PRIMITIVE_TOPOLOGY_TYPE TopologyType(D3D12_PRIMITIVE_TOPOLOGY topo) {
@@ -3354,6 +3491,8 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     }
     std::fill(std::begin(sun_), std::end(sun_), nullptr);
     bool sun = s.ps && SunCascade(s, s.ps->info, ps_opt);
+    std::fill(std::begin(ray_scenes_), std::end(ray_scenes_), 0);
+    if (s.ps) RayShadows(s, s.ps->info, ps_opt);
     Variant* vs = EnsureVariant(s.vs, vs_opt);
     // no pixel shader: a depth only draw
     Variant* ps = s.ps ? EnsureVariant(s.ps, ps_opt) : nullptr;
@@ -3398,8 +3537,10 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     bool strip = topo == D3D_PRIMITIVE_TOPOLOGY_LINESTRIP || topo == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
     // PA_SU_SC_MODE_CNTL multi_prim_ib_ena: strips restart at an all ones index
     if (strip && Bits(s.Reg(kPaSuScModeCntl), 21, 1)) k.strip_cut = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF;
-    uint32_t ray_vertices = RayVertices(a, k, topo, count, ps_opt.alpha_test);
-    k.stream_out = ray_vertices != 0;
+    CasterDraw caster;
+    uint32_t caster_vertices = CasterVertices(s, a, k, topo, count, bound, ps_opt.alpha_test, caster);
+    uint32_t ray_vertices = caster_vertices ? 0 : RayVertices(a, k, topo, count, ps_opt.alpha_test);
+    k.stream_out = ray_vertices ? kStreamRtao : caster.stream;
     ID3D12PipelineState* pso = EnsurePipeline(k, *vs, ps);
     if (!pso) return;
     g_perf.draws++;
@@ -3415,6 +3556,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         c.ext[2] = float(sun_maps_.side / 8) + float(sun_maps_.near_side / 8) / 2048;
         c.ext[3] = sun_maps_.depth_ratio;
     }
+    if (ray_scenes_[0]) std::copy(std::begin(ray_spread_), std::end(ray_spread_), c.ext);
     // the source factor of colour 0, 1 without blending
     uint32_t b0 = k.blend[0];
     uint32_t src_blend = (b0 & 0x1FFF1FFF) != 0x00010001 ? Bits(b0, 0, 5) : 1;
@@ -3437,8 +3579,9 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         shadow_drawn_ = true;
     }
     if (ray_vertices) StreamOut(c, ray_vertices);
+    if (caster_vertices) StreamOutCasters(caster);
     cl_->DrawIndexedInstanced(count, 1, 0, a.base_vertex, 0);
-    if (ray_vertices) cl_->SOSetTargets(0, 1, nullptr);
+    if (ray_vertices || caster_vertices) cl_->SOSetTargets(0, 1, nullptr);
     binds_.valid = true;
     if (cap_) {
         uint32_t rt = bound.rt ? bound.rt->surface.base : 0;
@@ -3518,7 +3661,11 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         span.height = height;
         if (whole) ClearSpan(span, 1u << i, color, z, uint8_t(stencil));
     }
-    if (flags & (kClearZ | kClearStencil)) clear(DepthTarget(s, height), flags & (kClearZ | kClearStencil));
+    if (flags & (kClearZ | kClearStencil)) {
+        Target* ds = DepthTarget(s, height);
+        clear(ds, flags & (kClearZ | kClearStencil));
+        if (flags & kClearZ) DropCasters(ds);
+    }
 }
 
 // Ambient occlusion
@@ -4140,10 +4287,7 @@ uint32_t D3D12Backend::RayVertices(const DrawArgs& a, const PipelineKey& k, D3D1
                                    uint32_t count, bool alpha_test) const {
     if (!ray_capture_ || alpha_test || !Bits(k.depth_control, 2, 1) || (k.color_control & 0x10)) return 0;
     if (k.rt_formats[0] && (k.blend[0] & 0x1FFF1FFF) != 0x00010001) return 0;
-    uint32_t triangles = 0;
-    if (topo == D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) triangles = count / 3;
-    if (topo == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP) triangles = StripTriangles(a, count, k.strip_cut != 0);
-    uint64_t vertices = uint64_t(triangles) * 3;
+    uint32_t vertices = TriangleVertices(a, topo, count, k.strip_cut != 0);
     if (!vertices) return 0;
     if (ray_draws_.size() < kRayDraws && ray_used_ + vertices <= kRayVertices) return uint32_t(vertices);
     static bool logged = false;
@@ -4250,6 +4394,252 @@ bool D3D12Backend::MakeBuffer(ComPtr<ID3D12Resource>& r, uint64_t bytes, D3D12_R
     return false;
 }
 
+// Ray traced shadows
+
+bool D3D12Backend::CreateDividePipeline() {
+    D3D12_ROOT_PARAMETER p[2] = {};
+    p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    p[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    p[1].Constants.Num32BitValues = kDivideConstants;
+    p[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_ROOT_SIGNATURE_DESC rsd{};
+    rsd.NumParameters = 2;
+    rsd.pParameters = p;
+    ComPtr<ID3DBlob> blob;
+    ComPtr<ID3DBlob> err;
+    if (FAILED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))) return false;
+    if (FAILED(dev_->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                         IID_PPV_ARGS(&divide_root_)))) {
+        return false;
+    }
+    std::vector<uint8_t> cs;
+    if (!CompileHlsl(kDivideHlsl, L"cs_6_0", cs)) return false;
+    D3D12_COMPUTE_PIPELINE_STATE_DESC d{};
+    d.pRootSignature = divide_root_.Get();
+    d.CS = {cs.data(), cs.size()};
+    return SUCCEEDED(dev_->CreateComputePipelineState(&d, IID_PPV_ARGS(&divide_pso_)));
+}
+
+bool D3D12Backend::EnsureCasterBuffers() {
+    D3D12_RESOURCE_STATES common = D3D12_RESOURCE_STATE_COMMON;
+    if (!caster_records_ && !MakeBuffer(caster_records_, kCasterRecords * kCasterStride, common)) return false;
+    if (!caster_counters_ && !MakeBuffer(caster_counters_, kCasterDraws * kRayCounter, common)) return false;
+    return casters_ || MakeBuffer(casters_, kCasterDraws * kCasterBytes, common);
+}
+
+// records a shadow map draw streams out, filling its caster; none without ray traced shadows or past the frame's room.
+// An alpha tested one is traced through its first fetch only, the texture its shader opens with
+uint32_t D3D12Backend::CasterVertices(const State& s, const DrawArgs& a, const PipelineKey& k,
+                                      D3D12_PRIMITIVE_TOPOLOGY topo, uint32_t count, const Bound& b, bool alpha_test,
+                                      CasterDraw& caster) {
+    if (!divide_pso_ || fcip::Get().shadow_filter != fcip::kFilterRay) return 0;
+    if (!b.ds || !ShadowWidth(b.ds->width) || !Bits(k.depth_control, 2, 1)) return 0;
+    uint32_t vertices = TriangleVertices(a, topo, count, k.strip_cut != 0);
+    if (!vertices || !EnsureCasterBuffers()) return 0;
+    if (caster_slots_ >= kCasterDraws || casters_used_ + vertices > kCasterRecords) return 0;
+    caster.target = b.ds;
+    caster.w = b.w;
+    caster.h = b.h;
+    caster.count = vertices;
+    caster.stream = kStreamCaster;
+    caster.info[3] = 7;  // D3DCMP_ALWAYS
+    fcip::FirstFetch f = s.ps ? s.ps->first_fetch : fcip::FirstFetch{};
+    if (alpha_test && f.reg >= 0) {
+        caster.alpha = true;
+        caster.stream = kStreamCaster + 1 + uint32_t(f.reg);
+        caster.info[1] = binds_.stages[1].table;  // the first fetch's view leads the pixel shader's table
+        caster.info[2] = std::bit_cast<uint32_t>(s.RegF(kRbAlphaRef));
+        caster.info[3] = Bits(s.Reg(kRbColorControl), 0, 3) | uint32_t(f.x) << 4 | uint32_t(f.y) << 6;
+    }
+    return vertices;
+}
+
+// the draw's records after the last one's, from a zeroed counter
+void D3D12Backend::StreamOutCasters(CasterDraw caster) {
+    if (!caster_slots_) {
+        uint64_t bytes = kCasterDraws * kRayCounter;
+        Alloc zeros = Upload(bytes, kRayCounter);
+        std::memset(zeros.cpu, 0, bytes);
+        Transition(caster_counters_.Get(), caster_counters_state_, D3D12_RESOURCE_STATE_COPY_DEST);
+        cl_->CopyBufferRegion(caster_counters_.Get(), 0, zeros.res, zeros.offset, bytes);
+    }
+    Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_STREAM_OUT);
+    Transition(caster_counters_.Get(), caster_counters_state_, D3D12_RESOURCE_STATE_STREAM_OUT);
+    caster.info[0] = uint32_t(casters_used_);
+    D3D12_STREAM_OUTPUT_BUFFER_VIEW v{};
+    v.BufferLocation = caster_records_->GetGPUVirtualAddress() + casters_used_ * kCasterStride;
+    v.SizeInBytes = uint64_t(caster.count) * kCasterStride;
+    v.BufferFilledSizeLocation = caster_counters_->GetGPUVirtualAddress() + caster_slots_ * kRayCounter;
+    cl_->SOSetTargets(0, 1, &v);
+    casters_used_ += caster.count;
+    caster_slots_++;
+    caster_draws_.push_back(caster);
+}
+
+void D3D12Backend::DropCasters(const Target* t) {
+    std::erase_if(caster_draws_, [t](const CasterDraw& d) { return d.target == t; });
+}
+
+// the casters drawn into src since it last resolved or cleared, divided into the uv and depth of the map r makes and
+// built into that map's scene; the instance id is its first caster, a geometry per draw after it
+void D3D12Backend::BuildRayShadow(const Target& src, const ResolveArgs& r) {
+    std::vector<CasterDraw>& draws = caster_build_;
+    draws.clear();
+    std::erase_if(caster_draws_, [&](const CasterDraw& d) {
+        if (d.target != &src) return false;
+        draws.push_back(d);
+        return true;
+    });
+    ComPtr<ID3D12GraphicsCommandList4> cl4;
+    if (draws.empty() || casters_built_ + draws.size() > kCasterDraws || FAILED(cl_.As(&cl4))) return;
+    DivideCasters(draws, r);
+    uint32_t first = casters_built_;
+    casters_built_ += uint32_t(draws.size());
+    uint64_t bytes = draws.size() * kCasterBytes;
+    Alloc infos = Upload(bytes, kCasterBytes);
+    D3D12_GPU_VIRTUAL_ADDRESS records = caster_records_->GetGPUVirtualAddress();
+    ray_geometry_.clear();
+    for (size_t i = 0; i < draws.size(); i++) {
+        const CasterDraw& d = draws[i];
+        std::memcpy(infos.cpu + i * kCasterBytes, d.info, kCasterBytes);
+        D3D12_RAYTRACING_GEOMETRY_DESC& g = ray_geometry_.emplace_back();
+        g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+        g.Flags = d.alpha ? D3D12_RAYTRACING_GEOMETRY_FLAG_NONE : D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+        g.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+        g.Triangles.VertexCount = d.count;
+        g.Triangles.VertexBuffer = {records + uint64_t(d.info[0]) * kCasterStride, kCasterStride};
+    }
+    Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_COPY_DEST);
+    cl_->CopyBufferRegion(casters_.Get(), uint64_t(first) * kCasterBytes, infos.res, infos.offset, bytes);
+    Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    RayShadow& scene = ray_shadows_[r.dst_base];
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottom{};
+    bottom.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+    bottom.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+    bottom.NumDescs = UINT(ray_geometry_.size());
+    bottom.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    bottom.pGeometryDescs = ray_geometry_.data();
+    if (!BuildStructure(cl4.Get(), bottom, scene.bottom)) return;
+    D3D12_RAYTRACING_INSTANCE_DESC instance{};
+    instance.Transform[0][0] = 1;
+    instance.Transform[1][1] = 1;
+    instance.Transform[2][2] = 1;
+    instance.InstanceID = first;
+    instance.InstanceMask = 0xFF;
+    instance.AccelerationStructure = scene.bottom->GetGPUVirtualAddress();
+    Alloc held = Upload(sizeof(instance), D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT);
+    std::memcpy(held.cpu, &instance, sizeof(instance));
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS top{};
+    top.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    top.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+    top.NumDescs = 1;
+    top.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    top.InstanceDescs = held.gpu;
+    if (!BuildStructure(cl4.Get(), top, scene.top)) return;
+    scene.frame = frame_;
+}
+
+// each run of records over one target size divided into the map's uv and depth: the host's ndc spans the target's
+// title pixels, and the resolve moves its rect to the texture's dst point
+void D3D12Backend::DivideCasters(const std::vector<CasterDraw>& draws, const ResolveArgs& r) {
+    Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cl_->SetComputeRootSignature(divide_root_.Get());
+    cl_->SetPipelineState(divide_pso_.Get());
+    cl_->SetComputeRootUnorderedAccessView(0, caster_records_->GetGPUVirtualAddress());
+    float tw = float(std::max(r.dst_pitch, 1u));
+    float th = float(std::max(r.dst_height, 1u));
+    for (size_t i = 0; i < draws.size();) {
+        const CasterDraw& d = draws[i];
+        uint32_t count = d.count;
+        size_t end = i + 1;
+        // a draw into another target between them breaks the run
+        while (end < draws.size() && draws[end].w == d.w && draws[end].h == d.h &&
+               draws[end].info[0] == d.info[0] + count) {
+            count += draws[end].count;
+            end++;
+        }
+        float sx = 0.5f * float(d.w) / tw;
+        float sy = -0.5f * float(d.h) / th;
+        float ox = (0.5f * float(d.w) - float(r.rect.x1) + float(r.dst_x)) / tw;
+        float oy = (0.5f * float(d.h) - float(r.rect.y1) + float(r.dst_y)) / th;
+        for (uint32_t done = 0; done < count; done += kDivideChunk) {
+            uint32_t n = std::min(count - done, kDivideChunk);
+            const uint32_t c[kDivideConstants] = {d.info[0] + done,           n,
+                                                  std::bit_cast<uint32_t>(sx), std::bit_cast<uint32_t>(sy),
+                                                  std::bit_cast<uint32_t>(ox), std::bit_cast<uint32_t>(oy)};
+            cl_->SetComputeRoot32BitConstants(1, kDivideConstants, c, 0);
+            cl_->Dispatch((n + 63) / 64, 1, 1);
+        }
+        i = end;
+    }
+    D3D12_RESOURCE_BARRIER uav{};
+    uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    uav.UAV.pResource = caster_records_.Get();
+    cl_->ResourceBarrier(1, &uav);
+    // the graphics pipeline is set again by the next draw
+    Unbind();
+}
+
+// pixel shader fetches of a shadow map whose scene this frame built are traced, each flagged with its scene's slot
+void D3D12Backend::RayShadows(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
+    if (ray_shadows_.empty() || fcip::Get().shadow_filter != fcip::kFilterRay) return;
+    if (info.textures.size() > fcip::kRayFirstSlot) return;
+    fcip::SunMaps sun = fcip::SunMapsDrawn();
+    uint32_t bases[fcip::kRayScenes] = {};
+    uint32_t used = 0;
+    for (uint32_t i = 0; i < info.textures.size(); i++) {
+        if (info.textures[i].dimension > 1) continue;
+        uint32_t fetch[6];
+        ReadFetch(s, info.textures[i].fetch, fetch);
+        uint32_t base = xenos::DecodeTextureFetch(fetch).base;
+        auto scene = ray_shadows_.find(base);
+        if (scene == ray_shadows_.end() || scene->second.frame != frame_) continue;
+        uint32_t slot = uint32_t(std::find(bases, bases + used, base) - bases);
+        if (slot == fcip::kRayScenes) continue;
+        if (slot == used) {
+            bases[used++] = base;
+            ray_scenes_[slot] = scene->second.top->GetGPUVirtualAddress();
+            ray_spread_[slot] = RaySpread(base, sun);
+        }
+        opt.tex_flags[i] |= uint8_t(fcip::kShadowRay | slot << fcip::kRaySlotShift);
+    }
+    if (!used) return;
+    Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+}
+
+// the far sun map's rays spread over the sun's disc, its uv per unit of depth; another light's over a disc of the same
+// world size at every shadow resolution, negative
+float D3D12Backend::RaySpread(uint32_t base, const fcip::SunMaps& sun) const {
+    if (base == sun.far_base) return kRaySunSpread * sun.depth_ratio;
+    auto map = shadow_resolves_.find(base);
+    bool half = map != shadow_resolves_.end() && map->second.width < shadow_side_;
+    return -kRayDisc / (half ? kStockSide / 2 : kStockSide);
+}
+
+// the casters, their records and the scenes a draw traces, in its pixel shader's views from kRayFirstSlot
+void D3D12Backend::RayViews(uint32_t table, const D3D12_GPU_VIRTUAL_ADDRESS* rays) {
+    D3D12_SHADER_RESOURCE_VIEW_DESC raw{};
+    raw.Format = DXGI_FORMAT_R32_TYPELESS;
+    raw.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    raw.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    raw.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    raw.Buffer.NumElements = UINT(kCasterDraws * kCasterBytes / 4);
+    dev_->CreateShaderResourceView(casters_.Get(), &raw, ViewCpu(table + fcip::kRayFirstSlot));
+    raw.Buffer.NumElements = UINT(kCasterRecords * kCasterStride / 4);
+    dev_->CreateShaderResourceView(caster_records_.Get(), &raw, ViewCpu(table + fcip::kRayFirstSlot + 1));
+    D3D12_SHADER_RESOURCE_VIEW_DESC scene{};
+    scene.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+    scene.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    for (uint32_t i = 0; i < fcip::kRayScenes; i++) {
+        if (!rays[i]) continue;
+        scene.RaytracingAccelerationStructure.Location = rays[i];
+        dev_->CreateShaderResourceView(nullptr, &scene, ViewCpu(table + fcip::kRayFirstSlot + 2 + i));
+    }
+}
+
 // D3D Resolve: the target's rect to the texture at dst_base, held on the host and read in place of guest memory
 void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
     g_perf.resolves++;
@@ -4291,6 +4681,7 @@ void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
     fcip::SunResolved(r.dst_base);
     if (src && shadow_targets_.count(TargetMapKey(src->surface, src->depth, src->width, src->key))) {
         shadow_resolves_[r.dst_base] = {shadow_frame_, src->width};
+        if (src->depth) BuildRayShadow(*src, r);
     }
     if (src && r.clear) {
         ClearTarget(*src, r.clear, r.clear_color, r.clear_z, uint8_t(r.clear_stencil), nullptr, 0);
@@ -4974,6 +5365,16 @@ void D3D12Backend::Present(const uint32_t front[6]) {
         side_changed_ = presents_;
     }
     DropIdleShadowMaps();
+    caster_draws_.clear();
+    casters_used_ = 0;
+    caster_slots_ = 0;
+    casters_built_ = 0;
+    std::erase_if(ray_shadows_, [&](auto& entry) {
+        if (frame_ - entry.second.frame <= kRayIdleFrames) return false;
+        Release(std::move(entry.second.bottom));
+        Release(std::move(entry.second.top));
+        return true;
+    });
 
     fps_frames_++;
     auto now = std::chrono::steady_clock::now();

@@ -18,7 +18,8 @@
 // pass), so detail halves from one map to the next. Every sun camera sits where the stock radius puts it, on the far
 // map's texel grid, with the far map's depth range, and is as wide as its radius. The far map draws last, so the
 // receivers keep its texture and matrix. The renderer finds the maps by their resolve addresses and reads the sharpest
-// one that covers the point. Inside a vis area the far run draws the game's four light frustums, the sun among them;
+// one that covers the point. Ray traced shadows read the far map's casters, not its texels, so no sharper map is
+// drawn for them. Inside a vis area the far run draws the game's four light frustums, the sun among them;
 // the sharper runs draw one frustum, the top scored light, normally the sun. Only the sun's resolves are recorded.
 //
 // Each sun camera culls its casters to the part of its map a receiver can read: receivers lie in the view frustum, or
@@ -36,6 +37,7 @@
 #include "common/render_pass.h"
 #include "common/settings.h"
 #include "d3d/motion.h"
+#include "d3d/occlusion.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
 #include "xdk/layout.h"
@@ -483,9 +485,10 @@ uint32_t fcip::SubmittedPass() { return t_pass_type; }
 
 void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     uint32_t distance = Get().draw_distance;
+    bool rays = Get().shadow_filter == kFilterRay && gpu::RayTracing();
     // the far map's texel grid must hold whole texels of each sharper map
     uint32_t maps = 0;
-    while (maps < kSunMaps && (1u << maps) < distance && distance % (1u << maps) == 0) maps++;
+    while (!rays && maps < kSunMaps && (1u << maps) < distance && distance % (1u << maps) == 0) maps++;
     g_distance = maps ? distance : 0;
     g_maps = maps;
     uint64_t quad = ctx.r[6];
