@@ -1564,6 +1564,7 @@ private:
     Resolved* FindResolved(const xenos::TextureFetch& t, const TextureBinding& b, ShaderStage stage, uint32_t slot);
     void TexFlags(const State& s, const ShaderInfo& info, ShaderStage stage, uint8_t flags[32]);
     bool SunCascade(const State& s, const ShaderInfo& info, ShaderOptions& opt);
+    bool OceanFlags(const State& s, const ShaderInfo& info, ShaderOptions& opt);
     uint8_t SoftShadow(uint32_t base, bool far_map) const;
     Resolved* SunMap(uint32_t base);
     void SunMapView(Resolved& r, D3D12_CPU_DESCRIPTOR_HANDLE at);
@@ -1956,6 +1957,7 @@ private:
     std::unordered_map<uint32_t, Resolved> blocks_;     // by address: a resolve with the whole blocks it writes past
     Resolved* sun_[fcip::kSunMaps] = {};                // the sharper sun maps the draw's pixel shader reads
     fcip::SunMaps sun_maps_;
+    fcip::OceanLook ocean_;  // the original Xbox ocean's look while OceanFlags flags a draw
     // shadow map targets and their resolves by the shadow frame that last used them and their guest width: a new side,
     // distance or vis area leaves some behind
     struct ShadowUse {
@@ -3224,6 +3226,26 @@ bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOpti
     return true;
 }
 
+// original Xbox ocean: one square resolve (the reflection map) beside a wide one (the screen behind the water)
+bool D3D12Backend::OceanFlags(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
+    if (info.textures.size() > fcip::kOceanOut || !fcip::OceanLookDrawn(ocean_)) return false;
+    int reflection = -1;
+    bool screen = false;
+    for (uint32_t i = 0; i < info.textures.size(); i++) {
+        uint32_t fetch[6];
+        ReadFetch(s, info.textures[i].fetch, fetch);
+        Resolved* r = FindResolved(xenos::DecodeTextureFetch(fetch), info.textures[i], ShaderStage::Pixel, i);
+        if (!r) continue;
+        if (r->width == r->height && reflection >= 0) return false;
+        if (r->width == r->height) reflection = int(i);
+        if (r->width > r->height) screen = true;
+    }
+    if (reflection < 0 || !screen) return false;
+    opt.tex_flags[reflection] |= fcip::kOceanReflection;
+    opt.tex_flags[fcip::kOceanOut] |= fcip::kOceanReflection;
+    return true;
+}
+
 // the soft filter's flags on a fetch of the map at base, none when it is no shadow map
 uint8_t D3D12Backend::SoftShadow(uint32_t base, bool far_map) const {
     auto map = shadow_resolves_.find(base);
@@ -3878,6 +3900,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     bool sun = s.ps && SunCascade(s, s.ps->info, ps_opt);
     std::fill(std::begin(ray_scenes_), std::end(ray_scenes_), 0);
     if (s.ps) RayShadows(s, s.ps->info, ps_opt);
+    bool ocean = s.ps && !sun && !ray_scenes_[0] && OceanFlags(s, s.ps->info, ps_opt);
     Variant* vs = EnsureVariant(s.vs, vs_opt);
     // no pixel shader: a depth only draw
     Variant* ps = s.ps ? EnsureVariant(s.ps, ps_opt) : nullptr;
@@ -3946,6 +3969,10 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         c.ext[3] = sun_maps_.depth_ratio;
     }
     if (ray_scenes_[0]) std::copy(std::begin(ray_spread_), std::end(ray_spread_), c.ext);
+    if (ocean) {
+        c.ext[0] = ocean_.amount;
+        c.ext[1] = ocean_.pivot;
+    }
     // the source factor of colour 0, 1 without blending
     uint32_t b0 = k.blend[0];
     uint32_t src_blend = (b0 & 0x1FFF1FFF) != 0x00010001 ? Bits(b0, 0, 5) : 1;

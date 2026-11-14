@@ -60,6 +60,18 @@ constexpr uint8_t kAlbedoFetch = 64;
 constexpr uint32_t kAlbedoOut = 31;
 constexpr uint32_t kAlbedoTarget = 5;  // past the motion target
 
+// original Xbox ocean: on its reflection fetch and kOceanOut; g_ext.x ReflectAmount, g_ext.y GlowBoostLevel
+constexpr uint8_t kOceanReflection = 128;
+constexpr uint32_t kOceanOut = 30;
+struct OceanLook {
+    float amount = 0;
+    float pivot = 0;
+};
+// title thread, each camera pass
+void SetOceanLook(bool on, const OceanLook& look);
+// render thread: false when off
+bool OceanLookDrawn(OceanLook& out);
+
 // HLSL of CasterHit(caster, prim, bary): t_ray_casters and t_ray_records declared before it
 extern const char* const kCasterHitHlsl;
 

@@ -454,6 +454,18 @@ static float oDepth;
 
 )";
 
+// original Xbox ocean: highlights past the pivot up to twice as bright, over the water by the reflect amount
+const char* kOceanXboxPrelude = R"(
+static float4 g_reflection = 0;
+static bool g_reflection_set = false;
+
+float3 OceanXbox(float3 water, float3 reflection) {
+    float luma = dot(reflection, float3(0.30, 0.59, 0.11));
+    float boost = saturate(4 * saturate(luma - g_ext.y));
+    return lerp(water, saturate(reflection * (1 + boost)), g_ext.x);
+}
+)";
+
 const char* kSunSoftPrelude = R"(
 // the receiver plane's depth per sun map uv, from its screen derivatives
 float2 SunSlope(float3 p) {
@@ -589,6 +601,8 @@ private:
     std::string MotionEntry() const;
     // pixel: the first colour texture fetched also goes to the albedo target
     bool Albedo() const { return Pixel() && (opt_.tex_flags[fcip::kAlbedoOut] & fcip::kAlbedoFetch); }
+    // pixel: the ocean's colour becomes its reflection over its water, as the original Xbox game drew it
+    bool OceanXbox() const { return Pixel() && (opt_.tex_flags[fcip::kOceanOut] & fcip::kOceanReflection); }
 
     ShaderStage stage_;
     const uint32_t* code_;
@@ -928,6 +942,13 @@ void Translator::EmitTextureFetch(const Fetch& f) {
                 Line("g_albedo_set = true;");
                 Close();
             }
+            bool reflection = sun == fcip::kOceanReflection;
+            if (op == kTextureFetch && reflection && OceanXbox()) {
+                Open("if (!g_reflection_set)");
+                Line("g_reflection = ft;");
+                Line("g_reflection_set = true;");
+                Close();
+            }
         }
         std::string fetched = op == kTextureFetch ? Hooks().Fetched(t, opt_.tex_flags[t & 31]) : std::string();
         if (!fetched.empty()) Line(fetched);
@@ -1223,6 +1244,7 @@ void CommitAlu() {
         s += kRayShadowPrelude;
     }
     if (Albedo()) s += "static float4 g_albedo = 0;\nstatic bool g_albedo_set = false;\n";
+    if (OceanXbox()) s += kOceanXboxPrelude;
     return s;
 }
 
@@ -1338,6 +1360,7 @@ POut main(PIn i) {
     }
     if (ray_slots_) s += "    g_frag = i.pos.xy;\n";
     s += "    Run();\n";
+    if (OceanXbox()) s += "    if (g_reflection_set) oC[0].rgb = OceanXbox(oC[0].rgb, g_reflection.rgb);\n";
     s += Hooks().Output();
     if (opt_.alpha_test) {
         s += R"(    float a = oC[0].a;

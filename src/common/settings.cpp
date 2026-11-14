@@ -34,6 +34,7 @@ void LoadSettings(const void* table) {
     s.volumetric_fog = t["volumetric_fog"].value_or(s.volumetric_fog);
     s.shadow_resolution = std::min(t["shadow_resolution"].value_or(s.shadow_resolution), 8192u);
     s.shadow_filter = std::min(t["shadow_filter"].value_or(s.shadow_filter), uint32_t(kFilterRay));
+    s.ocean_reflection = std::min(t["ocean_reflection"].value_or(s.ocean_reflection), uint32_t(kOceanXbox));
     s.draw_distance = std::clamp(t["draw_distance"].value_or(s.draw_distance), 1u, 32u);
     s.blur = t["aim_and_sprint_blur"].value_or(s.blur);
     // a file from before the split keeps its one sensitivity for both axes
@@ -74,6 +75,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("volumetric_fog", s.volumetric_fog);
     t.insert_or_assign("shadow_resolution", int64_t(s.shadow_resolution));
     t.insert_or_assign("shadow_filter", int64_t(s.shadow_filter));
+    t.insert_or_assign("ocean_reflection", int64_t(s.ocean_reflection));
     t.insert_or_assign("draw_distance", int64_t(s.draw_distance));
     // the six distances before they became one
     for (const char* key : {"shadow_distance", "object_distance", "detail_distance", "grass_distance",

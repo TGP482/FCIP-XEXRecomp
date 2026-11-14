@@ -22,6 +22,7 @@ struct Settings {
     bool volumetric_fog = false;       // height fog marched through the sun map over the game's, shafts where it shades
     uint32_t shadow_resolution = 1344;  // sun shadow map edge, 0 follows the render scale; 1344 is stock
     uint32_t shadow_filter = 0;         // shadow edges, kFilterSharp as the game
+    uint32_t ocean_reflection = 0;      // kOcean360 as the game, kOceanXbox the original Xbox game's look
     uint32_t draw_distance = 1;         // multiplier on the level's own distances, 1 is stock; shadows take all of it
     bool blur = true;                // the game's blur while scoped and during feral run
     // mouse look, the game's own pad look is 1; while aiming only the aim pair applies
@@ -42,6 +43,7 @@ struct Settings {
 Settings& Get();
 
 enum : uint32_t { kFilterSharp, kFilterSoft, kFilterPcss, kFilterRay };
+enum : uint32_t { kOcean360, kOceanXbox };
 
 constexpr uint32_t kMaxWorldDistance = 8;  // past it only the shadow distance grows
 

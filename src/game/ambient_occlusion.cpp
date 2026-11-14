@@ -17,6 +17,7 @@
 #include "core/log.h"
 #include "d3d/occlusion.h"
 #include "game/motion_vectors.h"
+#include "game/ocean_reflection.h"
 #include "game/scene.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
@@ -313,6 +314,7 @@ PPC_FUNC(GUEST(Scene_Push)) {
 // the list drawn in key order, r3 the constant block; occlusion goes in at the end when nothing past the world came
 PPC_FUNC(GUEST(Scene_Draw)) {
     fcip::MotionSceneDraw(uint32_t(ctx.r[3]));
+    fcip::OceanSceneDraw();
     if (Enabled()) {
         t_draw_list = uint32_t(ctx.r[3]) + kBlockList;
         if (fcip::Get().ambient_occlusion == gpu::kAoRtao) d3d::OcclusionScene(R32(SYM_Device_pointer));
