@@ -617,6 +617,21 @@ void MarkScene(uint32_t dev, uint32_t flag, const gpu::OcclusionArgs& a) {
 void Occlusion(uint32_t dev, const gpu::OcclusionArgs& a) { MarkScene(dev, gpu::kClearOcclusion, a); }
 void Illumination(uint32_t dev, const gpu::OcclusionArgs& a) { MarkScene(dev, gpu::kClearIllumination, a); }
 
+namespace {
+
+constexpr uint32_t kFogViews = 8;  // past the frame the render thread may run behind
+gpu::FogView g_fog_views[kFogViews];
+uint32_t g_fog_next = 0;
+
+}  // namespace
+
+void VolumetricFog(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v) {
+    gpu::OcclusionArgs marked = a;
+    marked.method = g_fog_next++ % kFogViews;
+    g_fog_views[marked.method] = v;
+    MarkScene(dev, gpu::kClearFog, marked);
+}
+
 void IlluminationWorld(uint32_t dev, const float ambient[3]) {
     const float color[4] = {ambient[0], ambient[1], ambient[2], 0};
     std::lock_guard lock(g_lock);
@@ -1090,3 +1105,5 @@ PPC_FUNC(GUEST(D3DQuery_GetData)) {
 }
 
 }  // namespace d3d
+
+gpu::FogView gpu::FogViewAt(uint32_t slot) { return d3d::g_fog_views[slot % d3d::kFogViews]; }

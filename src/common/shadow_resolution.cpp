@@ -67,6 +67,7 @@ constexpr uint32_t kCameraOrthoWidth = 0x33C;
 constexpr uint32_t kCameraOrthoHeight = 0x340;
 constexpr uint32_t kCameraFov = 0x3C;  // horizontal radians, narrower while zoomed
 constexpr float kHipFov = 1.5707964f;  // the stock 90 degrees outside zoom
+constexpr uint32_t kCameraView = 0x1BC;        // row major
 constexpr uint32_t kCameraProjection = 0x23C;  // row major: x and y scale at 0 and 5, centre offsets at 8 and 9
 // six frustum planes {n, d}, a point inside where n.x + d <= 0, then the same six with d negated for the box tests
 constexpr uint32_t kCameraPlanes = 0x44;
@@ -108,6 +109,8 @@ std::atomic<uint32_t> g_side{0};      // the sun map's guest side, as ShadowMatr
 std::atomic<float> g_depth{0};        // the far sun camera's depth range over its width
 uint32_t g_pool_side = 0;             // the sun map side the pool's surfaces were made for
 std::atomic<float> g_water{std::numeric_limits<float>::quiet_NaN()};  // the last reflection's water height
+float g_sun_clip[16] = {};  // title thread, SunClip's
+bool g_sun_clip_set = false;
 
 // sun map resolves in the order the title issues them; the render thread runs up to a frame behind, so it matches each
 // of its own resolves to the first unmatched record of that address and reads the maps as they were drawn
@@ -316,6 +319,22 @@ PPC_FUNC(GUEST(Shadow_Viewport)) {
 
 namespace {
 
+// the far sun camera's view times its projection, then the pass's flip 823B0580: z = w - z
+void LatchSunClip(uint32_t cam) {
+    for (uint32_t r = 0; r < 4; r++) {
+        for (uint32_t c = 0; c < 4; c++) {
+            float sum = 0;
+            for (uint32_t k = 0; k < 4; k++) {
+                float view = GF(cam + kCameraView + (r * 4 + k) * 4);
+                sum += view * GF(cam + kCameraProjection + (k * 4 + c) * 4);
+            }
+            g_sun_clip[r * 4 + c] = sum;
+        }
+        g_sun_clip[r * 4 + 2] = g_sun_clip[r * 4 + 3] - g_sun_clip[r * 4 + 2];
+    }
+    g_sun_clip_set = true;
+}
+
 // the far sun camera's depth range over its width, which PCSS turns a blocker's depth into a penumbra by
 void LatchDepthRatio(uint32_t cam) {
     if (t_map != kFarMap) return;
@@ -394,6 +413,7 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
     uint32_t outer = t_pass_type;
     t_pass_type = ok ? R32(pass + kPassType) : 0;
     if (ok && t_pass_type <= kPassReflection) g_water = GF(pass + kPassWaterHeight);
+    if (ok && t_pass_type == fcip::kPassShadow && t_sun && t_map == kFarMap) LatchSunClip(R32(pass));
     uint32_t w = ok ? R32(pass + kPassWidth) : 0;
     uint32_t h = ok ? R32(pass + kPassHeight) : 0;
     uint32_t side = ok && w == h ? Wanted(w) : 0;
@@ -521,6 +541,11 @@ int fcip::SunResolved(uint32_t address) {
 }
 
 fcip::SunMaps fcip::SunMapsDrawn() { return g_drawn; }
+
+bool fcip::SunClip(float out[16]) {
+    std::copy(std::begin(g_sun_clip), std::end(g_sun_clip), out);
+    return g_sun_clip_set;
+}
 
 uint32_t fcip::SunShadowSide() {
     uint32_t side = Wanted(kStockSide);

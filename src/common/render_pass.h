@@ -7,7 +7,8 @@ struct PPCContext;
 
 namespace fcip {
 
-constexpr uint32_t kPassCamera = 5;  // the camera's view; 2 is the sun's shadow map
+constexpr uint32_t kPassCamera = 5;  // the camera's view
+constexpr uint32_t kPassShadow = 2;  // a light's shadow map, the sun's among them
 
 // the type of the pass being submitted on this thread, 0 outside one
 uint32_t SubmittedPass();
@@ -41,6 +42,9 @@ constexpr int kSunFar = int(kSunMaps);  // SunResolved's answer for the far map
 // map resolve
 int SunResolved(uint32_t address);
 SunMaps SunMapsDrawn();
+// title thread: world space into the far sun map as its last pass drew it, row major with the pass's depth flip, so
+// nearer the sun is deeper; false before one was drawn
+bool SunClip(float out[16]);
 constexpr uint8_t kSunCascade = 1;     // ShaderOptions::tex_flags on a fetch of the far map
 constexpr uint8_t kSunSoft = 2;        // the same, with the soft filter on
 constexpr uint8_t kShadowSoft = 4;     // another light's shadow map, soft

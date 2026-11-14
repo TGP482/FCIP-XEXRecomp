@@ -115,7 +115,9 @@ constexpr uint32_t kHudlessRtv = kMotionRtv + 2;  // frame generation's two back
 constexpr uint32_t kAlbedoRtv = kHudlessRtv + 2;   // global illumination's albedo, then its traced light and first blur
 constexpr uint32_t kGiRtv = kAlbedoRtv + 1;
 constexpr int kGiTargets = 2;
-constexpr uint32_t kRtvSlots = kGiRtv + kGiTargets;
+constexpr uint32_t kFogRtv = kGiRtv + kGiTargets;  // volumetric fog's march and first blur
+constexpr int kFogTargets = 2;
+constexpr uint32_t kRtvSlots = kFogRtv + kFogTargets;
 constexpr DXGI_FORMAT kAlbedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kGiFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 constexpr float kNoMotion = 32768;  // the drawn motion's clear: no draw wrote the pixel
@@ -633,6 +635,9 @@ cbuffer A : register(b1) {
     float4 fog;
     float4 fogcolor;
     float4 amb;
+    float4 sun[4];
+    float4 height;
+    float4 suncolour;
 };
 #ifdef MS
 Texture2DMS<float> depth : register(t0);
@@ -932,10 +937,86 @@ float4 gi_apply(float4 pos : SV_Position) : SV_Target {
     return float4(pow(Linear(lit) + bounce, 1 / opt.y), 0);
 }
 )";
+// Volumetric fog over the game's: height fog marched through the far sun map, at least the game's fog density, thinning
+// over the sea; lit by the sun's colour ahead and the fog colour around, over the sky too.
+// colour * transmittance + in scatter. opt.x: 1 with the sun map bound
+const char* kFogHlsl = R"(
+Texture2D<float4> haze : register(t1);  // in scatter, transmittance in a
+Texture2D<float> sunmap : register(t2);
+static const int kSteps = 16;
+static const float kReach = 250;      // world units marched
+static const float kThinning = 0.02;  // density falloff a unit up
+// 1 where the sun reaches p, a view space point; off the map counts as lit, no map as shaded
+float SunLit(float3 p) {
+    if (opt.x == 0) return 0;
+    float4 at = float4(p, 1);
+    float4 c = float4(dot(at, sun[0]), dot(at, sun[1]), dot(at, sun[2]), dot(at, sun[3]));
+    float3 n = c.xyz / c.w;
+    float2 uv = float2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5);
+    if (any(uv <= 0) || any(uv >= 1) || n.z <= 0 || n.z >= 1) return 1;
+    uint w;
+    uint h;
+    sunmap.GetDimensions(w, h);
+    // reversed depth: a caster nearer the sun is deeper
+    return n.z >= sunmap.Load(int3(int2(uv * float2(w, h)), 0)) - 0.001 ? 1 : 0;
+}
+// a pixel's view space point; the sky, depth 0, at the march's reach
+float3 Seen(float2 px) {
+    int2 p = clamp(int2(px), int2(vp.xy), int2(vp.xy + vp.zw) - 1);
+    if (Raw(p) > 0) return View(px);
+    float2 n = (p + 0.5) * ndc.xy + ndc.zw;
+    float3 dir = float3((n - proj.zw) * proj.xy, 1);
+    return dir * (kReach / length(dir));
+}
+float4 fog_march(float4 pos : SV_Position) : SV_Target {
+    float3 c = Seen(pos.xy);
+    float dist = length(c);
+    float reach = min(dist, kReach);
+    // the sun map's depth grows toward the sun; Henyey Greenstein at g 0.5 over 4 pi
+    float3 axis = sun[2].xyz;
+    float mu = dot(axis, axis) > 0 ? dot(c / dist, normalize(axis)) : 0;
+    float3 sunlight = suncolour.rgb * (0.4 + 0.6 * 0.75 / pow(1.25 - mu, 1.5)) * 0.5;
+    float3 ambient = fogcolor.rgb * 0.3;
+    float sigma = max(fog.x, 2e-4);
+    int2 cell = int2(pos.xy) & 3;
+    float jitter = kDither[cell.y * 4 + cell.x] / 16;
+    float3 light = 0;
+    float trans = 1;
+    for (int i = 0; i < kSteps; i++) {
+        float s = (i + jitter) / kSteps;
+        float3 p = c * (reach / dist * s * s);
+        float above = max(dot(float4(p, 1), height), 0);
+        // steps spread by s squared: this one spans (2i + 1) / kSteps^2 of the reach
+        float ext = sigma * exp(-kThinning * above) * reach * (2 * i + 1) / (kSteps * kSteps);
+        light += trans * ext * (sunlight * SunLit(p) + ambient);
+        trans *= exp(-ext);
+    }
+    return float4(light, trans);
+}
+// opt.zw: step; 5 taps average the 4 pixel dither, depth edges left out
+float4 Smooth(float2 pos) {
+    int2 p = int2(pos);
+    int2 lo = int2(vp.xy);
+    int2 hi = int2(vp.xy + vp.zw) - 1;
+    float z = Seen(pos).z;
+    float4 sum = 0;
+    float n = 0;
+    for (int i = -2; i <= 2; i++) {
+        int2 at = clamp(p + i * int2(opt.zw), lo, hi);
+        float w = (abs(i) == 2 ? 0.5 : 1) * saturate(2 - abs(Seen(at).z - z) / (z * 0.02));
+        sum += haze.Load(int3(at, 0)) * w;
+        n += w;
+    }
+    return sum / n;
+}
+float4 fog_blur(float4 pos : SV_Position) : SV_Target { return Smooth(pos.xy); }
+float4 fog_apply(float4 pos : SV_Position) : SV_Target { return Smooth(pos.xy); }
+)";
+
 constexpr float kGiRadius = 32.0f;  // world units the bounce reaches
 constexpr float kGiGamma = 2.2f;
 
-constexpr int kAoConstants = 32;  // kAoHlsl's b1
+constexpr int kAoConstants = 56;  // kViewHlsl's b1
 constexpr DXGI_FORMAT kAoFormat = DXGI_FORMAT_R16G16_FLOAT;
 constexpr float kAoRadius = 0.8f;    // world units, the engine's are metres
 constexpr float kAoMaxSpan = 0.15f;  // of the view's height, the most one pixel's samples may cover
@@ -1511,9 +1592,13 @@ private:
         bool gi = false;   // kGiHlsl's, with its views from t3
         ID3D12Resource* colour = nullptr;  // the scene kGiHlsl reads, a copy
         DXGI_FORMAT colour_format = DXGI_FORMAT_UNKNOWN;
+        bool fog = false;        // kFogHlsl's, the sun map at t2
+        Resolved* sun = nullptr;  // the far sun map
     };
     void Occlusion(const State& s, const OcclusionArgs& a);
     void BeginRayScene();
+    void VolumetricFog(const State& s, const OcclusionArgs& a);
+    bool EnsureFogTargets(uint32_t w, uint32_t h);
 
     // global illumination of the camera pass: its draws' albedo beside the colour, its world's triangles traced
     void BeginIllumination(const State& s);
@@ -1653,6 +1738,11 @@ private:
     uint32_t ao_w_ = 0;
     uint32_t ao_h_ = 0;
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> ao_pipelines_;
+    // volumetric fog: its march and first blur, each with view distance beside it
+    ComPtr<ID3D12Resource> fog_[kFogTargets];
+    D3D12_RESOURCE_STATES fog_state_[kFogTargets] = {};
+    uint32_t fog_w_ = 0;
+    uint32_t fog_h_ = 0;
     // motion vectors: as the scene's draws wrote them, then completed by reprojecting the depth where none did
     struct Motion {
         bool open = false;    // between kClearMotionBegin and the scene's end
@@ -3871,6 +3961,10 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         if (rect) Illumination(s, UnpackOcclusion(color, z, stencil, *rect));
         return;
     }
+    if (flags & kClearFog) {
+        if (rect) VolumetricFog(s, UnpackOcclusion(color, z, stencil, *rect));
+        return;
+    }
     if (flags & kClearMotionBegin) {
         BeginMotion(s);
         return;
@@ -3999,6 +4093,7 @@ ID3D12PipelineState* D3D12Backend::EnsureOcclusionPipeline(const AoPass& p, bool
     if (pso) return pso.Get();
     std::string src = std::string(ms_depth ? "#define MS 1\n" : "") + (rt ? "#define RT 1\n" : "") + kViewHlsl;
     if (p.gi) src += std::string(kGiViewsHlsl) + fcip::kCasterHitHlsl + kGiHlsl;
+    else if (p.fog) src += kFogHlsl;
     else src += kAoHlsl;
     std::vector<uint8_t> vs;
     std::vector<uint8_t> ps;
@@ -4058,6 +4153,11 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
         D3D12_GPU_DESCRIPTOR_HANDLE heap = view_heap_->GetGPUDescriptorHandleForHeapStart();
         cl_->SetGraphicsRootDescriptorTable(kRootHeap, heap);
     }
+    if (p.fog) {
+        if (p.sun) SunMapView(*p.sun, ViewCpu(views + used));
+        else NullViews(views + used, 1);
+        used++;
+    }
     NullViews(views + used, kPsTextures - used);
     cl_->OMSetRenderTargets(1, &p.rtv, FALSE, nullptr);
     D3D12_VIEWPORT vp{0, 0, float(depth.w), float(depth.h), 0, 1};
@@ -4068,6 +4168,67 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
     cl_->SetGraphicsRootDescriptorTable(kRootPsViews, ViewGuest(views));
     cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cl_->DrawInstanced(3, 1, 0, 0);
+    return true;
+}
+
+// Volumetric fog
+
+// fog marched through the far sun map, blended over the bound colour target
+void D3D12Backend::VolumetricFog(const State& s, const OcclusionArgs& a) {
+    uint32_t height = TargetHeight(s);
+    Target* rt = ColorTarget(s, 0, height);
+    Target* ds = DepthTarget(s, height);
+    if (!rt || !ds || rt->w != ds->w || rt->h != ds->h || rt->samples != ds->samples) return;
+    if (!EnsureFogTargets(rt->w, rt->h)) return;
+    Bound b{TargetWidth(s), height, rt->scale};
+    DrawConstants d;
+    FillDrawConstants(s, b, d);
+    D3D12_RECT rect = HostRect(GuestScissor(s, b.w, b.h), b.scale);
+    if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+    FogView view = FogViewAt(a.method);
+    Resolved* sun = view.shadowed ? SunMap(fcip::SunMapsDrawn().far_base) : nullptr;
+    float c[kAoConstants];
+    OcclusionConstants(a, d, rect, rt->w, rt->h, c);
+    c[16] = sun ? 1.0f : 0.0f;
+    std::copy(std::begin(view.sun), std::end(view.sun), c + 32);
+    std::copy(std::begin(view.height), std::end(view.height), c + 48);
+    std::copy(std::begin(view.sun_colour), std::end(view.sun_colour), c + 52);
+    AoPass march{.entry = "fog_march", .out = kGiFormat, .rtv = Rtv(kFogRtv), .fog = true, .sun = sun};
+    AoPass across{.entry = "fog_blur", .out = kGiFormat, .rtv = Rtv(kFogRtv + 1), .src = fog_[0].Get(), .step_x = 1,
+                  .src_format = kGiFormat, .fog = true};
+    AoPass down{.entry = "fog_apply", .out = rt->fmt, .samples = rt->samples, .blend = true, .rtv = Rtv(rt->view),
+                .src = fog_[1].Get(), .step_y = 1, .src_format = kGiFormat, .fog = true};
+    Transition(ds->res.Get(), ds->state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(fog_[0].Get(), fog_state_[0], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    bool ok = OcclusionPass(march, *ds, c, rect);
+    Transition(fog_[0].Get(), fog_state_[0], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(fog_[1].Get(), fog_state_[1], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ok = ok && OcclusionPass(across, *ds, c, rect);
+    Transition(fog_[1].Get(), fog_state_[1], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (ok) OcclusionPass(down, *ds, c, rect);
+    Unbind();
+}
+
+bool D3D12Backend::EnsureFogTargets(uint32_t w, uint32_t h) {
+    if (fog_[kFogTargets - 1] && fog_w_ == w && fog_h_ == h) return true;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(kGiFormat, w, h);
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    fog_w_ = fog_h_ = 0;
+    for (int i = 0; i < kFogTargets; i++) {
+        if (fog_[i]) Release(std::move(fog_[i]));
+        fog_state_[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        HRESULT hr = dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, fog_state_[i], nullptr,
+                                                   IID_PPV_ARGS(&fog_[i]));
+        if (FAILED(hr)) {
+            LOGE("D3D12: no %ux%u volumetric fog target", w, h);
+            return false;
+        }
+        dev_->CreateRenderTargetView(fog_[i].Get(), nullptr, Rtv(kFogRtv + i));
+    }
+    fog_w_ = w;
+    fog_h_ = h;
     return true;
 }
 

@@ -5,7 +5,7 @@
 // the characters, the blended layers and the ocean land on top. The fog is linear over view distance, from the
 // renderer's constant block. RTAO traces the world's draws from the start of the camera's list to that point. Global
 // illumination traces every world layer, the characters included, and is added after the list's last item wherever a
-// world draw left its albedo.
+// world draw left its albedo. Volumetric fog goes in after that, over the whole list, through the far sun map.
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -52,6 +52,11 @@ constexpr uint32_t kEngineFade = 0x1424;  // its scale at +0x440
 constexpr uint32_t kFadeScale = 0x440;
 constexpr uint32_t kVisAreaAmbient = 0xDC;
 constexpr uint32_t kAmbientFloor = 0xC;  // past the outdoor addition at Ambient_pointer
+// device constant shadows, 16 bytes a register: GlobalVariables.fx's WaterLevel and SunLight colour
+constexpr uint32_t kDevVsConstants = 0x780;
+constexpr uint32_t kDevPsConstants = 0x1780;
+constexpr uint32_t kVsWaterLevel = 129;
+constexpr uint32_t kPsSunColour = 9;
 // keys
 constexpr uint32_t kPipelineShift = 11;
 constexpr uint32_t kLastPipeline = 0x1F;
@@ -71,6 +76,7 @@ thread_local uint32_t t_world_list = 0;  // the same while its world layers stre
 
 bool Enabled() { return fcip::Get().ambient_occlusion && fcip::SubmittedPass() == fcip::kPassCamera; }
 bool Illuminated() { return fcip::Get().global_illumination && fcip::SubmittedPass() == fcip::kPassCamera; }
+bool Fogged() { return fcip::Get().volumetric_fog && fcip::SubmittedPass() == fcip::kPassCamera; }
 
 bool PhongDraw(uint32_t draw) {
     for (uint32_t d : kPhongDraws) {
@@ -201,6 +207,61 @@ void Illuminate(PPCContext& ctx) {
     if (SceneArgs(a)) d3d::Illumination(R32(SYM_Device_pointer), a);
 }
 
+// the camera's view inverted, a rotation and a translation, with the renderer's z, the distance, turned back into the
+// view's, which runs the other way: the renderer's view space into the world, row major
+bool ViewToWorld(float out[16]) {
+    uint32_t camera = Camera();
+    if (!camera) return false;
+    uint32_t v = camera + kCameraView;
+    std::fill(out, out + 16, 0.0f);
+    for (uint32_t i = 0; i < 3; i++) {
+        for (uint32_t j = 0; j < 3; j++) out[i * 4 + j] = GF(v + (j * 4 + i) * 4);
+        float t = GF(v + 48) * GF(v + i * 16) + GF(v + 52) * GF(v + i * 16 + 4) + GF(v + 56) * GF(v + i * 16 + 8);
+        out[12 + i] = -t;
+    }
+    out[15] = 1;
+    for (uint32_t j = 0; j < 3; j++) out[8 + j] = -out[8 + j];
+    return true;
+}
+
+// the renderer's view space into the far sun map's clip space and up to the height over the sea, by column
+void FogMatrices(gpu::FogView& v) {
+    float world[16];
+    float sun[16];
+    if (!ViewToWorld(world)) return;
+    uint32_t dev = R32(SYM_Device_pointer);
+    float sea = GF(dev + kDevVsConstants + kVsWaterLevel * 16);
+    for (uint32_t r = 0; r < 4; r++) v.height[r] = world[r * 4 + 2];
+    v.height[3] -= sea;
+    if (!fcip::SunClip(sun)) return;
+    for (uint32_t r = 0; r < 4; r++) {
+        for (uint32_t c = 0; c < 4; c++) {
+            float sum = 0;
+            for (uint32_t k = 0; k < 4; k++) sum += world[r * 4 + k] * sun[k * 4 + c];
+            v.sun[c * 4 + r] = sum;
+        }
+    }
+    v.shadowed = true;
+}
+
+// over the camera's whole list, lit by the sun's colour as the receivers read it
+void Fog() {
+    gpu::OcclusionArgs a;
+    if (!SceneArgs(a)) return;
+    gpu::FogView v;
+    FogMatrices(v);
+    uint32_t dev = R32(SYM_Device_pointer);
+    for (uint32_t i = 0; i < 3; i++) v.sun_colour[i] = GF(dev + kDevPsConstants + kPsSunColour * 16 + i * 4);
+    static float logged[3] = {-1, -1, -1};
+    const float* c = v.sun_colour;
+    if (std::fabs(c[0] - logged[0]) + std::fabs(c[1] - logged[1]) + std::fabs(c[2] - logged[2]) > 0.02f) {
+        LOGR("volumetric fog: sun %.3f %.3f %.3f, sea level %.2f, %s", c[0], c[1], c[2],
+             GF(dev + kDevVsConstants + kVsWaterLevel * 16), v.shadowed ? "sun map" : "no sun map");
+        std::copy(c, c + 3, logged);
+    }
+    d3d::VolumetricFog(dev, a, v);
+}
+
 }  // namespace
 
 PPC_EXTERN_FUNC(GUEST_ORIG(Scene_Sort));
@@ -236,6 +297,7 @@ PPC_FUNC(GUEST(Scene_Draw)) {
         if (fcip::Get().ambient_occlusion == gpu::kAoRtao) d3d::OcclusionScene(R32(SYM_Device_pointer));
     }
     bool lit = Illuminated();
+    bool fogged = Fogged();
     if (lit) {
         t_world_list = uint32_t(ctx.r[3]) + kBlockList;
         d3d::IlluminationScene(R32(SYM_Device_pointer));
@@ -243,6 +305,7 @@ PPC_FUNC(GUEST(Scene_Draw)) {
     GUEST_ORIG(Scene_Draw)(ctx, base);
     if (t_draw_list) Occlude();
     if (lit) Illuminate(ctx);
+    if (fogged) Fog();
     fcip::MotionSceneDone();
 }
 

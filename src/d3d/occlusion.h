@@ -4,8 +4,9 @@
 
 #include "gpu/state.h"
 
-// Ambient occlusion and global illumination reach the renderer as a clear with a flag no D3DCLEAR value uses, so the
-// render thread keeps it in order with the draws; what it needs rides in the clear's colour, depth, stencil and rect
+// Ambient occlusion, global illumination and volumetric fog reach the renderer as a clear with a flag no D3DCLEAR
+// value uses, so the render thread keeps it in order with the draws; what it needs rides in the clear's colour,
+// depth, stencil and rect
 namespace gpu {
 
 constexpr uint32_t kClearOcclusion = 0x100;
@@ -16,6 +17,8 @@ constexpr uint32_t kClearOcclusionScene = 0x200;  // RTAO traces the world drawn
 constexpr uint32_t kClearIlluminationScene = 0x10000;
 constexpr uint32_t kClearIlluminationWorld = 0x20000;
 constexpr uint32_t kClearIllumination = 0x40000;
+// volumetric fog after the camera pass's last draw, its method the FogViewAt slot
+constexpr uint32_t kClearFog = 0x80000;
 
 // the ambient occlusion setting
 enum : uint32_t { kAoSsao = 1, kAoGtao = 2, kAoRtao = 3 };
@@ -31,6 +34,16 @@ struct OcclusionArgs {
     uint32_t fog_colour = 0;  // 0xRRGGBB
     uint32_t method = 0;      // kAo*
 };
+
+// volumetric fog, from the renderer's view space (x right, y up, z the distance)
+struct FogView {
+    float sun[16] = {};     // into the far sun map's clip space, column j from sun[j * 4]
+    float height[4] = {};   // to the height over the sea
+    float sun_colour[4] = {};
+    bool shadowed = false;  // without a sun map the sun lights none of it
+};
+// render thread: the view a kClearFog marker names
+FogView FogViewAt(uint32_t slot);
 
 inline void PackOcclusion(const OcclusionArgs& a, float color[4], float& z, uint32_t& stencil, Rect& r) {
     for (int i = 0; i < 4; i++) color[i] = a.proj[i];
@@ -63,4 +76,6 @@ void OcclusionScene(uint32_t dev);
 void IlluminationScene(uint32_t dev);
 void IlluminationWorld(uint32_t dev, const float ambient[3]);
 void Illumination(uint32_t dev, const gpu::OcclusionArgs& a);
+// on the title's thread after the camera pass's last item
+void VolumetricFog(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);
 }  // namespace d3d
