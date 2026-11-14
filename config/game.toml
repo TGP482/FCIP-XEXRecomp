@@ -258,6 +258,19 @@ call = "ShadowRadiusLight"
 at = 0x825FAFA8
 call = "ShadowRadiusRange"
 
+[[hook]]  # r3 = a sector entity's render flags, the shadow pass's cast test
+at = 0x825D65D8
+call = "CastShadowMaps"
+
+[[hook]]  # r3 = a sector render node's flags, the same test
+at = 0x825FADA8
+call = "CastShadowMaps"
+
+[[hook]]  # r5 = a render item's shadow enabled bit, from its flags
+at = 0x82387C5C
+call = "ReceiveShadowMaps"
+after = true
+
 
 # instruction hooks, defined in src/game/frame_time.cpp
 [[hook]]  # f13 = frame time in milliseconds, the menu input's truncation

@@ -1,11 +1,14 @@
 // default.xex: the instruction hooks of the draw distance and the grass cache ([[hook]] in config/game.toml), sector
-// streaming within the grass distance, and the level's own shadow radius and detail distance
+// streaming within the grass distance, the level's own shadow radius and detail distance, and every object casting and
+// receiving ray traced shadows
 #include <algorithm>
 #include <limits>
 #include <vector>
 
 #include "common/draw_distance.h"
 #include "common/grass_tiles.h"
+#include "common/settings.h"
+#include "d3d/occlusion.h"
 #include "game/grass_blocks.h"
 #include "xdk/hle.h"
 
@@ -127,4 +130,26 @@ PPC_FUNC(sub_820F36D8) {
     __imp__sub_820F36D8(ctx, base);
     uint32_t engine = R32(SYM_C3DEngine_pointer);
     if (engine >= 0x10000u && engine < 0xC0000000u) fcip::NoteLevelRadius(GF(engine + kShadowRadius));
+}
+
+// Ray traced shadows reach every object. The two sector gathers, 825D64A0 and 825FAC90, draw a node into a shadow pass
+// only when its render flags (vtable +0x5C) hold CastShadowMaps, the entity XML's flag 4: vehicles and dropped weapons
+// leave it clear. A render item's light set (82387B68) samples the shadow map only when the item's flags (+0x44) lack
+// 0x40, which vegetation such as bushes sets.
+namespace {
+
+constexpr uint64_t kCastShadowMaps = 4;
+
+bool RayTraced() { return fcip::Get().shadow_filter == fcip::kFilterRay && gpu::RayTracing(); }
+
+}  // namespace
+
+// r3 = the node's render flags, before the shadow pass tests kCastShadowMaps
+void CastShadowMaps(PPCContext& ctx, uint8_t*) {
+    if (RayTraced()) ctx.r[3] |= kCastShadowMaps;
+}
+
+// r5 = the light set's shadow enabled byte, just taken from the item's flags
+void ReceiveShadowMaps(PPCContext& ctx, uint8_t*) {
+    if (RayTraced()) ctx.r[5] = 1;
 }

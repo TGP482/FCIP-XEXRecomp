@@ -147,7 +147,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},
     {Kind::Value, kShadowFilter, "SHADOW FILTERING",
-     "Sharp keeps the game's own shadow edges, soft blurs them by the same amount at every resolution, PCSS widens sun shadows the further they fall from what casts them, ray traced traces every pixel's shadow against what casts it, softer the further it falls"},
+     "Sharp keeps the game's own shadow edges, soft blurs them by the same amount at every resolution, PCSS widens sun shadows the further they fall from what casts them, ray traced traces every pixel's shadow from and onto every object, softer the further it falls"},
     {Kind::Value, kDrawDistance, "DRAW DISTANCE",
      "Scales how far objects, grass and vegetation are drawn up to 8x and the area casting sun shadows up to 32x"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
