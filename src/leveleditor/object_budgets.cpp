@@ -37,5 +37,5 @@ void RetrievalStationsLoaded(PPCContext& ctx, uint8_t*) {
     ctx.cr[6] = {count < kRetrievalStations, count > kRetrievalStations, count == kRetrievalStations, ctx.cr[6].so};
 }
 
-// a category's cap as its bar shows it (820D7394), r3
+// a category's cap as its bar shows it, r3 as the call at 820D7394 returns it
 void ShownBudgetR3(PPCContext& ctx, uint8_t*) { ctx.r[3] = uint32_t(ctx.r[3]) * Scale(); }

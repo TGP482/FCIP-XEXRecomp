@@ -318,10 +318,9 @@ at = 0x820F73E4
 call = "RetrievalStationsLoaded"
 after = true
 
-[[hook]]  # bcctrl: a category's cap for its bar
-at = 0x820D7394
+[[hook]]  # lwz r11, 0x244(r31): after the bcctrl that returns a category's cap for its bar
+at = 0x820D7398
 call = "ShownBudgetR3"
-after = true
 
 # the local player as an actor's update reads it, defined in src/leveleditor/player_hud.cpp
 

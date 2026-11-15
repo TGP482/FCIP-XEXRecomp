@@ -13,6 +13,7 @@ constexpr uint32_t kCrcMouseKeyboard = 0xFF898DA7u;   // B_MouseKeyboard
 constexpr uint32_t kCrcControllerSettings = 0x582765A9u;  // B_ControllerSettings
 constexpr uint32_t kCrcMultiplayerSetup = 0x5FC27D09u;
 constexpr uint32_t kCrcExit = 0x5C6EA6F2u;  // B_Exit
+constexpr uint32_t kCrcCustomCampaign = 0x16D94647u;  // B_CustomCampaign
 
 // CUIWidget
 constexpr uint32_t kWidgetNameCrc = 0x04u;

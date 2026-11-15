@@ -39,6 +39,8 @@ constexpr const char* kControllerCaption = "CONTROLLER";
 constexpr const char* kControllerHelp = "Controller sensitivity and gyro settings";
 constexpr const char* kExitCaption = "EXIT";
 constexpr const char* kExitHelp = "Close the game and return to the desktop";
+constexpr const char* kCustomCaption = "CUSTOM CAMPAIGN";
+constexpr const char* kCustomHelp = "Play the custom levels in the levels folder in order";
 
 // UTF-16 text, then a string view of it, then scratch for the copy visitor and a by reference argument
 constexpr uint32_t kTextUnits = 0x180u;
@@ -252,6 +254,7 @@ const char* CaptionFor(uint32_t crc) {
     if (crc == kCrcMouseKeyboard) return kInputCaption;
     if (crc == kCrcControllerSettings) return kControllerCaption;
     if (crc == kCrcExit) return kExitCaption;
+    if (crc == kCrcCustomCampaign) return kCustomCaption;
     return nullptr;
 }
 
@@ -260,6 +263,7 @@ const char* HelpFor(uint32_t crc) {
     if (crc == kCrcMouseKeyboard) return kInputHelp;
     if (crc == kCrcControllerSettings) return kControllerHelp;
     if (crc == kCrcExit) return kExitHelp;
+    if (crc == kCrcCustomCampaign) return kCustomHelp;
     return nullptr;
 }
 
@@ -278,7 +282,7 @@ uint32_t EntryFor(int page) {
 
 void SetEntryCaptions(PPCContext& ctx, uint32_t page) {
     constexpr uint32_t kEntries[] = {kCrcMultiplayerSetup, kCrcRecompSettings, kCrcMouseKeyboard,
-                                     kCrcControllerSettings, kCrcExit};
+                                     kCrcControllerSettings, kCrcExit, kCrcCustomCampaign};
     for (uint32_t crc : kEntries) {
         if (uint32_t widget = FindWidget(page, crc)) SetCaption(ctx, Read32(widget + kWidgetElement), CaptionFor(crc));
     }

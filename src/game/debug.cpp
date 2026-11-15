@@ -2,6 +2,7 @@
 // once from the menus; in a level it goes through the game's own level change, which relaunches the title with
 // "-map <level>" and the story's state. A level starting without a story gets one as PLAY A GAME WITHOUT SAVING makes,
 // else it crashes on its first save.
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -13,6 +14,7 @@
 #include "common/input.h"
 #include "common/menu.h"
 #include "common/settings.h"
+#include "game/custom_campaign.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
 
@@ -61,14 +63,14 @@ std::string CampaignOf(const std::string& level) {
     return {};
 }
 
-// in a level the game's level change, which relaunches the title; from the menus the level starts at once; a custom
-// level's mission is Mission0, as the level editor saves it
+// in a level the game's level change, which relaunches the title; from the menus the level starts at once
 std::string LevelCommand(const char* folder) {
     g_instant = g_in_level;
     if (g_in_level) return std::string("FadeOutRestartStartLevel level=") + folder;
-    std::string mission = CampaignOf(folder).empty() ? std::string(folder) : std::string("Mission0");
-    return std::string(kStartLevel) + folder + " mission=" + mission + " checkpoint=";
+    return std::string(kStartLevel) + folder + " mission=" + folder + " checkpoint=";
 }
+
+bool g_issuing = false;  // the command queued is the debug page's own
 
 void IssueLevel(PPCContext& ctx, uint32_t game) {
     if (!g_level) return;
@@ -84,7 +86,9 @@ void IssueLevel(PPCContext& ctx, uint32_t game) {
     }
     std::string text = LevelCommand(g_level.exchange(nullptr));
     std::memcpy(HostPtr(command), text.c_str(), text.size() + 1);
+    g_issuing = true;
     CallGuest(ctx, SYM_Game_Command, {game, command});
+    g_issuing = false;
 }
 
 // a story as PLAY A GAME WITHOUT SAVING makes one, before a level starts without one
@@ -109,6 +113,14 @@ PPC_EXTERN_FUNC(GUEST_ORIG(Player_SetProperty));
 
 // (game, command text): queues a command for the next update
 PPC_FUNC(GUEST(Game_Command)) {
+    std::string routed = fcip::RouteLevelCommand(ReadCString(uint32_t(ctx.r[4])), g_issuing);
+    if (!routed.empty()) {
+        static const uint32_t text = mem::AllocSystem(kCommandBytes);
+        size_t n = std::min<size_t>(routed.size(), kCommandBytes - 1);
+        std::memcpy(HostPtr(text), routed.c_str(), n);
+        W8(text + uint32_t(n), 0);
+        ctx.r[4] = text;
+    }
     NoteLevelStart(ctx, ReadCString(uint32_t(ctx.r[4])));
     GUEST_ORIG(Game_Command)(ctx, base);
 }

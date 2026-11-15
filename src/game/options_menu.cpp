@@ -1,10 +1,11 @@
 // default.xex: the settings entries in the User page and the pause menu's OPTIONS, the pages they open inside
-// CONTROLLER OPTIONS, EXIT on the main menu and the main menu watermark
+// CONTROLLER OPTIONS, EXIT and CUSTOM CAMPAIGN on the main menu and the main menu watermark
 #include <algorithm>
 #include <iterator>
 #include <string>
 #include <vector>
 
+#include "common/custom_levels.h"
 #include "common/keys.h"
 #include "common/menu.h"
 #include "common/widgets.h"
@@ -87,7 +88,12 @@ void AddEntriesFor(PPCContext& ctx, uint32_t self) {
                    {kCrcRecompSettings, kCrcMouseKeyboard, kCrcControllerSettings});
     } else if (vtable == kVtPreGame) {
         uint32_t page = MainPage(self);
-        AddEntries(ctx, page, LastMainRow(page), kCrcCredits, kCrcOptions, {kCrcExit});
+        // CUSTOM CAMPAIGN only with custom levels to play
+        if (FindCustomLevels().empty()) {
+            AddEntries(ctx, page, LastMainRow(page), kCrcCredits, kCrcOptions, {kCrcExit});
+        } else {
+            AddEntries(ctx, page, LastMainRow(page), kCrcCredits, kCrcOptions, {kCrcCustomCampaign, kCrcExit});
+        }
     }
 }
 
