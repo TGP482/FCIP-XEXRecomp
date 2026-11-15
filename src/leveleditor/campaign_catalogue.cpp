@@ -1,7 +1,7 @@
 // ige.xex, the solo level editor: the campaign's types in the Add Object tool. Enemies take the multiplayer items'
-// place, objects (props, destroyables, doors) follow the vehicles, solo pickups follow the weapons and items. Each
-// campaign mission defines the types it uses in its EntityLibrary and its pack holds their assets, so the packs stay
-// open and the types join the editor's archetype library.
+// place, objects (props, destroyables, doors) follow the vehicles, solo pickups and logic follow the weapons and
+// items. Each campaign mission defines the types it uses in its EntityLibrary and its pack holds their assets, so the
+// packs stay open and the types join the editor's archetype library.
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -9,9 +9,11 @@
 #include "common/widgets.h"
 #include "core/log.h"
 #include "kernel/memory.h"
+#include "leveleditor/guest.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
+using namespace fcip::editor;
 
 namespace {
 
@@ -25,12 +27,13 @@ constexpr const char* kCampaignLevels[] = {
 constexpr const char* kEnemyClasses[] = {"Merc", "Worker", "Sapper", "Chucker", "Freak", "Crowe", "Dragon", "Valerie"};
 constexpr const char* kObjectClasses[] = {"DestroyableObject", "BasicEntity", "AutomaticDoor"};
 
-// the campaign's pickups the multiplayer list lacks; their scripts carry the model
-struct Pickup {
+// a class the catalogue spawns with its script's defaults
+struct ClassEntry {
     const char* cls;
     const char* caption;
 };
-constexpr Pickup kSoloPickups[] = {
+// the campaign's pickups the multiplayer list lacks; their scripts carry the model
+constexpr ClassEntry kSoloPickups[] = {
     {"PickupAdrenaline", "Adrenaline"},
     {"MRE", "Ration Pack"},
     {"PickupGrenadeBox", "Grenade Box"},
@@ -42,6 +45,17 @@ constexpr Pickup kSoloPickups[] = {
     {"PickupBrowning", "Heavy Machine Gun"},
     {"Secret", "Secret"},
 };
+// the logic the campaign scripts its levels with; none has a model, so the editor marks them
+constexpr ClassEntry kLogicObjects[] = {
+    {"Checkpoint", "Checkpoint"},
+    {"EndMapTrigger", "Level End"},
+    {"ProximityTrigger", "Proximity Trigger"},
+    {"AreaTrigger", "Area Trigger"},
+    {"DelayTrigger", "Delay Trigger"},
+    {"MultipleTrigger", "Multiple Trigger"},
+    {"UtilityTrigger", "Utility Trigger"},
+    {"Waypoint", "Waypoint"},
+};
 
 // category captions by the editor's ObjectCategoryNames key
 struct CategoryCaption {
@@ -50,6 +64,7 @@ struct CategoryCaption {
 };
 constexpr CategoryCaption kCategoryCaptions[] = {
     {"Vehicles", "{DPLR} VEHICLES AND OBJECTS (1/8)"},
+    {"Weapons", "{DPLR} ITEMS AND LOGIC (2/8)"},
     {"MultiplayerItems", "{DPLR} ENEMIES (3/8)"},
 };
 // the multiplayer list's keys end in a two letter team suffix, which its tool strips before spawning
@@ -64,11 +79,10 @@ constexpr uint32_t kNodeChildCount = 0x68;
 constexpr uint32_t kNodeGetChild = 0x6C;
 constexpr uint32_t kNodeFindChild = 0x70;
 
-// std::string and std::wstring: inline text until the capacity reaches 16 bytes, else a pointer
+// std::string and std::wstring
 constexpr uint32_t kStrText = 0x04;
 constexpr uint32_t kStrLength = 0x14;
 constexpr uint32_t kStrCapacity = 0x18;
-constexpr uint32_t kStrInlineBytes = 0x10;
 constexpr uint32_t kStrEmptyCapacity = 0x0F;
 constexpr uint32_t kWStrEmptyCapacity = 0x07;
 
@@ -113,19 +127,11 @@ uint32_t GuestText(const std::string& text) {
     return g_scratch + kScratchText;
 }
 
-std::string GuestString(uint32_t str) {
-    uint32_t text = str + kStrText;
-    if (R32(str + kStrCapacity) >= kStrInlineBytes) text = R32(text);
-    return ReadCString(text);
-}
-
 void InitEmptyString(uint32_t str, uint32_t capacity) {
     W32(str + kStrText, 0);
     W32(str + kStrLength, 0);
     W32(str + kStrCapacity, capacity);
 }
-
-uint32_t Method(uint32_t node, uint32_t slot) { return R32(R32(node) + slot); }
 
 void Release(PPCContext& ctx, uint32_t node) {
     if (node) CallGuest(ctx, Method(node, kNodeRelease), {node});
@@ -269,7 +275,9 @@ void FillCatalogue(PPCContext& ctx) {
     for (const CampaignType& t : g_objects) {
         AddCatalogueEntry(ctx, List(kVehicleList), t.archetype, t.caption, t.archetype);
     }
-    for (const Pickup& p : kSoloPickups) AddCatalogueEntry(ctx, List(kWeaponList), p.cls, p.caption, "");
+    for (const ClassEntry& p : kSoloPickups) AddCatalogueEntry(ctx, List(kWeaponList), p.cls, p.caption, "");
+    // not the vehicle list: a class there makes its objects vehicles
+    for (const ClassEntry& p : kLogicObjects) AddCatalogueEntry(ctx, List(kWeaponList), p.cls, p.caption, "");
 }
 
 const char* CategoryCaptionFor(const std::string& key) {

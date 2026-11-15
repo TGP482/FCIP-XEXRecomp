@@ -33,11 +33,13 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <utility>
 
 #include "common/draw_distance.h"
 #include "common/render_pass.h"
 #include "common/settings.h"
+#include "common/view_clip.h"
 #include "d3d/motion.h"
 #include "d3d/occlusion.h"
 #include "kernel/memory.h"
@@ -114,6 +116,9 @@ uint32_t g_pool_side = 0;             // the sun map side the pool's surfaces we
 std::atomic<float> g_water{std::numeric_limits<float>::quiet_NaN()};  // the last reflection's water height
 float g_sun_clip[16] = {};  // title thread, SunClip's
 bool g_sun_clip_set = false;
+std::mutex g_view_clip_lock;  // ViewClip's, read on other threads
+float g_view_clip[16] = {};
+bool g_view_clip_set = false;
 
 // sun map resolves in the order the title issues them; the render thread runs up to a frame behind, so it matches each
 // of its own resolves to the first unmatched record of that address and reads the maps as they were drawn
@@ -339,6 +344,24 @@ void LatchSunClip(uint32_t cam) {
     g_sun_clip_set = true;
 }
 
+// the camera pass's view times its projection
+void LatchViewClip(uint32_t cam) {
+    float clip[16];
+    for (uint32_t r = 0; r < 4; r++) {
+        for (uint32_t c = 0; c < 4; c++) {
+            float sum = 0;
+            for (uint32_t k = 0; k < 4; k++) {
+                float view = GF(cam + kCameraView + (r * 4 + k) * 4);
+                sum += view * GF(cam + kCameraProjection + (k * 4 + c) * 4);
+            }
+            clip[r * 4 + c] = sum;
+        }
+    }
+    std::lock_guard lock(g_view_clip_lock);
+    std::copy(std::begin(clip), std::end(clip), g_view_clip);
+    g_view_clip_set = true;
+}
+
 // the far sun camera's depth range over its width, which PCSS turns a blocker's depth into a penumbra by
 void LatchDepthRatio(uint32_t cam) {
     if (t_map != kFarMap) return;
@@ -418,6 +441,7 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
     t_pass_type = ok ? R32(pass + kPassType) : 0;
     if (ok && t_pass_type <= kPassReflection) g_water = GF(pass + kPassWaterHeight);
     if (ok && t_pass_type == fcip::kPassShadow && t_sun && t_map == kFarMap) LatchSunClip(R32(pass));
+    if (ok && t_pass_type == fcip::kPassCamera) LatchViewClip(R32(pass));
     uint32_t w = ok ? R32(pass + kPassWidth) : 0;
     uint32_t h = ok ? R32(pass + kPassHeight) : 0;
     uint32_t side = ok && w == h ? Wanted(w) : 0;
@@ -558,6 +582,12 @@ fcip::SunMaps fcip::SunMapsDrawn() { return g_drawn; }
 bool fcip::SunClip(float out[16]) {
     std::copy(std::begin(g_sun_clip), std::end(g_sun_clip), out);
     return g_sun_clip_set;
+}
+
+bool fcip::ViewClip(float out[16]) {
+    std::lock_guard lock(g_view_clip_lock);
+    std::copy(std::begin(g_view_clip), std::end(g_view_clip), out);
+    return g_view_clip_set;
 }
 
 uint32_t fcip::SunShadowSide() {

@@ -13,9 +13,12 @@
 #include "common/menu.h"
 #include "common/panel_colors.h"
 #include "kernel/memory.h"
+#include "leveleditor/guest.h"
+#include "leveleditor/markers.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
+using namespace fcip::editor;
 
 namespace {
 
@@ -46,11 +49,6 @@ constexpr uint32_t kAttrValue = 0x1C;
 constexpr uint32_t kNodeAddRef = 0x08;
 constexpr uint32_t kNodeRelease = 0x0C;
 constexpr uint32_t kNodeSetAttr = 0xB0;
-// std::string: inline text until the capacity reaches 16 bytes, else a pointer
-constexpr uint32_t kStrText = 0x04;
-constexpr uint32_t kStrCapacity = 0x18;
-constexpr uint32_t kStrInlineBytes = 0x10;
-
 // guest scratch: the converted node and table, then two texts
 constexpr uint32_t kScratchNodeRef = 0x00;
 constexpr uint32_t kScratchTableRef = 0x04;
@@ -105,14 +103,6 @@ Snapshot g_view;
 std::vector<std::array<char, kValueChars>> g_fields;
 
 // Editor thread
-
-uint32_t Method(uint32_t object, uint32_t slot) { return R32(R32(object) + slot); }
-
-std::string GuestString(uint32_t str) {
-    uint32_t text = str + kStrText;
-    if (R32(str + kStrCapacity) >= kStrInlineBytes) text = R32(text);
-    return ReadCString(text);
-}
 
 uint32_t WriteText(uint32_t at, const std::string& text, uint32_t bytes) {
     size_t n = std::min<size_t>(text.size(), bytes - 1);
@@ -319,7 +309,13 @@ bool PanelKey(uint32_t, uintptr_t wp) {
     return true;
 }
 
-const bool g_registered = (fcip::g_editor_panel = DrawPanel, fcip::g_editor_panel_key = PanelKey, true);
+// the markers under the panel
+void DrawEditorUi() {
+    DrawMarkers();
+    DrawPanel();
+}
+
+const bool g_registered = (fcip::g_editor_panel = DrawEditorUi, fcip::g_editor_panel_key = PanelKey, true);
 
 }  // namespace
 
@@ -331,6 +327,7 @@ PPC_FUNC(sub_820DE570) {
     uint32_t tool = uint32_t(ctx.r[3]);
     __imp__sub_820DE570(ctx, base);
     Update(ctx, SelectedObject(tool));
+    UpdateMarkers(ctx);
 }
 
 // leaving the Edit Object tool: nothing is selected for the panel

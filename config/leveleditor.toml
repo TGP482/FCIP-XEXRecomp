@@ -29,3 +29,4 @@ Xml_ToTable = 0x8229F750
 
 [data]
 Catalogue_Lists = 0x8296C760
+EntitySystem_pointer = 0x828C71F0
