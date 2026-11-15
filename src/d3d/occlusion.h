@@ -21,8 +21,10 @@ constexpr uint32_t kClearIlluminationWorld = 0x20000;
 constexpr uint32_t kClearIllumination = 0x40000;
 constexpr uint32_t kClearIlluminationOcean = 0x100000;  // the ocean's draws, until kClearIlluminationPastOcean
 constexpr uint32_t kClearIlluminationPastOcean = 0x200000;
-// volumetric fog after the camera pass's last draw, its method the FogViewAt slot
+// volumetric fog over the camera pass's draws so far, its method the FogViewAt slot; the draws after it take it per
+// pixel until kClearFogEnd
 constexpr uint32_t kClearFog = 0x80000;
+constexpr uint32_t kClearFogEnd = 0x400000;
 
 // the ambient occlusion setting
 enum : uint32_t { kAoSsao = 1, kAoGtao = 2, kAoRtao = 3 };
@@ -92,8 +94,10 @@ void IlluminationWorld(uint32_t dev, const float ambient[3]);
 // past the world, on the ocean's first draw and the first after it
 void IlluminationOcean(uint32_t dev, bool ocean);
 void Illumination(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);
-// on the title's thread after the camera pass's last item
+// on the title's thread before the camera pass's first item on the camera's side of the water, else after its last
 void VolumetricFog(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);
+// after the camera pass's last item
+void VolumetricFogEnd(uint32_t dev);
 // title thread: a new terrain shade for the volumetric fog
 void PublishTerrainShade(gpu::TerrainShade&& shade);
 }  // namespace d3d

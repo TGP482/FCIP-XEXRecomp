@@ -700,6 +700,7 @@ void HudBegin(uint32_t dev) { Mark(dev, gpu::kClearHudBegin); }
 void MotionPause(uint32_t dev) { Mark(dev, gpu::kClearMotionPause); }
 void MotionResume(uint32_t dev) { Mark(dev, gpu::kClearMotionResume); }
 void IlluminationScene(uint32_t dev) { Mark(dev, gpu::kClearIlluminationScene); }
+void VolumetricFogEnd(uint32_t dev) { Mark(dev, gpu::kClearFogEnd); }
 void IlluminationOcean(uint32_t dev, bool ocean) {
     Mark(dev, ocean ? gpu::kClearIlluminationOcean : gpu::kClearIlluminationPastOcean);
 }

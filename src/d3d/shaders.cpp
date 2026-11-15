@@ -606,10 +606,13 @@ private:
     std::string Head() const;
     std::string Entry() const;
     std::string MotionEntry() const;
+    std::string FogOutput() const;
     // pixel: the first colour texture fetched also goes to the albedo target
     bool Albedo() const { return Pixel() && (opt_.tex_flags[fcip::kAlbedoOut] & fcip::kAlbedoFetch); }
     // pixel: the ocean's colour becomes its reflection over its water, as the original Xbox game drew it
     bool OceanXbox() const { return Pixel() && (opt_.tex_flags[fcip::kOceanOut] & fcip::kOceanReflection); }
+    // pixel: colour 0 seen through the volumetric fog in front of it
+    bool FogIn() const { return Pixel() && opt_.tex_flags[fcip::kFogOut] && (info_.exports & 1); }
 
     ShaderStage stage_;
     const uint32_t* code_;
@@ -1252,6 +1255,20 @@ void CommitAlu() {
     }
     if (Albedo()) s += "static float4 g_albedo = 0;\nstatic bool g_albedo_set = false;\n";
     if (OceanXbox()) s += kOceanXboxPrelude;
+    if (FogIn()) s += F("Texture2D<float4> t_fog : register(t%u);\n", fcip::kFogSlot);
+    return s;
+}
+
+// the fog between the camera and the pixel, its w the view distance, as the medium has it along the pixel's ray
+std::string Translator::FogOutput() const {
+    std::string s = "    float4 fm = t_fog.Load(int3(i.pos.xy, 0));\n";
+    s += "    float ft = exp(-fm.a * i.pos.w);\n";
+    s += "    oC[0].rgb *= ft;\n";
+    switch (opt_.tex_flags[fcip::kFogOut]) {
+        case fcip::kFogScatter: s += "    oC[0].rgb += fm.rgb * (1 - ft);\n"; break;
+        case fcip::kFogScatterAlpha: s += "    oC[0].rgb += fm.rgb * oC[0].a * (1 - ft);\n"; break;
+        case fcip::kFogWhite: s += "    oC[0].rgb += 1 - ft;\n"; break;
+    }
     return s;
 }
 
@@ -1384,6 +1401,7 @@ POut main(PIn i) {
     if (!pass) discard;
 )";
     }
+    if (FogIn()) s += FogOutput();
     s += "    POut o;\n";
     for (uint32_t i = 0; i < kColorTargets; i++) {
         if (info_.exports >> i & 1) s += F("    o.c%u = oC[%u];\n", i, i);

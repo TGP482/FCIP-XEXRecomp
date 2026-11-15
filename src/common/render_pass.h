@@ -70,6 +70,12 @@ constexpr uint32_t kVsAmbient = 128;     // VertexGlobal.AmbientColor
 // the translated shader reads constant reg
 bool ReadsConstant(const std::string& hlsl, uint32_t reg);
 
+// volumetric fog over the draws past its pass: on kFogOut how their colour takes the medium bound at kFogSlot, the
+// fog's colour and its extinction a unit of view distance
+enum : uint8_t { kFogScatter = 1, kFogScatterAlpha = 2, kFogFade = 3, kFogWhite = 4 };
+constexpr uint32_t kFogOut = 29;
+constexpr uint32_t kFogSlot = 24;
+
 // original Xbox ocean: on its reflection fetch and kOceanOut; g_ext.x ReflectAmount, g_ext.y GlowBoostLevel
 constexpr uint8_t kOceanReflection = 128;
 constexpr uint32_t kOceanOut = 30;
