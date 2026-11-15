@@ -99,11 +99,13 @@ using Edit = std::function<void(PPCContext&)>;
 
 std::mutex g_lock;
 std::shared_ptr<const AiObjects> g_snapshot = std::make_shared<AiObjects>();
+std::shared_ptr<const AiObjects> g_loaded = std::make_shared<AiObjects>();
 std::vector<Edit> g_edits;
 // editor thread
 uint32_t g_mission = 0;
 uint32_t g_level_data = 0;
 bool g_stale = false;
+bool g_first_refresh = false;  // the next snapshot is the loaded one
 uint32_t g_scratch = 0;
 
 bool EnsureScratch() {
@@ -229,6 +231,10 @@ void Refresh() {
         if (!layer.empty()) next.layers[id] = layer;
     }
     Publish(std::move(next));
+    if (!g_first_refresh) return;
+    g_first_refresh = false;
+    std::lock_guard lock(g_lock);
+    g_loaded = g_snapshot;
 }
 
 void SetAttr(PPCContext& ctx, uint32_t node, const std::string& key, const std::string& value) {
@@ -352,6 +358,7 @@ namespace fcip::editor {
 void KeepMission(PPCContext& ctx, uint32_t node) {
     Keep(ctx, g_mission, node);
     g_stale = true;
+    g_first_refresh = true;
 }
 
 void KeepLevelData(PPCContext& ctx, uint32_t node) { Keep(ctx, g_level_data, node); }
@@ -367,6 +374,8 @@ void ForgetMission(PPCContext& ctx) {
     if (!g_mission) return;
     Release(ctx, g_mission);
     Publish(AiObjects{});
+    std::lock_guard lock(g_lock);
+    g_loaded = g_snapshot;
 }
 
 uint32_t MissionToSave(PPCContext& ctx, uint32_t mission_object) {
@@ -405,6 +414,11 @@ void UpdateMission(PPCContext& ctx) {
 std::shared_ptr<const AiObjects> ReadAiObjects() {
     std::lock_guard lock(g_lock);
     return g_snapshot;
+}
+
+std::shared_ptr<const AiObjects> ReadLoadedAiObjects() {
+    std::lock_guard lock(g_lock);
+    return g_loaded;
 }
 
 std::string LayerOf(uint32_t entity_id) {

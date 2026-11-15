@@ -4,7 +4,8 @@
 // takes them (File_Open 8234EF80), so the save runs them with the engine's level path on the custom level: terrain,
 // sectors, tools, ziplines and mounted weapons. The rest are written here: the campaign's level files the editor does
 // not write, its LevelData.xml naming the campaign level, the mission with the editor's entities and AI objects, the
-// paint layers, and a first Mission.lua that runs after the campaign's mission script.
+// AI navigation cut for its areas, the paint layers, and a first Mission.lua that runs after the campaign's mission
+// script.
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -22,6 +23,7 @@
 #include "leveleditor/guest.h"
 #include "leveleditor/mission.h"
 #include "leveleditor/mode.h"
+#include "leveleditor/nav_graph.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -31,11 +33,13 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// the campaign level's files the editor's save does not write, copied from its pack; Graph%d.bai until one is missing
-constexpr const char* kCopiedFiles[] = {"Brush.lst", "vegbank.dat", "moviedata.xml", "GraphManager.bai"};
+// the campaign level's files the editor's save does not write, copied from its pack
+constexpr const char* kCopiedFiles[] = {"Brush.lst", "vegbank.dat", "moviedata.xml"};
 // the dependency lists, named after the level
 constexpr const char* kDependencyLists[] = {"_DepLoad.xml", "_DepLoadParticles.xml"};
 constexpr uint32_t kMaxGraphs = 256;
+constexpr const char* kGraphManager = "GraphManager.bai";
+constexpr uint32_t kGraphCount = 4;  // GraphManager.bai: version, then the graphs
 constexpr const char* kLevelData = "LevelData.xml";
 constexpr const char* kLevelInfo = "LevelInfo";
 constexpr const char* kCampaignLevelKey = "CampaignLevel";  // names the level a custom level's assets come from
@@ -138,19 +142,19 @@ uint32_t Buffer(uint32_t bytes) {
     return g_buffer;
 }
 
-// a file of the campaign level, read from its pack, into the custom folder as name; false when the campaign has none
-bool CopyFile(PPCContext& ctx, const std::string& level, const std::string& file, const std::string& name) {
+// a file as the game reads it, through the packs; false when there is none
+bool ReadGameFile(PPCContext& ctx, const std::string& file, std::vector<uint8_t>& out) {
     uint32_t packs = uint32_t(CallGuest(ctx, SYM_PackManager_Get, {}));
     uint32_t handle = g_scratch + kScratchFile;
-    uint32_t path = Text(kScratchPath, "levels\\" + level + "\\" + file);
-    CallGuest(ctx, SYM_File_Open, {handle, packs, path, kRead, 0, 0});
+    CallGuest(ctx, SYM_File_Open, {handle, packs, Text(kScratchPath, file), kRead, 0, 0});
     bool open = CallGuest(ctx, SYM_File_IsOpen, {handle}) & 0xFF;
     if (open) {
         uint32_t size = uint32_t(CallGuest(ctx, SYM_File_Size, {packs, handle}));
         uint32_t data = Buffer(size);
         if (data) {
             CallGuest(ctx, SYM_File_Read, {packs, data, size, handle});
-            WriteHostFile(name, HostPtr(data), size);
+            const uint8_t* bytes = static_cast<const uint8_t*>(HostPtr(data));
+            out.assign(bytes, bytes + size);
         }
         CallGuest(ctx, SYM_File_Close, {packs, handle});
     }
@@ -158,16 +162,57 @@ bool CopyFile(PPCContext& ctx, const std::string& level, const std::string& file
     return open;
 }
 
+// a file of the campaign level, read from its pack, into the custom folder as name
+void CopyFile(PPCContext& ctx, const std::string& level, const std::string& file, const std::string& name) {
+    std::vector<uint8_t> data;
+    if (ReadGameFile(ctx, "levels\\" + level + "\\" + file, data)) WriteHostFile(name, data.data(), data.size());
+}
+
 void CopyCampaignFiles(PPCContext& ctx) {
     std::string level = CampaignLevel();
     for (const char* file : kCopiedFiles) CopyFile(ctx, level, file, file);
     for (const char* list : kDependencyLists) CopyFile(ctx, level, level + list, MapName() + list);
-    uint32_t graph = 0;
-    while (graph < kMaxGraphs) {
-        std::string file = "Graph" + std::to_string(graph) + ".bai";
-        if (!CopyFile(ctx, level, file, file)) break;
-        graph++;
+}
+
+// the graphs the level loaded, from where the AI system read them (8228CF00, "%s/%s")
+std::vector<NavFile> LoadedGraphs(PPCContext& ctx) {
+    std::vector<NavFile> graphs;
+    std::string folder = LoadedNavFolder();
+    NavFile manager;
+    bool read = !folder.empty() && ReadGameFile(ctx, folder + "/" + kGraphManager, manager);
+    if (!read || manager.size() < kGraphCount + 2) return graphs;
+    uint32_t count = std::min<uint32_t>(manager[kGraphCount] | manager[kGraphCount + 1] << 8, kMaxGraphs);
+    for (uint32_t i = 0; i < count; i++) {
+        NavFile graph;
+        ReadGameFile(ctx, folder + "/Graph" + std::to_string(i) + ".bai", graph);
+        graphs.push_back(std::move(graph));
     }
+    return graphs;
+}
+
+void AddAreas(const AiObjects& objects, std::vector<NavArea>* areas, std::vector<NavRing>* forbidden) {
+    for (const AiObject& o : objects.objects) {
+        NavRing ring(o.points.begin(), o.points.end());
+        if (o.type == "EnclosingArea" && areas) areas->push_back({o.name, ring});
+        if (o.type == "ForbiddenArea") forbidden->push_back(ring);
+    }
+}
+
+// the AI navigation cut again for the level's areas as they are now
+void WriteNavigation(PPCContext& ctx) {
+    NavInput in;
+    in.loaded_graphs = LoadedGraphs(ctx);
+    std::vector<NavArea> loaded_areas;
+    AddAreas(*ReadLoadedAiObjects(), &loaded_areas, &in.loaded_forbidden);
+    for (const NavArea& a : loaded_areas) in.loaded_areas.push_back(a.name);
+    AddAreas(*ReadAiObjects(), &in.areas, &in.forbidden);
+    std::vector<NavFile> graphs = BuildNavGraphs(in, [&](float x, float y) { return TerrainHeightAt(ctx, x, y); });
+    for (size_t i = 0; i < graphs.size(); i++) {
+        WriteHostFile("Graph" + std::to_string(i) + ".bai", graphs[i].data(), graphs[i].size());
+    }
+    NavFile manager = NavManagerFile(uint32_t(graphs.size()));
+    WriteHostFile(kGraphManager, manager.data(), manager.size());
+    LOGR("level editor: %zu AI navigation graphs written", graphs.size());
 }
 
 // the campaign level's LevelData.xml, naming the campaign level
@@ -241,6 +286,7 @@ void SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     CopyCampaignFiles(ctx);
     WriteLevelData(ctx);
     WriteMission(ctx);
+    WriteNavigation(ctx);
     WriteEditorFiles(ctx, manager);
     std::vector<uint8_t> paint = PaintLayerBytes();
     WriteHostFile(kPaintFile, paint.data(), paint.size());

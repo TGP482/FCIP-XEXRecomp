@@ -7,10 +7,12 @@
 #include <array>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include "kernel/kernel.h"
 #include "leveleditor/markers.h"
+#include "leveleditor/nav_graph.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
@@ -78,6 +80,7 @@ struct NavGraph {
 using Nav = std::vector<NavGraph>;
 
 std::mutex g_lock;
+std::string g_folder;  // editor thread
 std::shared_ptr<const Nav> g_nav = std::make_shared<Nav>();
 
 Vec ReadVec(uint32_t at) { return {GF(at), GF(at + 4), GF(at + 8)}; }
@@ -189,6 +192,8 @@ void DrawGraph(const View& v, const NavGraph& g) {
 
 }  // namespace
 
+std::string fcip::editor::LoadedNavFolder() { return g_folder; }
+
 void fcip::editor::DrawNav(const View& v) {
     for (const NavGraph& g : *CurrentNav()) DrawGraph(v, g);
 }
@@ -199,6 +204,7 @@ PPC_EXTERN_FUNC(__imp__sub_8228CF00);
 PPC_FUNC(sub_8228CF00) {
     if (!g_solo) return __imp__sub_8228CF00(ctx, base);
     uint32_t manager = uint32_t(ctx.r[3]);
+    g_folder = ReadCString(uint32_t(ctx.r[4]));
     __imp__sub_8228CF00(ctx, base);
     KeepNav(manager);
 }

@@ -61,6 +61,7 @@ void UpdateMission(PPCContext& ctx);                  // each frame: queued edit
 
 // any thread
 std::shared_ptr<const AiObjects> ReadAiObjects();
+std::shared_ptr<const AiObjects> ReadLoadedAiObjects();  // as the level loaded them, before any edit
 std::vector<std::string> AiObjectNames(const std::string& type);  // sorted
 std::string LayerOf(uint32_t entity_id);  // empty for an entity the mission does not place
 
