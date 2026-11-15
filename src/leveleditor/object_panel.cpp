@@ -17,6 +17,7 @@
 #include "kernel/memory.h"
 #include "leveleditor/event_links.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/markers.h"
 #include "leveleditor/mission.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
@@ -207,6 +208,7 @@ Snapshot Read(PPCContext& ctx, uint32_t object) {
     return s;
 }
 
+// its script's OnReset then takes the new values (a trigger's box), as it does when play test ends
 void Apply(PPCContext& ctx, const Edit& e) {
     uint32_t script = ScriptOf(e.object);
     if (!script) return;
@@ -217,11 +219,19 @@ void Apply(PPCContext& ctx, const Edit& e) {
         CallGuest(ctx, SYM_Xml_ToTable, {0, g_scratch + kScratchTableRef, g_scratch + kScratchNodeRef});
     }
     Release(ctx, c);
+    if (!node) return;
+    uint32_t entity = R32(e.object + kObjectEntity);
+    CallGuest(ctx, SYM_Entity_Reset, {entity});
+    ForgetProperties(R32(entity + kEntityId));
+}
+
+bool EnsureScratch() {
+    if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
+    return g_scratch != 0;
 }
 
 void Update(PPCContext& ctx, uint32_t object) {
-    if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
-    if (!g_scratch) return;
+    if (!EnsureScratch()) return;
     std::vector<Edit> edits;
     std::vector<LinkEdit> link_edits;
     {
@@ -397,6 +407,21 @@ void DrawLinks() {
 }
 
 }  // namespace
+
+std::vector<XmlAttribute> fcip::editor::ReadProperties(PPCContext& ctx, uint32_t entity) {
+    std::vector<XmlAttribute> out;
+    uint32_t script = R32(entity + kEntityScript);
+    if (!script || !EnsureScratch()) return out;
+    Converted c = ToXml(ctx, script, kTables[0]);
+    if (c.node) {
+        uint32_t last = R32(c.node + kNodeAttrLast);
+        for (uint32_t a = R32(c.node + kNodeAttrFirst); a && a < last; a += kAttrBytes) {
+            out.push_back({GuestString(a + kAttrKey), GuestString(a + kAttrValue)});
+        }
+    }
+    Release(ctx, c);
+    return out;
+}
 
 void fcip::editor::DrawObjectPanel() {
     TakeSnapshot();

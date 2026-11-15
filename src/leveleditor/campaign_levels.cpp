@@ -345,6 +345,7 @@ PPC_FUNC(sub_821124B0) {
     if (!fcip::editor::g_solo || !EnsureScratch()) return __imp__sub_821124B0(ctx, base);
     uint32_t manager = uint32_t(ctx.r[3]);
     ForgetLinks();
+    ForgetMarkers();
     ForgetArchetypes();
     ForgetPlayTest();
     ForgetMission(ctx);

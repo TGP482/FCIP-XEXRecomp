@@ -26,6 +26,7 @@ namespace {
 constexpr const char* kObjects = "Objects";
 constexpr const char* kObject = "Object";
 constexpr const char* kPoints = "Points";
+constexpr const char* kEntities = "Entities";
 
 // what a new object gets after Type, Name and Pos, as the campaign's missions write them
 struct Default {
@@ -152,6 +153,10 @@ AiObject ReadObject(uint32_t node) {
     for (uint32_t i = 0; points && i < ChildCount(points); i++) {
         std::array<float, 3> p{};
         if (ParseVec3(Find(Attributes(ChildAt(points, i)), "Pos"), p.data())) o.points.push_back(p);
+    }
+    uint32_t entities = ChildTagged(node, kEntities);
+    for (uint32_t i = 0; entities && i < ChildCount(entities); i++) {
+        o.entities.push_back(Find(Attributes(ChildAt(entities, i)), "Name"));
     }
     return o;
 }

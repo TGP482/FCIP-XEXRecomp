@@ -5,15 +5,16 @@
 #include <string>
 #include <vector>
 
+#include "leveleditor/mission.h"
 #include "leveleditor/view_draw.h"
 
 struct PPCContext;
 
 namespace fcip::editor {
 
-enum ViewCategory : int { kViewPlayerStart, kViewLogic, kViewAi, kViewCategoryCount };
+enum ViewCategory : int { kViewPlayerStart, kViewTriggers, kViewLogic, kViewAi, kViewCategoryCount };
 const char* ViewCategoryName(int category);
-inline bool g_view_shown[kViewCategoryCount] = {true, true, true};  // window thread, the View menu's toggles
+inline bool g_view_shown[kViewCategoryCount] = {true, true, true, true};  // window thread, the View menu's toggles
 
 // an entity as the last editing frame left it
 struct ViewEntity {
@@ -25,13 +26,22 @@ struct ViewEntity {
     bool has_box = false;   // the world box the engine tests it with, as its triggers and physics see it
     float box_min[3] = {};
     float box_max[3] = {};
+    std::vector<XmlAttribute> properties;  // the classes a category reads them for, else none
 };
 std::shared_ptr<const std::vector<ViewEntity>> ViewEntities();  // any thread
+std::string PropertyOf(const ViewEntity& e, const char* key);
 
-void UpdateMarkers(PPCContext& ctx);  // editor thread, each frame while editing
-void DrawMarkers();                   // window thread, in the ImGui frame
+// editor thread
+void UpdateMarkers(PPCContext& ctx);  // each frame while editing
+void ForgetProperties(uint32_t entity_id);  // its Properties changed
+void ForgetMarkers();  // a level starts
+
+void DrawMarkers();  // window thread, in the ImGui frame
 
 // each category's drawing, window thread
 void DrawPlayerStart(const View& v);  // player_markers.cpp
+void DrawTriggers(const View& v);     // trigger_markers.cpp
+bool IsTrigger(const std::string& cls);  // any thread
+void DrawArea(const View& v, const AiObject& area, ImU32 colour);  // a Shape, AreaBox or AreaSphere (area_markers.cpp)
 
 }  // namespace fcip::editor

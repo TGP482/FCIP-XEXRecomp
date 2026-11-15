@@ -22,10 +22,8 @@ constexpr ImU32 kCheckpointColour = IM_COL32(80, 190, 240, 255);
 constexpr float kFacingMetres = 3.0f;
 
 bool ReadAngles(const AiObject& o, float out[3]) {
-    for (const XmlAttribute& a : o.elements.front().attributes) {
-        if (a.key == "Angles") return std::sscanf(a.value.c_str(), "%f,%f,%f", &out[0], &out[1], &out[2]) == 3;
-    }
-    return false;
+    std::string text = AttributeOf(o, "Angles");
+    return std::sscanf(text.c_str(), "%f,%f,%f", &out[0], &out[1], &out[2]) == 3;
 }
 
 void DrawRespawn(const View& v, const AiObject& o, const char* label, ImU32 colour) {

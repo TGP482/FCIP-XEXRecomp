@@ -17,6 +17,7 @@ constexpr float kSquareHalf = 6.0f;  // pixels
 constexpr float kHeadPixels = 10.0f;
 constexpr float kHeadSpread = 0.45f;  // radians either side of the shaft
 constexpr float kRadians = 3.14159265f / 180.0f;
+constexpr float kNamedWithin = 120.0f;  // metres
 
 struct Clip {
     float x;
@@ -58,6 +59,7 @@ bool ScreenLine(const View& v, const float a[3], const float b[3], ImVec2& sa, I
 
 bool BeginView(View& v) {
     if (!ViewClip(v.clip)) return false;
+    v.has_eye = ViewPosition(v.eye);
     ImVec2 size = ImGui::GetIO().DisplaySize;
     v.frame = FrameBox(size.x, size.y);
     v.draw = ImGui::GetBackgroundDrawList();
@@ -87,6 +89,10 @@ void AxisBox(const View& v, const float min[3], const float max[3], ImU32 colour
         corner[i][1] = (i & 2) ? max[1] : min[1];
         corner[i][2] = (i & 4) ? max[2] : min[2];
     }
+    BoxEdges(v, corner, colour);
+}
+
+void BoxEdges(const View& v, const float corner[8][3], ImU32 colour) {
     // corners one bit apart share an edge
     for (int i = 0; i < 8; i++) {
         for (int bit = 1; bit < 8; bit <<= 1) {
@@ -126,6 +132,13 @@ void Label(const View& v, const float p[3], const char* text, ImU32 colour) {
     ImVec2 pos(at.x + kSquareHalf * 1.5f, at.y - kSquareHalf);
     v.draw->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 200), text);
     v.draw->AddText(pos, colour, text);
+}
+
+bool NearCamera(const View& v, const float p[3]) {
+    float dx = p[0] - v.eye[0];
+    float dy = p[1] - v.eye[1];
+    float dz = p[2] - v.eye[2];
+    return v.has_eye && dx * dx + dy * dy + dz * dz < kNamedWithin * kNamedWithin;
 }
 
 void AxesFromAngles(const float degrees[3], float axes[3][3]) {

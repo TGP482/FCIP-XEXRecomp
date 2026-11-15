@@ -29,8 +29,17 @@ struct AiObject {
     bool placed = false;  // has a Pos
     float pos[3] = {};
     std::vector<std::array<float, 3>> points;  // a shape's or path's
+    std::vector<std::string> entities;         // an area's: the entities it tells when something enters
     std::vector<XmlElement> elements;
 };
+
+// the object's own attribute, empty when it has none
+inline std::string AttributeOf(const AiObject& o, const char* key) {
+    for (const XmlAttribute& a : o.elements.front().attributes) {
+        if (a.key == key) return a.value;
+    }
+    return {};
+}
 struct AiObjects {
     uint32_t generation = 0;
     std::vector<AiObject> objects;
