@@ -69,6 +69,8 @@ float g_dock_width = 0.0f;  // pixels, 0 until the first frame
 bool g_show_toolbar = true;
 bool g_show_dock = true;
 bool g_show_status = true;
+bool g_show_markers = true;
+char g_search[64] = "";
 bool g_looking = false;   // the right button went down on the view
 bool g_applying = false;  // the left button went down on the view
 
@@ -78,12 +80,18 @@ void DrawMenuBar(const State& s) {
     if (!ImGui::BeginMainMenuBar()) return;
     if (ImGui::BeginMenu("Edit")) {
         if (ImGui::MenuItem("Undo", "Ctrl+Z", false, s.undo_count > 0)) Undo(1);
+        if (ImGui::MenuItem("Delete", "Del", false, s.tool == kEditObject)) DeleteSelected();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
         ImGui::MenuItem("Toolbar", nullptr, &g_show_toolbar);
         ImGui::MenuItem("Dock", nullptr, &g_show_dock);
         ImGui::MenuItem("Status Bar", nullptr, &g_show_status);
+        ImGui::Separator();
+        for (int option : {kOptionObjectIcons, kOptionOcean, kOptionFog}) {
+            if (ImGui::MenuItem(OptionName(option), nullptr, s.options[option])) SetOption(option, !s.options[option]);
+        }
+        if (editor::g_solo) ImGui::MenuItem("Logic Markers", nullptr, &g_show_markers);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Tools")) {
@@ -220,10 +228,60 @@ void DrawTerrainParameters(const State& s) {
     if (ImGui::Checkbox("Square cursor", &square)) SetSquareCursor(square);
 }
 
+// a stepped value shown as text, with its step number in a box
+bool StepSlider(const char* label, int* step, int count, const char* text) {
+    float em = ImGui::GetFontSize();
+    ImGui::PushID(label);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine(em * 7.0f);
+    ImGui::SetNextItemWidth(-em * 5.0f);
+    bool changed = ImGui::SliderInt("##slider", step, 0, count - 1, text);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1.0f);
+    int shown = *step + 1;
+    if (ImGui::InputInt("##box", &shown, 0) && shown >= 1 && shown <= count) {
+        *step = shown - 1;
+        changed = true;
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+void DrawEnvironmentParameters(const State& s) {
+    if (!s.has_environment) return;
+    int time = int(s.environment[kTimeOfDay]);
+    if (StepSlider("Time of Day", &time, kTimesOfDay, TimeOfDayName(time))) SetEnvironment(kTimeOfDay, float(time));
+    float thickness = s.environment[kFogThickness];
+    if (SliderWithBox("Fog", &thickness, kMinFogThickness, kMaxFogThickness, "%.1f"))
+        SetEnvironment(kFogThickness, thickness);
+    int distance = int(s.environment[kFogDistance]);
+    char metres[32];
+    std::snprintf(metres, sizeof(metres), "%.0f m", FogDistanceMetres(distance));
+    if (StepSlider("Fog Distance", &distance, kFogDistanceSteps, metres))
+        SetEnvironment(kFogDistance, float(distance));
+    for (int row = kSound1; row <= kSound3; row++) {
+        int sound = int(s.environment[row]);
+        char label[16];
+        std::snprintf(label, sizeof(label), "Sound %d", row - kSound1 + 1);
+        char text[16];
+        std::snprintf(text, sizeof(text), "%d", sound);
+        if (StepSlider(label, &sound, kSoundCount, text)) SetEnvironment(row, float(sound));
+    }
+}
+
+void DrawObjectParameters(const State& s) {
+    const char* what = s.tool == kAddObject ? "places the object picked" : "drags the object under it";
+    ImGui::TextWrapped("A left click in the view %s.", what);
+    if (s.tool == kEditObject) ImGui::TextWrapped("Del removes the selected object.");
+}
+
 void DrawToolParameters(const State& s) {
     Heading("TOOL PARAMETERS");
     ImGui::TextUnformatted(ToolName(s.tool));
     if (s.tool == kTerrain) DrawTerrainParameters(s);
+    if (s.tool == kAddObject || s.tool == kEditObject) DrawObjectParameters(s);
+    if (s.tool == kEnvironment) DrawEnvironmentParameters(s);
 }
 
 void DrawHistory(const State& s) {
@@ -241,8 +299,72 @@ void DrawHistory(const State& s) {
     ImGui::EndDisabled();
 }
 
+bool Matches(const std::string& name, const std::string& search) {
+    auto lower = [](char c) { return char(c >= 'A' && c <= 'Z' ? c + 32 : c); };
+    auto it = std::search(name.begin(), name.end(), search.begin(), search.end(),
+                          [&](char a, char b) { return lower(a) == lower(b); });
+    return it != name.end();
+}
+
+// a click picks the object for the Add Object tool, a click in the view then places it
+void DrawObjectBrowser(const State& s, const std::vector<Category>& catalogue) {
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##search", "Search", g_search, sizeof(g_search));
+    std::string search = g_search;
+    ImGui::BeginChild("##objects");
+    for (size_t c = 0; c < catalogue.size(); c++) {
+        const std::vector<std::string>& items = catalogue[c].items;
+        if (items.empty()) continue;
+        int category = int(c);
+        if (!search.empty()) ImGui::SetNextItemOpen(true);
+        if (!ImGui::CollapsingHeader(CategoryName(category))) continue;
+        for (size_t i = 0; i < items.size(); i++) {
+            if (!search.empty() && !Matches(items[i], search)) continue;
+            bool picked = s.tool == kAddObject && s.category == category && s.item == int(i);
+            ImGui::PushID(category * 4096 + int(i));
+            if (ImGui::Selectable(items[i].c_str(), picked)) PickObject(category, int(i));
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+}
+
+void DrawEditorSettings(const State& s) {
+    for (int i = 0; i < kOptionCount; i++) {
+        bool on = s.options[i];
+        if (ImGui::Checkbox(OptionName(i), &on)) SetOption(i, on);
+    }
+    if (editor::g_solo) ImGui::Checkbox("Logic Markers", &g_show_markers);
+}
+
+void DrawBudget(const std::vector<Category>& catalogue) {
+    float em = ImGui::GetFontSize();
+    for (size_t c = 0; c < catalogue.size(); c++) {
+        const Category& k = catalogue[c];
+        if (k.limit <= 0) continue;
+        char text[32];
+        std::snprintf(text, sizeof(text), "%d / %d", k.used, k.limit);
+        ImGui::TextUnformatted(CategoryName(int(c)));
+        ImGui::SameLine(em * 10.0f);
+        ImGui::ProgressBar(float(k.used) / float(k.limit), ImVec2(-1.0f, 0.0f), text);
+    }
+}
+
 void DrawTabs(const State& s) {
     if (!ImGui::BeginTabBar("##dock_tabs")) return;
+    std::vector<Category> catalogue = Catalogue();
+    if (ImGui::BeginTabItem("Objects")) {
+        DrawObjectBrowser(s, catalogue);
+        ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Settings")) {
+        DrawEditorSettings(s);
+        ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Budget")) {
+        DrawBudget(catalogue);
+        ImGui::EndTabItem();
+    }
     if (editor::g_solo && ImGui::BeginTabItem("Properties")) {
         editor::DrawObjectPanel();
         ImGui::EndTabItem();
@@ -368,19 +490,23 @@ bool DrawShell(double fps) {
     UpdateViewInput(view);
     if (g_show_dock) DrawDock(size.x - dock, top, bottom, s);
     if (g_show_status) DrawStatus(bottom, size.x, fps, s);
-    if (editor::g_solo) editor::DrawMarkers();
+    if (editor::g_solo && g_show_markers) editor::DrawMarkers();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(int(std::size(kPanelColors) + std::size(kShellColors)));
     g_editor_typing = ImGui::GetIO().WantTextInput;
     return true;
 }
 
-// Ctrl+Z undoes, 1 to 4 pick the tools
+// Ctrl+Z undoes, Del deletes, 1 to 4 pick the tools
 bool EditorKey(uint32_t msg, uintptr_t wp) {
     if (msg != WM_KEYDOWN || !ShellUp() || g_editor_typing) return false;
     bool ctrl = GetKeyState(VK_CONTROL) < 0;
     if (ctrl && wp == 'Z') {
         Undo(1);
+        return true;
+    }
+    if (wp == VK_DELETE) {
+        DeleteSelected();
         return true;
     }
     if (!ctrl && wp >= '1' && wp < '1' + kToolCount) {

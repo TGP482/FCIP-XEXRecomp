@@ -14,6 +14,19 @@ enum Brush : int { kRaise, kLower, kBump, kDig, kSetHeight, kExtend, kSmooth, kT
 constexpr int kRadiusSteps = 18;
 constexpr float kMaxSetHeight = 225.0f;
 constexpr int kTextureCount = 3;
+constexpr int kCategoryCount = 8;
+constexpr int kOptionCount = 9;
+constexpr int kOptionOcean = 0;
+constexpr int kOptionFog = 1;
+constexpr int kOptionObjectIcons = 2;
+
+// the environment tool's rows, kept in the map's settings
+enum EnvironmentRow : int { kSound1, kSound2, kSound3, kFogDistance, kFogThickness, kTimeOfDay, kEnvironmentRows };
+constexpr int kSoundCount = 20;
+constexpr int kFogDistanceSteps = 10;
+constexpr float kMinFogThickness = 0.2f;
+constexpr float kMaxFogThickness = 1.0f;
+constexpr int kTimesOfDay = 4;
 
 // any thread: a map is open and the editor is editing, not in first person
 bool ShellUp();
@@ -30,6 +43,11 @@ struct State {
     float cursor[3] = {};  // where the tools act
     size_t undo_count = 0;
     bool applying = false;
+    float environment[kEnvironmentRows] = {};
+    bool has_environment = false;  // the map's settings are loaded
+    bool options[kOptionCount] = {};
+    int category = 0;  // the Add Object tool's
+    int item = 0;
 };
 State Read();
 
@@ -37,6 +55,10 @@ const char* ToolName(int tool);
 const char* BrushName(int brush);
 const char* TextureName(int texture);
 float RadiusMetres(int step);
+const char* OptionName(int option);
+const char* CategoryName(int category);
+const char* TimeOfDayName(int time);
+float FogDistanceMetres(int step);
 
 void SelectTool(int tool);
 void SelectBrush(int brush);
@@ -46,6 +68,18 @@ void SetTexture(int texture);
 void SetSquareCursor(bool square);
 void Undo(int steps);
 std::vector<std::string> History();  // the undo stack, oldest first
+void SetEnvironment(int row, float value);
+void SetOption(int option, bool on);
+void DeleteSelected();  // the Edit Object tool's selection
+void PickObject(int category, int item);  // into the Add Object tool, which a click in the view then places
+
+// the Add Object tool's categories as last read on the editor's thread, with their object budgets
+struct Category {
+    int used = 0;
+    int limit = 0;
+    std::vector<std::string> items;
+};
+std::vector<Category> Catalogue();
 
 // the mouse over the 3D view, each frame
 struct ViewInput {
