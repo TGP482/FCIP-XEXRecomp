@@ -23,6 +23,8 @@ constexpr const char* kCampaignLevels[] = {
 // the AI section of Scripts\Default\EntityClassRegistry.lua
 constexpr const char* kEnemyClasses[] = {"Merc", "Worker", "Sapper", "Chucker", "Freak", "Crowe", "Dragon", "Valerie"};
 constexpr const char* kEnemiesCaption = "{DPLR} ENEMIES (3/8)";
+// the multiplayer list's keys end in a two letter team suffix, which its tool strips before spawning
+constexpr const char* kTeamSuffix = "_E";
 
 // IXmlNode methods
 constexpr uint32_t kNodeAddRef = 0x08;
@@ -63,7 +65,7 @@ constexpr uint32_t kScratchTextBytes = 0x100;
 constexpr uint32_t kScratchBytes = kScratchText + kScratchTextBytes;
 
 struct EnemyType {
-    std::string archetype;  // the catalogue key too
+    std::string archetype;  // the catalogue key, less the team suffix
     std::string cls;
     std::string caption;
 };
@@ -194,7 +196,7 @@ void AddCatalogueEntry(PPCContext& ctx, uint32_t list, const EnemyType& e) {
     InitEmptyString(entry + kEntryKey, kStrEmptyCapacity);
     InitEmptyString(entry + kEntryCaption, kWStrEmptyCapacity);
     InitEmptyString(entry + kEntryArchetype, kStrEmptyCapacity);
-    CallGuest(ctx, SYM_String_Assign, {entry + kEntryKey, GuestText(e.archetype)});
+    CallGuest(ctx, SYM_String_Assign, {entry + kEntryKey, GuestText(e.archetype + kTeamSuffix)});
     CallGuest(ctx, SYM_WString_Assign, {entry + kEntryCaption, fcip::ui::Text(e.caption.c_str())});
     CallGuest(ctx, SYM_String_Assign, {entry + kEntryArchetype, GuestText(e.archetype)});
     CallGuest(ctx, SYM_Catalogue_PushBack, {list, entry});
@@ -231,7 +233,8 @@ PPC_FUNC(sub_821AA1D8) {
     ReplaceMultiplayerItems(ctx);
 }
 
-// spawns an editor object: r4 the catalogue key, which names the class; ours are archetypes, so r4 gets their class
+// spawns an editor object: r4 the stripped catalogue key, which names the class; ours are archetypes, so r4 gets their
+// class
 PPC_FUNC(sub_820F1200) {
     if (const EnemyType* e = EnemyByKey(ReadCString(uint32_t(ctx.r[4])))) ctx.r[4] = GuestText(e->cls);
     __imp__sub_820F1200(ctx, base);
