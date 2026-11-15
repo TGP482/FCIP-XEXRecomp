@@ -1,6 +1,7 @@
-// ige.xex, the solo level editor: a campaign level's mission XML stays referenced after it loads. Its Objects hold
-// the AI objects (tag points, anchors with their actions, shapes, areas), which the engine reads into the AI system
-// only as the level starts (8229CD10). The panel edits them here, so the custom level save can write them back.
+// ige.xex, the solo level editor: a campaign level's mission XML and LevelData.xml stay referenced after it loads. The
+// mission's Objects hold the AI objects (tag points, anchors with their actions, shapes, areas), which the engine reads
+// into the AI system only as the level starts (8229CD10). The panel edits them here, and the custom level save writes
+// the mission back with the editor's entities in place of the campaign's.
 #include "leveleditor/mission.h"
 
 #include <algorithm>
@@ -52,8 +53,14 @@ std::shared_ptr<const AiObjects> g_snapshot = std::make_shared<AiObjects>();
 std::vector<Edit> g_edits;
 // editor thread
 uint32_t g_mission = 0;
+uint32_t g_level_data = 0;
 bool g_stale = false;
 uint32_t g_scratch = 0;
+
+bool EnsureScratch() {
+    if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
+    return g_scratch != 0;
+}
 
 uint32_t KeyText(const std::string& text) { return WriteText(g_scratch + kScratchKey, text, kScratchKeyBytes); }
 uint32_t ValueText(const std::string& text) { return WriteText(g_scratch + kScratchValue, text, kScratchValueBytes); }
@@ -98,6 +105,17 @@ uint32_t ChildTagged(uint32_t node, const char* tag) {
 }
 
 uint32_t ObjectsNode() { return g_mission ? ChildTagged(g_mission, kObjects) : 0; }
+
+void Release(PPCContext& ctx, uint32_t& node) {
+    if (node) CallGuest(ctx, Method(node, kNodeRelease), {node});
+    node = 0;
+}
+
+void Keep(PPCContext& ctx, uint32_t& kept, uint32_t node) {
+    Release(ctx, kept);
+    if (node) CallGuest(ctx, Method(node, kNodeAddRef), {node});
+    kept = node;
+}
 
 // an edit names an object the panel saw; it may have gone since
 bool IsAiObject(uint32_t node) {
@@ -174,6 +192,29 @@ void RemoveChild(PPCContext& ctx, uint32_t parent, uint32_t child) {
     CallGuest(ctx, Method(parent, kNodeRemoveChild), {parent, g_scratch + kScratchRef});
 }
 
+// the mission's AI objects, referenced once each, and its Objects node taken out
+std::vector<uint32_t> TakeAiObjects(PPCContext& ctx, uint32_t mission) {
+    std::vector<uint32_t> taken;
+    uint32_t objects = ChildTagged(mission, kObjects);
+    if (!objects) return taken;
+    for (uint32_t i = 0; i < ChildCount(objects); i++) {
+        uint32_t node = ChildAt(objects, i);
+        if (Tag(node) != kObject) continue;
+        CallGuest(ctx, Method(node, kNodeAddRef), {node});
+        taken.push_back(node);
+    }
+    RemoveChild(ctx, mission, objects);
+    return taken;
+}
+
+// the last child tagged so: the Objects the editor's entity writer adds after the mission's own
+uint32_t LastChildTagged(uint32_t node, const char* tag) {
+    for (uint32_t i = ChildCount(node); i > 0; i--) {
+        if (Tag(ChildAt(node, i - 1)) == tag) return ChildAt(node, i - 1);
+    }
+    return 0;
+}
+
 std::string UniqueName(const std::string& type) {
     std::set<std::string> names;
     uint32_t objects = ObjectsNode();
@@ -236,22 +277,41 @@ void QueueOn(uint32_t object, std::function<void(PPCContext&)> edit) {
 namespace fcip::editor {
 
 void KeepMission(PPCContext& ctx, uint32_t node) {
-    ForgetMission(ctx);
-    if (!node) return;
-    CallGuest(ctx, Method(node, kNodeAddRef), {node});
-    g_mission = node;
+    Keep(ctx, g_mission, node);
     g_stale = true;
 }
+
+void KeepLevelData(PPCContext& ctx, uint32_t node) { Keep(ctx, g_level_data, node); }
+
+uint32_t KeptLevelData() { return g_level_data; }
 
 void ForgetMission(PPCContext& ctx) {
     {
         std::lock_guard lock(g_lock);
         g_edits.clear();
     }
+    Release(ctx, g_level_data);
     if (!g_mission) return;
-    CallGuest(ctx, Method(g_mission, kNodeRelease), {g_mission});
-    g_mission = 0;
+    Release(ctx, g_mission);
     Publish({});
+}
+
+uint32_t MissionToSave(PPCContext& ctx, uint32_t mission_object) {
+    if (!g_mission || !EnsureScratch()) return 0;
+    W32(g_scratch + kScratchRef, 0);
+    CallGuest(ctx, Method(g_mission, kNodeClone), {g_scratch + kScratchRef, g_mission});
+    uint32_t copy = R32(g_scratch + kScratchRef);
+    if (!copy) return 0;
+    std::vector<uint32_t> ai = TakeAiObjects(ctx, copy);
+    W32(g_scratch + kScratchRef, copy);
+    CallGuest(ctx, SYM_Mission_WriteEntities, {mission_object, g_scratch + kScratchRef});
+    uint32_t objects = LastChildTagged(copy, kObjects);
+    for (uint32_t node : ai) {
+        W32(g_scratch + kScratchRef, node);
+        if (objects) CallGuest(ctx, Method(objects, kNodeAddChild), {objects, g_scratch + kScratchRef});
+        else Release(ctx, node);
+    }
+    return copy;
 }
 
 void UpdateMission(PPCContext& ctx) {
@@ -260,9 +320,7 @@ void UpdateMission(PPCContext& ctx) {
         std::lock_guard lock(g_lock);
         edits.swap(g_edits);
     }
-    if (!g_mission) return;
-    if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
-    if (!g_scratch) return;
+    if (!g_mission || !EnsureScratch()) return;
     for (Edit& e : edits) e(ctx);
     if (!edits.empty()) g_stale = true;
     if (!g_stale) return;

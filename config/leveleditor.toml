@@ -55,6 +55,14 @@ Game_LocalPlayer = 0x8213A068  # (game)
 Undo_Pop = 0x8210DDD8                 # the newest record, 0 when empty
 TerrainPaint_RebuildAll = 0x820D4FE8  # every sector's textures from the paint layers
 Memory_Free = 0x8230F208              # (heap tag, line, pointer)
+# a campaign level saved as a custom level (custom_save.cpp)
+Engine_LevelFilePath = 0x823365E8   # (3D engine, name, 0) the path of a file in the level's folder
+File_Open = 0x8234EF80              # (file, packs, path, mode, 0, 0); mode 2 writes
+File_Write = 0x8234ECC0             # (packs, data, size, file)
+File_Close = 0x8234ED48             # (packs, file)
+File_Destroy = 0x824FAF08           # (file)
+Pack_CopyFile = 0x82108E80          # (source pack, file, name in the target, target pack)
+Mission_WriteEntities = 0x82104C38  # (mission object, XmlNodeRef of the mission) adds Objects with the entities
 
 [data]
 Catalogue_Lists = 0x8296C760
@@ -73,6 +81,7 @@ Texture_None = 0x8289F690
 Thumbnail_Camera = 0x8296B280
 Thumbnail_Stale = 0x8296B267
 Terrain_SectorsPerSide = 0x8289F428
+Editor_Manager_pointer = 0x8296B2CC
 
 # instruction hooks, defined in src/leveleditor/terrain_limits.cpp; each runs after its instruction
 

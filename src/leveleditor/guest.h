@@ -30,6 +30,8 @@ constexpr uint32_t kNodeRemoveChild = 0x60;  // takes an XmlNodeRef by value, wh
 constexpr uint32_t kNodeChildCount = 0x68;
 constexpr uint32_t kNodeGetChild = 0x6C;
 constexpr uint32_t kNodeFindChild = 0x70;
+constexpr uint32_t kNodeClone = 0x80;   // (XmlNodeRef out, this), a deep copy
+constexpr uint32_t kNodeGetXml = 0x8C;  // (this, std::string out, 0)
 constexpr uint32_t kNodeSetAttr = 0xB0;  // (key, text)
 
 // entity: methods, then fields

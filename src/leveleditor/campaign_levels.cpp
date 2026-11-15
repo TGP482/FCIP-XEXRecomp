@@ -227,7 +227,7 @@ PPC_EXTERN_FUNC(__imp__sub_821124B0);
 PPC_EXTERN_FUNC(__imp__sub_8239D908);
 PPC_EXTERN_FUNC(__imp__sub_820E0240);
 PPC_EXTERN_FUNC(__imp__sub_82138CD8);
-PPC_EXTERN_FUNC(__imp__sub_82109BF8);
+PPC_EXTERN_FUNC(__imp__sub_82138E18);
 PPC_EXTERN_FUNC(__imp__sub_820E3C88);
 PPC_EXTERN_FUNC(__imp__sub_82449A08);
 PPC_EXTERN_FUNC(__imp__sub_8229CC08);
@@ -297,9 +297,9 @@ PPC_FUNC(sub_82449A08) {
     W32(uint32_t(ctx.r[3]) + kLivingCylinderSurface, kDefaultSurface);
 }
 
-// the editor's map save writes a template map; a campaign level saves as a custom level
-PPC_FUNC(sub_82109BF8) {
-    if (!fcip::editor::g_solo || g_open == kNone) return __imp__sub_82109BF8(ctx, base);
-    LOGR("level editor: %s not saved, campaign levels save as custom levels", kCampaignLevels[int(g_open)]);
-    ctx.r[3] = 0;
+// a level's LevelData.xml loads (r3 its XmlNodeRef out); a campaign level's is kept for the save
+PPC_FUNC(sub_82138E18) {
+    uint32_t out = uint32_t(ctx.r[3]);
+    __imp__sub_82138E18(ctx, base);
+    if (g_loading) KeepLevelData(ctx, R32(out));
 }

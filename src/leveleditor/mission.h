@@ -1,4 +1,4 @@
-// a campaign level's mission XML, kept after it loads for its AI objects (mission.cpp)
+// a campaign level's mission XML and LevelData.xml, kept after it loads for its AI objects and the save (mission.cpp)
 #pragma once
 #include <array>
 #include <cstdint>
@@ -37,9 +37,14 @@ struct AiObjects {
 };
 
 // editor thread
-void KeepMission(PPCContext& ctx, uint32_t node);  // a campaign level's mission, as its objects load
-void ForgetMission(PPCContext& ctx);                // a level starts
-void UpdateMission(PPCContext& ctx);                // each frame: queued edits, then a fresh snapshot after any
+void KeepMission(PPCContext& ctx, uint32_t node);    // a campaign level's mission, as its objects load
+void KeepLevelData(PPCContext& ctx, uint32_t node);  // its LevelData.xml, as it loads
+void ForgetMission(PPCContext& ctx);                  // a level starts
+uint32_t KeptLevelData();
+// the kept mission for a custom level: its Objects rebuilt from the editor's entities (82104C38 on the mission object)
+// and the kept AI objects; referenced once, 0 without a kept mission
+uint32_t MissionToSave(PPCContext& ctx, uint32_t mission_object);
+void UpdateMission(PPCContext& ctx);                  // each frame: queued edits, then a fresh snapshot after any
 
 // any thread
 std::shared_ptr<const AiObjects> ReadAiObjects();
