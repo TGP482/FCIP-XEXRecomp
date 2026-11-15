@@ -1128,15 +1128,16 @@ float4 fog_medium(float4 pos : SV_Position) : SV_Target {
 // camera's height over the sea and height.w the wind's seconds, terrain[0] coverage and rain, opt.xy the march's size
 const char* kCloudHlsl = R"(
 Texture2D<float4> march : register(t1);  // in scatter, transmittance in a
-static const float kBase = 900;           // the layer over the sea, world units
-static const float kTop = 3600;
+static const float kBase = 700;           // the layer over the sea, world units
+static const float kTop = 2800;
 static const float kEarth = 600000;       // the layer's curve, thinning it toward the horizon
-static const float kFar = 60000;          // the farthest a ray enters the layer
-static const float kSpan = 15000;         // the most of the layer one ray crosses
-static const float kCell = 5000;          // a cloud's size
+static const float kFar = 30000;          // the farthest a ray enters the layer
+static const float kSpan = 8000;          // the most of the layer one ray crosses
+static const float kCell = 2600;          // a cloud's size
+static const float kLow = 0.15;           // rise a unit along the ray where clouds reach full strength
 static const float kBillow = 640;         // the billows eroding its edges
 static const float kSigma = 0.02;         // extinction a unit at full density
-static const float kFade = 30000;         // distance over which clouds sink into the sky's haze
+static const float kFade = 14000;         // distance over which clouds sink into the sky's haze
 static const float kSunGain = 0.6;
 static const float2 kWind = float2(7, 3);  // units a second
 static const int kSteps = 40;
@@ -1227,7 +1228,8 @@ float4 cloud_march(float4 pos : SV_Position) : SV_Target {
         light += trans * absorbed * lit;
         trans *= 1 - absorbed;
     }
-    float fade = exp(-t0 / kFade);
+    // the sky overhead carries them, the horizon only thinly
+    float fade = exp(-t0 / kFade) * smoothstep(0, kLow, dir.z);
     return float4(light * fade, lerp(1, trans, fade));
 }
 // the march's texel at p, held to its size

@@ -47,12 +47,12 @@ std::atomic<bool> g_editor_mouse{false};  // the editor's desktop UI takes the m
 constexpr uint32_t kHostApplyDisplay = WM_APP + 1;  // main.cpp's kApplyDisplay
 
 constexpr uint32_t kAnisoValues[] = {0, 2, 4, 8, 16};
-const char* const kAnisoNames[] = {"OFF", "2x", "4x", "8x", "16x"};
+const char* const kAnisoNames[] = {"OFF (DEFAULT)", "2x", "4x", "8x", "16x"};
 constexpr uint32_t kMsaaValues[] = {0, 2, 4, 8};
-const char* const kMsaaNames[] = {"OFF", "2X MSAA", "4X MSAA", "8X MSAA"};
+const char* const kMsaaNames[] = {"OFF", "2X MSAA (DEFAULT)", "4X MSAA", "8X MSAA"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
-const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
-const char* const kAmbientOcclusionNames[] = {"OFF", "SSAO", "GTAO", "RTAO"};
+const char* const kColourBlindNames[] = {"OFF (DEFAULT)", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
+const char* const kAmbientOcclusionNames[] = {"OFF (DEFAULT)", "SSAO", "GTAO", "RTAO"};
 const char* const kShadowFilterNames[] = {"SHARP (DEFAULT)", "SOFT", "PCSS", "RAY TRACED", "RAY TRACED ULTRA"};
 const char* const kOceanReflectionNames[] = {"XBOX 360 (DEFAULT)", "ORIGINAL XBOX"};
 constexpr uint32_t kAudioOutputs[] = {audio::kOutputAuto, audio::kOutputMono, audio::kOutputStereo,
@@ -108,6 +108,12 @@ int StepRange(int value, int lo, int hi, int inc, int step) {
 }
 
 const char* OnOff(bool on) { return on ? "ON" : "OFF"; }
+
+// the base game's value reads (DEFAULT)
+const char* OnOff(bool on, bool stock) {
+    if (on != stock) return OnOff(on);
+    return on ? "ON (DEFAULT)" : "OFF (DEFAULT)";
+}
 
 void Flip(bool& on, int step) {
     if (step) on = StepIndex(on, step, 2) != 0;
@@ -399,7 +405,7 @@ void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
 void StepFrameGeneration(int step, char (&text)[64]) {
     bool& on = Get().frame_generation;
     if (step) on = !on;
-    std::snprintf(text, sizeof(text), "%s%s", on ? "ON" : "OFF", fsr::StatusNote(fsr::GenerationStatus()));
+    std::snprintf(text, sizeof(text), "%s%s", OnOff(on, false), fsr::StatusNote(fsr::GenerationStatus()));
 }
 
 void StepGyroRow(int id, int step, char (&text)[64]) {
@@ -426,7 +432,9 @@ void StepInputRow(int id, int step, char (&text)[64]) {
     Settings& g = Get();
     if (bool* on = ToggleFlag(id)) {
         Flip(*on, step);
-        std::snprintf(text, sizeof(text), "%s", OnOff(*on));
+        // mouse and keyboard rows have no base game value; the blur is the game's own
+        bool keyboard = id == kInvertX || id == kInvertY || id == kHoldAim || id == kHoldSprint;
+        std::snprintf(text, sizeof(text), "%s", keyboard ? OnOff(*on) : OnOff(*on, id == kBlur));
     } else if (float* sensitivity = SensitivityField(id)) {
         // 0.1 to 20.0 in steps of 0.1, shown as five times the stored value so the game's own reads 5.0
         int shown = std::clamp(int(std::lround(*sensitivity * 50.0f)), 1, 200);
@@ -434,7 +442,7 @@ void StepInputRow(int id, int step, char (&text)[64]) {
             shown = StepRange(shown, 1, 200, 1, step);
             *sensitivity = float(shown) / 50.0f;
         }
-        std::snprintf(text, sizeof(text), "%.1f", float(shown) / 10.0f);
+        std::snprintf(text, sizeof(text), shown == 50 ? "%.1f (DEFAULT)" : "%.1f", float(shown) / 10.0f);
     } else if (id == kDrawDistance) {
         uint32_t v = kDistances[StepTable(kDistances, g.draw_distance, step)];
         std::snprintf(text, sizeof(text), v == 1 ? "DEFAULT" : "%ux", v);
@@ -473,12 +481,12 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             break;
         case kVsync:
             Flip(s.vsync, step);
-            std::snprintf(text, sizeof(text), "%s", OnOff(s.vsync));
+            std::snprintf(text, sizeof(text), "%s", OnOff(s.vsync, true));
             break;
         case kMaxFps: {
             uint32_t cap = kFpsCaps[StepTable(kFpsCaps, s.fps_cap, step)];
             if (cap == app::kFpsCapRefresh) std::snprintf(text, sizeof(text), "REFRESH RATE");
-            else if (cap) std::snprintf(text, sizeof(text), "%u", cap);
+            else if (cap) std::snprintf(text, sizeof(text), cap == 30 ? "%u (DEFAULT)" : "%u", cap);
             else std::snprintf(text, sizeof(text), "UNLIMITED");
             break;
         }
@@ -505,18 +513,18 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             break;
         case kGlobalIllumination:
             Flip(Get().global_illumination, step);
-            std::snprintf(text, sizeof(text), "%s", OnOff(Get().global_illumination));
+            std::snprintf(text, sizeof(text), "%s", OnOff(Get().global_illumination, false));
             if (Get().global_illumination && !gpu::RayTracing()) {
                 std::snprintf(text, sizeof(text), "ON (NOT SUPPORTED)");
             }
             break;
         case kVolumetricFog:
             Flip(Get().volumetric_fog, step);
-            std::snprintf(text, sizeof(text), "%s", OnOff(Get().volumetric_fog));
+            std::snprintf(text, sizeof(text), "%s", OnOff(Get().volumetric_fog, false));
             break;
         case kVolumetricClouds:
             Flip(Get().volumetric_clouds, step);
-            std::snprintf(text, sizeof(text), "%s", OnOff(Get().volumetric_clouds));
+            std::snprintf(text, sizeof(text), "%s", OnOff(Get().volumetric_clouds, false));
             break;
         case kOceanReflection:
             StepName(Get().ocean_reflection, kOceanReflectionNames, step, text);
@@ -529,11 +537,11 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             break;
         case kTextureReplacement:
             Flip(s.custom_textures, step);
-            std::snprintf(text, sizeof(text), "%s", OnOff(s.custom_textures));
+            std::snprintf(text, sizeof(text), "%s", OnOff(s.custom_textures, false));
             break;
         case kTextureDumping:
             Flip(s.dump_textures, step);
-            std::snprintf(text, sizeof(text), "%s", OnOff(s.dump_textures));
+            std::snprintf(text, sizeof(text), "%s", OnOff(s.dump_textures, false));
             break;
         case kDumpFormat:
             if (step) s.texture_dump_format = uint32_t(StepIndex(int(s.texture_dump_format), step, 2));
