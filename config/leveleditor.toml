@@ -6,3 +6,20 @@ includes = ["editor.toml"]
 out = "generated/leveleditor"
 partitions = 64
 library = "FCIPLevelEditor.dll"  # <exe>.dll, which the executable delay loads
+
+# functions the level editor calls by name
+[symbols]
+# CrySystem: packs and XML files
+PackManager_Get = 0x8234E960
+PackManager_Open = 0x8234F318
+Xml_LoadFile = 0x82367828
+# the C++ library's strings
+String_Assign = 0x820C33F0
+String_Destroy = 0x8225D6E8
+WString_Assign = 0x820C76E0
+# the Add Object tool's catalogue
+Catalogue_EntryDestroy = 0x820F2E90
+Catalogue_PushBack = 0x820F7F50
+
+[data]
+Catalogue_Lists = 0x8296C760
