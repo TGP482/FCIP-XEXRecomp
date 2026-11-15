@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+struct PPCContext;
+
 namespace fcip::editor {
 
 enum Tool : int { kTerrain, kAddObject, kEditObject, kEnvironment, kToolCount };
@@ -39,6 +41,7 @@ float MaxSetHeight();  // the solo editor's terrain reaches the heightmap's limi
 int BudgetScale();     // the solo editor's object budgets follow the level's sectors (object_budgets.cpp)
 std::vector<uint8_t> PaintLayerBytes();  // editor thread, as textureinfo.ige holds them (terrain_limits.cpp)
 std::string MapName(); // empty before it is first saved
+float TerrainHeightAt(PPCContext& ctx, float x, float y);  // editor thread, metres
 
 // the tools as the editor has them now
 struct State {

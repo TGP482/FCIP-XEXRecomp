@@ -12,10 +12,18 @@ struct PPCContext;
 
 namespace fcip::editor {
 
-enum ViewCategory : int { kViewPlayerStart, kViewTriggers, kViewSequences, kViewLogic, kViewAi, kViewCategoryCount };
+enum ViewCategory : int {
+    kViewPlayerStart,
+    kViewTriggers,
+    kViewSequences,
+    kViewCulling,
+    kViewLogic,
+    kViewAi,
+    kViewCategoryCount
+};
 const char* ViewCategoryName(int category);
 // window thread, the View menu's toggles
-inline bool g_view_shown[kViewCategoryCount] = {true, true, true, true, true};
+inline bool g_view_shown[kViewCategoryCount] = {true, true, true, true, true, true};
 
 // an entity as the last editing frame left it
 struct ViewEntity {
@@ -36,6 +44,8 @@ std::string PropertyOf(const ViewEntity& e, const char* key);
 void UpdateMarkers(PPCContext& ctx);  // each frame while editing
 void ForgetProperties(uint32_t entity_id);  // its Properties changed
 void ForgetMarkers();  // a level starts
+void UpdateSectorGrid(PPCContext& ctx);  // culling_markers.cpp
+void ForgetSectorGrid();
 
 void DrawMarkers();  // window thread, in the ImGui frame
 
@@ -45,6 +55,7 @@ void DrawTriggers(const View& v);     // trigger_markers.cpp
 bool IsTrigger(const std::string& cls);  // any thread
 void DrawSequences(const View& v);    // movie_markers.cpp
 bool SequenceStart(const std::string& name, float out[3]);  // any thread, false for none such
+void DrawCulling(const View& v);      // culling_markers.cpp
 void DrawArea(const View& v, const AiObject& area, ImU32 colour);  // a Shape, AreaBox or AreaSphere (area_markers.cpp)
 
 }  // namespace fcip::editor

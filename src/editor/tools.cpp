@@ -638,6 +638,12 @@ State Read() {
     return s;
 }
 
+float TerrainHeightAt(PPCContext& ctx, float x, float y) {
+    uint32_t engine = R32(SYM_C3DEngine_pointer);
+    uint32_t terrain = engine ? R32(engine + kEngineTerrain) : 0;
+    return terrain ? float(TerrainHeight(ctx, terrain, x, y)) : 0.0f;
+}
+
 const char* ToolName(int tool) { return kToolNames[std::clamp(tool, 0, kToolCount - 1)]; }
 const char* BrushName(int brush) { return kBrushes[std::clamp(brush, 0, kBrushCount - 1)].name; }
 

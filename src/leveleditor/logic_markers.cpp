@@ -26,7 +26,8 @@ using namespace fcip::editor;
 
 namespace {
 
-constexpr const char* kCategoryNames[] = {"Player Start", "Triggers", "Sequences", "Logic Objects", "AI Objects"};
+constexpr const char* kCategoryNames[] = {"Player Start", "Triggers",      "Sequences",
+                                          "Culling",      "Logic Objects", "AI Objects"};
 static_assert(std::size(kCategoryNames) == kViewCategoryCount);
 
 // the catalogue's logic classes the later categories do not draw yet
@@ -82,7 +83,7 @@ bool IsOneOf(const std::string& cls, const char* const (&classes)[N]) {
 }
 
 // the classes whose Properties a category shows
-bool WantsProperties(const std::string& cls) { return IsTrigger(cls); }
+bool WantsProperties(const std::string& cls) { return IsTrigger(cls) || cls == "ViewDist"; }
 
 // read once per entity, a few each frame
 void LatchProperties(PPCContext& ctx, uint32_t entity, ViewEntity& e, int& reads) {
@@ -112,8 +113,8 @@ void DrawAiMarkers(const View& v) {
     std::shared_ptr<const AiObjects> ai = ReadAiObjects();
     uint32_t picked = SelectedAiObject();
     for (const AiObject& o : ai->objects) {
-        // the player start's, and the trigger areas'
-        if (o.type == "Respawn" || !o.entities.empty()) continue;
+        // the player start's, the entity areas' and the culling's
+        if (o.type == "Respawn" || o.type == "VisArea" || o.type == "Portal" || !o.entities.empty()) continue;
         ImU32 colour = ImGui::GetColorU32(o.node == picked ? fcip::kText : fcip::kDim);
         DrawPoints(v, o, colour);
         ImVec2 at;
@@ -152,6 +153,7 @@ void UpdateMarkers(PPCContext& ctx) {
         if (WantsProperties(e.cls)) LatchProperties(ctx, entity, e, reads);
         found->push_back(std::move(e));
     });
+    UpdateSectorGrid(ctx);
     std::lock_guard lock(g_lock);
     g_entities = std::move(found);
 }
@@ -160,6 +162,7 @@ void ForgetProperties(uint32_t entity_id) { g_properties.erase(entity_id); }
 
 void ForgetMarkers() {
     g_properties.clear();
+    ForgetSectorGrid();
     std::lock_guard lock(g_lock);
     g_entities = std::make_shared<std::vector<ViewEntity>>();
 }
@@ -171,6 +174,7 @@ void DrawMarkers() {
     if (g_view_shown[kViewLogic]) DrawLogicMarkers(view);
     if (g_view_shown[kViewTriggers]) DrawTriggers(view);
     if (g_view_shown[kViewSequences]) DrawSequences(view);
+    if (g_view_shown[kViewCulling]) DrawCulling(view);
     if (g_view_shown[kViewPlayerStart]) DrawPlayerStart(view);
     EndView(view);
 }
