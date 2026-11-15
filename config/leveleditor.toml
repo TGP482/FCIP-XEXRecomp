@@ -79,6 +79,11 @@ Script_ExecuteBuffer = 0x82322788     # (script system, text, size)
 TerrainPaint_Load = 0x820D4A90        # textureinfo.ige
 # the terrain tool's paint texture caption (terrain_limits.cpp)
 Page_SetText = 0x820C0EB0  # (page, widget name, std::wstring)
+# play test leaves the level as it found it (simulation.cpp)
+Entity_SetAngles = 0x82127578          # (entity, Vec3, 1, 1, 0) as the script's SetAngles
+Entity_Reset = 0x82128F20              # (entity) its script's OnReset
+Entity_ScriptEvent = 0x8212F2F8        # (entity, event, 0, 0)
+Movie_StopAllSequences = 0x823A3C80    # (movie system)
 
 [data]
 Catalogue_Lists = 0x8296C760
@@ -98,6 +103,7 @@ Thumbnail_Camera = 0x8296B280
 Thumbnail_Stale = 0x8296B267
 Terrain_SectorsPerSide = 0x8289F428
 Editor_Manager_pointer = 0x8296B2CC
+Movie_pointer = 0x828C7204
 
 # instruction hooks, defined in src/leveleditor/terrain_limits.cpp; each runs after its instruction
 

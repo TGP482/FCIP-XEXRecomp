@@ -344,6 +344,7 @@ PPC_FUNC(sub_821124B0) {
     uint32_t manager = uint32_t(ctx.r[3]);
     ForgetLinks();
     ForgetArchetypes();
+    ForgetPlayTest();
     ForgetMission(ctx);
     Request start = std::exchange(g_starting, Request{});
     g_open = start.campaign;
