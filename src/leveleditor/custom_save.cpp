@@ -33,7 +33,8 @@ namespace fs = std::filesystem;
 
 // the campaign level's files the editor's save does not write, copied from its pack; Graph%d.bai until one is missing
 constexpr const char* kCopiedFiles[] = {"Brush.lst", "vegbank.dat", "moviedata.xml", "GraphManager.bai"};
-constexpr const char* kDependencies = "_DepLoad.xml";
+// the dependency lists, named after the level
+constexpr const char* kDependencyLists[] = {"_DepLoad.xml", "_DepLoadParticles.xml"};
 constexpr uint32_t kMaxGraphs = 256;
 constexpr const char* kLevelData = "LevelData.xml";
 constexpr const char* kLevelInfo = "LevelInfo";
@@ -160,7 +161,7 @@ bool CopyFile(PPCContext& ctx, const std::string& level, const std::string& file
 void CopyCampaignFiles(PPCContext& ctx) {
     std::string level = CampaignLevel();
     for (const char* file : kCopiedFiles) CopyFile(ctx, level, file, file);
-    CopyFile(ctx, level, level + kDependencies, MapName() + kDependencies);
+    for (const char* list : kDependencyLists) CopyFile(ctx, level, level + list, MapName() + list);
     uint32_t graph = 0;
     while (graph < kMaxGraphs) {
         std::string file = "Graph" + std::to_string(graph) + ".bai";

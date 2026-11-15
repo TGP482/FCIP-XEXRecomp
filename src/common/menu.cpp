@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <iterator>
@@ -23,6 +24,7 @@
 
 #include "app/app.h"
 #include "audio/xaudio2.h"
+#include "common/custom_levels.h"
 #include "common/gyro.h"
 #include "common/input.h"
 #include "common/keys.h"
@@ -200,6 +202,27 @@ constexpr Level kLevels[] = {
     {"30_mountain", "30 MOUNTAIN"},
 };
 
+// the story levels, then the custom levels found in levels\ at start
+struct LevelEntry {
+    std::string folder;
+    std::string label;
+};
+
+const std::vector<LevelEntry>& LoadableLevels() {
+    static const std::vector<LevelEntry> levels = [] {
+        std::vector<LevelEntry> out;
+        for (const Level& l : kLevels) out.push_back({l.folder, l.label});
+        auto upper = [](unsigned char ch) { return char(std::toupper(ch)); };
+        for (const CustomLevel& c : FindCustomLevels()) {
+            std::string label = c.name;
+            std::transform(label.begin(), label.end(), label.begin(), upper);
+            out.push_back({c.name, label});
+        }
+        return out;
+    }();
+    return levels;
+}
+
 const std::vector<Row>& DebugRows() {
     static const std::vector<Row> list = [] {
         std::vector<Row> out = {
@@ -210,7 +233,11 @@ const std::vector<Row>& DebugRows() {
             {Kind::Bind, keys::kNoclip, keys::Label(keys::kNoclip), "Accept rebinds the key, Delete unbinds it"},
             {Kind::Heading, -1, "LOAD LEVEL", nullptr},
         };
-        for (int i = 0; i < int(std::size(kLevels)); i++) out.push_back({Kind::Level, i, kLevels[i].label, nullptr});
+        const std::vector<LevelEntry>& levels = LoadableLevels();
+        for (int i = 0; i < int(levels.size()); i++) {
+            if (i == int(std::size(kLevels))) out.push_back({Kind::Heading, -1, "CUSTOM LEVELS", nullptr});
+            out.push_back({Kind::Level, i, levels[size_t(i)].label.c_str(), nullptr});
+        }
         out.push_back({Kind::Defaults, -1, "RESTORE DEFAULTS", "Turns invincibility and noclip off"});
         return out;
     }();
@@ -811,7 +838,7 @@ void LevelRow(const Row& r) {
     ImGui::TextUnformatted(r.label);
     ImGui::SetCursorPos(ImVec2(row_x, row_y));
     ImGui::Dummy(ImVec2(row_w, row_h));
-    if (load && g_load_level(kLevels[r.id].folder)) ToggleMenu();
+    if (load && g_load_level(LoadableLevels()[size_t(r.id)].folder.c_str())) ToggleMenu();
 }
 
 // a key or mouse button binds, Escape cancels

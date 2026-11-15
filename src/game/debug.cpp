@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 
+#include "common/custom_levels.h"
 #include "common/input.h"
 #include "common/menu.h"
 #include "common/settings.h"
@@ -52,11 +53,21 @@ constexpr std::string_view kStartLevel = "StartLevel level=";
 bool g_in_level = false;
 bool g_instant = false;  // the level change skips the loading screen's two second minimum
 
-// in a level the game's level change, which relaunches the title; from the menus the level starts at once
+// a custom level's campaign level, empty for a campaign level
+std::string CampaignOf(const std::string& level) {
+    for (const fcip::CustomLevel& c : fcip::FindCustomLevels()) {
+        if (c.name == level) return c.campaign;
+    }
+    return {};
+}
+
+// in a level the game's level change, which relaunches the title; from the menus the level starts at once; a custom
+// level's mission is Mission0, as the level editor saves it
 std::string LevelCommand(const char* folder) {
     g_instant = g_in_level;
     if (g_in_level) return std::string("FadeOutRestartStartLevel level=") + folder;
-    return std::string(kStartLevel) + folder + " mission=" + folder + " checkpoint=";
+    std::string mission = CampaignOf(folder).empty() ? std::string(folder) : std::string("Mission0");
+    return std::string(kStartLevel) + folder + " mission=" + mission + " checkpoint=";
 }
 
 void IssueLevel(PPCContext& ctx, uint32_t game) {
@@ -82,7 +93,10 @@ void NoteLevelStart(PPCContext& ctx, const std::string& command) {
     g_in_level = true;
     uint32_t manager = R32(SYM_SaveManager_pointer);
     if (!manager || R32(manager + kStorySlot)) return;
-    uint32_t campaign = command[kStartLevel.size()] >= '2' ? kEvolution : kInstincts;
+    std::string level = command.substr(kStartLevel.size(), command.find(' ', kStartLevel.size()) - kStartLevel.size());
+    std::string campaign_level = CampaignOf(level);
+    if (campaign_level.empty()) campaign_level = level;
+    uint32_t campaign = campaign_level[0] >= '2' ? kEvolution : kInstincts;
     CallGuest(ctx, SYM_SaveManager_NewStory, {manager, campaign, kNoSaving});
 }
 
