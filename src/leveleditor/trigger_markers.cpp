@@ -4,8 +4,8 @@
 // mission areas (Shape, AreaBox, AreaSphere) naming it in their Entities, which tell it of the player entering. Delay,
 // Multiple and Blinking triggers have no volume, they fire from their inputs. A line goes from each trigger to what
 // its events reach: another entity, or for a mission call (EventTarget 0) the anchor (_GenericJob_EnableAnchor,
-// _GenericJob_DisableAnchor) or entity (_Player_BindEyes) it names; the other calls and a PlaySequence are listed
-// under its name when the camera is near.
+// _GenericJob_DisableAnchor), entity (_Player_BindEyes) or sequence start (_Mission_PlaySequence, StopSequence) it
+// names, as does a PlaySequence property; the other calls are listed under its name when the camera is near.
 #include <algorithm>
 #include <iterator>
 #include <memory>
@@ -38,19 +38,24 @@ struct Lookup {
     std::unordered_multimap<std::string, const AiObject*> areas;  // by the entity they tell
 };
 
-// the name of what a mission call reaches, empty when it names none
-std::string CallTarget(const Link& l) {
-    if (l.event == "_GenericJob_EnableAnchor" || l.event == "_GenericJob_DisableAnchor") return l.param;
-    if (l.event == "_Player_BindEyes") return l.param.substr(0, l.param.find(','));  // "entity,bone"
-    return {};
+bool PlaceOf(const Lookup& look, const std::string& name, float out[3]) {
+    const float* at = nullptr;
+    auto entity = look.by_name.find(name);
+    auto object = look.objects.find(name);
+    if (entity != look.by_name.end()) at = entity->second->pos;
+    else if (object != look.objects.end() && object->second->placed) at = object->second->pos;
+    if (at) std::copy(at, at + 3, out);
+    return at != nullptr;
 }
 
-const float* PlaceOf(const Lookup& look, const std::string& name) {
-    auto entity = look.by_name.find(name);
-    if (entity != look.by_name.end()) return entity->second->pos;
-    auto object = look.objects.find(name);
-    if (object != look.objects.end() && object->second->placed) return object->second->pos;
-    return nullptr;
+// where a mission call's target is, false when it names nothing placed
+bool CallPlace(const Lookup& look, const Link& l, float out[3]) {
+    if (l.event == "_Mission_PlaySequence" || l.event == "_Mission_StopSequence") return SequenceStart(l.param, out);
+    if (l.event == "_GenericJob_EnableAnchor" || l.event == "_GenericJob_DisableAnchor") {
+        return PlaceOf(look, l.param, out);
+    }
+    if (l.event == "_Player_BindEyes") return PlaceOf(look, l.param.substr(0, l.param.find(',')), out);  // entity,bone
+    return false;
 }
 
 void DrawLink(const View& v, const float from[3], const float to[3], const std::string& text) {
@@ -70,8 +75,8 @@ std::string DrawLinks(const View& v, const ViewEntity& e, const Lookup& look) {
             if (target != look.by_id.end()) DrawLink(v, e.pos, target->second->pos, text);
             continue;
         }
-        const float* at = PlaceOf(look, CallTarget(l));
-        if (at) DrawLink(v, e.pos, at, text + " " + l.param);
+        float at[3];
+        if (CallPlace(look, l, at)) DrawLink(v, e.pos, at, text + " " + l.param);
         else calls += "\n" + text + (l.param.empty() ? "" : " " + l.param);
     }
     return calls;
@@ -102,6 +107,9 @@ void DrawTrigger(const View& v, const ViewEntity& e, const Lookup& look) {
     else if (e.has_box) AxisBox(v, e.box_min, e.box_max, colour);
     Square(v, e.pos, colour);
     std::string calls = DrawLinks(v, e, look);
+    std::string sequence = PropertyOf(e, "PlaySequence");
+    float start[3];
+    if (!sequence.empty() && SequenceStart(sequence, start)) DrawLink(v, e.pos, start, "PlaySequence " + sequence);
     if (NearCamera(v, e.pos)) Label(v, e.pos, (Details(e) + calls).c_str(), colour);
 }
 

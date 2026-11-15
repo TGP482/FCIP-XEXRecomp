@@ -26,7 +26,7 @@ using namespace fcip::editor;
 
 namespace {
 
-constexpr const char* kCategoryNames[] = {"Player Start", "Triggers", "Logic Objects", "AI Objects"};
+constexpr const char* kCategoryNames[] = {"Player Start", "Triggers", "Sequences", "Logic Objects", "AI Objects"};
 static_assert(std::size(kCategoryNames) == kViewCategoryCount);
 
 // the catalogue's logic classes the later categories do not draw yet
@@ -170,6 +170,7 @@ void DrawMarkers() {
     if (g_view_shown[kViewAi]) DrawAiMarkers(view);
     if (g_view_shown[kViewLogic]) DrawLogicMarkers(view);
     if (g_view_shown[kViewTriggers]) DrawTriggers(view);
+    if (g_view_shown[kViewSequences]) DrawSequences(view);
     if (g_view_shown[kViewPlayerStart]) DrawPlayerStart(view);
     EndView(view);
 }

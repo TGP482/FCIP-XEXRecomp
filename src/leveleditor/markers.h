@@ -12,9 +12,10 @@ struct PPCContext;
 
 namespace fcip::editor {
 
-enum ViewCategory : int { kViewPlayerStart, kViewTriggers, kViewLogic, kViewAi, kViewCategoryCount };
+enum ViewCategory : int { kViewPlayerStart, kViewTriggers, kViewSequences, kViewLogic, kViewAi, kViewCategoryCount };
 const char* ViewCategoryName(int category);
-inline bool g_view_shown[kViewCategoryCount] = {true, true, true, true};  // window thread, the View menu's toggles
+// window thread, the View menu's toggles
+inline bool g_view_shown[kViewCategoryCount] = {true, true, true, true, true};
 
 // an entity as the last editing frame left it
 struct ViewEntity {
@@ -42,6 +43,8 @@ void DrawMarkers();  // window thread, in the ImGui frame
 void DrawPlayerStart(const View& v);  // player_markers.cpp
 void DrawTriggers(const View& v);     // trigger_markers.cpp
 bool IsTrigger(const std::string& cls);  // any thread
+void DrawSequences(const View& v);    // movie_markers.cpp
+bool SequenceStart(const std::string& name, float out[3]);  // any thread, false for none such
 void DrawArea(const View& v, const AiObject& area, ImU32 colour);  // a Shape, AreaBox or AreaSphere (area_markers.cpp)
 
 }  // namespace fcip::editor
