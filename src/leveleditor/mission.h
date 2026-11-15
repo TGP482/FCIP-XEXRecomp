@@ -65,12 +65,14 @@ std::shared_ptr<const AiObjects> ReadLoadedAiObjects();  // as the level loaded 
 std::vector<std::string> AiObjectNames(const std::string& type);  // sorted
 std::string LayerOf(uint32_t entity_id);  // empty for an entity the mission does not place
 
-// window thread: edits the editor thread applies at its next update
+// window thread: edits the editor thread applies at its next update, each one step of undo
 void SetAiAttribute(uint32_t object, std::vector<int> path, std::string key, std::string value);
 void AddAiChild(uint32_t object, std::vector<int> path, std::string tag);
 void RemoveAiChild(uint32_t object, std::vector<int> path);
 void MoveAiChild(uint32_t object, std::vector<int> path, int delta);  // among its siblings
 void AddAiObject(std::string type, std::array<float, 3> pos);  // any of kLevelObjects (level_objects.h)
 void RemoveAiObject(uint32_t object);
+// moved, its Angles turned by degrees, its points with it (turned about its Pos by the z turn)
+void PlaceAiObject(uint32_t object, std::array<float, 3> move, std::array<float, 3> turn);
 
 }  // namespace fcip::editor

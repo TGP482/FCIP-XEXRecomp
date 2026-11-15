@@ -80,6 +80,19 @@ void SetTexture(int texture);
 void SetSquareCursor(bool square);
 void Undo(int steps);
 std::vector<std::string> History();  // the undo stack, oldest first
+void NoteMapChanged();  // editor thread, an edit the editor's own tools did not make
+
+// a second undo stack beside the editor's (the solo editor's), stamped so both undo newest first
+struct UndoStep {
+    uint64_t stamp = 0;
+    std::string label;
+};
+uint64_t UndoStamp();  // any thread, newer than every stamp before
+struct ExtraUndo {
+    std::vector<UndoStep> (*steps)() = nullptr;  // any thread, oldest first
+    void (*undo)(PPCContext& ctx) = nullptr;     // editor thread, its newest
+};
+inline ExtraUndo g_extra_undo;
 void SetEnvironment(int row, float value);
 void SetOption(int option, bool on);
 void DeleteSelected();  // the Edit Object tool's selection

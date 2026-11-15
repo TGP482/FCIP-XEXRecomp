@@ -205,7 +205,8 @@ std::atomic<int64_t> g_pulse_until{0};
 
 std::mutex g_lock;
 std::vector<Command> g_commands;
-std::deque<std::string> g_history;  // labels beside the editor's undo stack
+std::deque<fcip::editor::UndoStep> g_history;  // labels beside the editor's undo stack
+std::atomic<uint64_t> g_stamp{0};
 fcip::editor::ViewInput g_view;      // the latest, deltas summed until the camera takes them
 std::vector<fcip::editor::Category> g_catalogue;
 
@@ -268,7 +269,24 @@ int BrushFor(int mode) {
 
 // Commands, editor thread
 
+std::vector<fcip::editor::UndoStep> ExtraSteps() {
+    auto& extra = fcip::editor::g_extra_undo;
+    return extra.steps ? extra.steps() : std::vector<fcip::editor::UndoStep>();
+}
+
+// the editor's newest step's stamp, 0 for one made before its label was kept
+uint64_t NativeStamp() {
+    std::lock_guard lock(g_lock);
+    if (UndoCount() == 0 || g_history.size() < UndoCount()) return 0;
+    return g_history.back().stamp;
+}
+
 void RunUndo(PPCContext& ctx) {
+    std::vector<fcip::editor::UndoStep> extra = ExtraSteps();
+    if (!extra.empty() && (UndoCount() == 0 || extra.back().stamp > NativeStamp())) {
+        fcip::editor::g_extra_undo.undo(ctx);
+        return;
+    }
     uint32_t command = uint32_t(CallGuest(ctx, kUndoPop, {}));
     if (!command) return;
     CallGuest(ctx, Method(command, kUndoRun), {command});
@@ -626,7 +644,7 @@ State Read() {
     s.cursor[0] = c.x;
     s.cursor[1] = c.y;
     s.cursor[2] = c.z;
-    s.undo_count = UndoCount();
+    s.undo_count = UndoCount() + ExtraSteps().size();
     s.applying = g_apply;
     if (uint32_t settings = R32(kManager)) {
         s.has_environment = true;
@@ -724,12 +742,24 @@ void Undo(int steps) {
 
 std::vector<std::string> History() {
     size_t count = UndoCount();
-    std::lock_guard lock(g_lock);
-    while (g_history.size() > count) g_history.pop_front();
-    std::vector<std::string> out(count - g_history.size(), "Edit");
-    out.insert(out.end(), g_history.begin(), g_history.end());
+    std::vector<UndoStep> steps;
+    {
+        std::lock_guard lock(g_lock);
+        while (g_history.size() > count) g_history.pop_front();
+        steps.assign(count - g_history.size(), UndoStep{0, "Edit"});
+        steps.insert(steps.end(), g_history.begin(), g_history.end());
+    }
+    std::vector<UndoStep> extra = ExtraSteps();
+    steps.insert(steps.end(), extra.begin(), extra.end());
+    std::stable_sort(steps.begin(), steps.end(), [](const UndoStep& a, const UndoStep& b) { return a.stamp < b.stamp; });
+    std::vector<std::string> out;
+    for (const UndoStep& step : steps) out.push_back(step.label);
     return out;
 }
+
+void NoteMapChanged() { W8(kMapChanged, 1); }
+
+uint64_t UndoStamp() { return ++g_stamp; }
 
 void SetViewInput(const ViewInput& in) {
     g_apply = in.apply && ShellUp();
@@ -845,7 +875,7 @@ PPC_FUNC(sub_8210DCD8) {
     {
         std::lock_guard lock(g_lock);
         if (g_history.size() >= kUndoKept) g_history.pop_front();
-        g_history.push_back(label);
+        g_history.push_back({fcip::editor::UndoStamp(), label});
     }
     __imp__sub_8210DCD8(ctx, base);
 }

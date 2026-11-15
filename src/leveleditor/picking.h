@@ -16,7 +16,8 @@ bool PickMarker(float x, float y);  // display pixels; true when a marker took t
 DockTab TakeDockTab();              // the tab the last pick shows, once
 void DrawPicked(const View& v);     // the picked mission object
 
-// editor thread, the Edit Object tool's update (r3 the tool)
-void ApplyPick(PPCContext& ctx, uint32_t tool);
+// editor thread
+void ApplyPick(PPCContext& ctx, uint32_t tool);  // the Edit Object tool's update (r3 the tool)
+uint32_t EditorObjectOfEntity(PPCContext& ctx, uint32_t entity_id);  // 0 for none
 
 }  // namespace fcip::editor

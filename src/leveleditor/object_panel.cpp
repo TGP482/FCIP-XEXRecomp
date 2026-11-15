@@ -16,6 +16,7 @@
 #include "common/panel_colors.h"
 #include "kernel/memory.h"
 #include "leveleditor/event_links.h"
+#include "leveleditor/gizmo.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mission.h"
@@ -431,6 +432,11 @@ std::vector<XmlAttribute> fcip::editor::ReadProperties(PPCContext& ctx, uint32_t
     return out;
 }
 
+uint32_t fcip::editor::SelectedEntityId() {
+    std::lock_guard lock(g_lock);
+    return g_snapshot.object ? g_snapshot.entity_id : 0;
+}
+
 void fcip::editor::DrawObjectPanel() {
     TakeSnapshot();
     ImGui::TextUnformatted("OBJECT PROPERTIES");
@@ -449,11 +455,12 @@ void fcip::editor::DrawObjectPanel() {
 PPC_EXTERN_FUNC(__imp__sub_820DE570);
 PPC_EXTERN_FUNC(__imp__sub_820DD258);
 
-// the Edit Object tool's update, each frame while it runs; r3 the tool. A marker picked in the view first
+// the Edit Object tool's update, each frame while it runs; r3 the tool. A marker picked and a gizmo drag first
 PPC_FUNC(sub_820DE570) {
     if (!fcip::editor::g_solo) return __imp__sub_820DE570(ctx, base);
     uint32_t tool = uint32_t(ctx.r[3]);
     ApplyPick(ctx, tool);
+    ApplyGizmo(ctx);
     __imp__sub_820DE570(ctx, base);
     Update(ctx, SelectedObject(tool));
 }

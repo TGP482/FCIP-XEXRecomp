@@ -142,12 +142,16 @@ void DrawPicked(const View& v) {
     }
 }
 
+uint32_t EditorObjectOfEntity(PPCContext& ctx, uint32_t entity_id) {
+    if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
+    uint32_t entity = g_scratch ? EntityById(entity_id) : 0;
+    return entity ? EditorObjectOf(ctx, entity) : 0;
+}
+
 void ApplyPick(PPCContext& ctx, uint32_t tool) {
     uint32_t id = g_pick_entity.exchange(0);
     if (!id || R32(tool + kToolDragging)) return;
-    if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
-    uint32_t entity = g_scratch ? EntityById(id) : 0;
-    uint32_t object = entity ? EditorObjectOf(ctx, entity) : 0;
+    uint32_t object = EditorObjectOfEntity(ctx, id);
     if (!object) return;
     CallGuest(ctx, kClearSelection, {tool});
     CallGuest(ctx, Method(object, kObjectPicked), {object});

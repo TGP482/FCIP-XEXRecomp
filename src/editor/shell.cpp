@@ -30,6 +30,7 @@
 #include "editor/tools.h"
 #include "leveleditor/ai_panel.h"
 #include "leveleditor/campaign_levels.h"
+#include "leveleditor/gizmo.h"
 #include "leveleditor/level_objects.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mode.h"
@@ -616,10 +617,9 @@ void DrawStatus(float top, float width, double fps, const State& s) {
 }
 
 // the mouse over the view: right drag looks, the wheel zooms, the left button uses the tool where it points
-// the solo editor's Edit Object tool picks a marker under the click first
-bool PickedMarker(const State& s, ImVec2 m) {
-    return editor::g_solo && s.tool == kEditObject && PickMarker(m.x, m.y);
-}
+// the solo editor's Edit Object tool: its gizmo has the mouse, else a click picks a marker under it first
+bool SoloEditing(const State& s) { return editor::g_solo && s.tool == kEditObject; }
+bool PickedMarker(const State& s, ImVec2 m) { return SoloEditing(s) && PickMarker(m.x, m.y); }
 
 void UpdateViewInput(const Box& view, const State& s) {
     ImGuiIO& io = ImGui::GetIO();
@@ -627,7 +627,10 @@ void UpdateViewInput(const Box& view, const State& s) {
     bool inside = m.x >= view.x && m.y >= view.y && m.x < view.x + view.w && m.y < view.y + view.h;
     bool over = inside && !io.WantCaptureMouse;
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) g_looking = over;
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) g_applying = over && !PickedMarker(s, m);
+    bool clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    bool gizmo = SoloEditing(s) && GizmoMouse(m, clicked && over, down);
+    if (clicked) g_applying = over && !gizmo && !PickedMarker(s, m);
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_looking = false;
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_applying = false;
     if (g_looking) ImGui::SetMouseCursor(ImGuiMouseCursor_None);

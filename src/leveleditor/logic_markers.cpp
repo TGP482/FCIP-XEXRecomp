@@ -13,6 +13,7 @@
 
 #include "kernel/memory.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/gizmo.h"
 #include "leveleditor/object_panel.h"
 #include "leveleditor/picking.h"
 #include "xdk/hle.h"
@@ -185,6 +186,7 @@ void DrawMarkers() {
     if (g_view_shown[kViewGameplay]) DrawGameplay(view);
     if (g_view_shown[kViewPlayerStart]) DrawPlayerStart(view);
     DrawPicked(view);
+    DrawGizmo(view);
     EndView(view);
 }
 

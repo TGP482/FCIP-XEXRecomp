@@ -5,6 +5,7 @@
 #include "leveleditor/mission.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -16,8 +17,10 @@
 #include <vector>
 
 #include "kernel/memory.h"
+#include "editor/tools.h"
 #include "leveleditor/archetypes.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/undo.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -305,14 +308,14 @@ void AddSquare(PPCContext& ctx, uint32_t node, const std::array<float, 3>& pos) 
     }
 }
 
-void ApplyAddObject(PPCContext& ctx, const std::string& type, const std::array<float, 3>& pos) {
+uint32_t ApplyAddObject(PPCContext& ctx, const std::string& type, const std::array<float, 3>& pos) {
     const NewObject* kind = nullptr;
     for (const NewObject& k : kNewObjects) {
         if (type == k.type) kind = &k;
     }
     uint32_t objects = ObjectsNode();
     uint32_t node = kind && objects ? NewChild(ctx, objects, kObject) : 0;
-    if (!node) return;
+    if (!node) return 0;
     SetAttr(ctx, node, "Type", type);
     SetAttr(ctx, node, "Name", UniqueName(type));
     SetAttr(ctx, node, "Pos", FormatVec3(pos));
@@ -320,6 +323,7 @@ void ApplyAddObject(PPCContext& ctx, const std::string& type, const std::array<f
     SetDefaults(ctx, node, kind->then);
     if (kind->height) SetAttr(ctx, node, "Height", kind->height);
     if (kind->points) AddSquare(ctx, node, pos);
+    return node;
 }
 
 // swaps the child at path with its sibling delta away
@@ -344,11 +348,129 @@ void ApplyRemove(PPCContext& ctx, uint32_t object, std::vector<int> path) {
     if (child && parent) RemoveChild(ctx, parent, child);
 }
 
-// the edit runs only while its object is still one of the mission's
-void QueueOn(uint32_t object, std::function<void(PPCContext&)> edit) {
-    Queue([object, edit = std::move(edit)](PPCContext& ctx) {
-        if (IsAiObject(object)) edit(ctx);
+// Undo
+
+// a node's children and attributes traded with another's, so the node keeps its identity
+void SwapContent(uint32_t a, uint32_t b) {
+    constexpr uint32_t kNodeParent = 0x44;
+    constexpr uint32_t kVectorWords[] = {0x4C, 0x50, 0x54, 0x5C, 0x60, 0x64};  // children, attributes: first last end
+    for (uint32_t at : kVectorWords) {
+        uint32_t word = R32(a + at);
+        W32(a + at, R32(b + at));
+        W32(b + at, word);
+    }
+    for (uint32_t node : {a, b}) {
+        for (uint32_t i = 0; i < ChildCount(node); i++) W32(ChildAt(node, i) + kNodeParent, node);
+    }
+}
+
+uint32_t Clone(PPCContext& ctx, uint32_t node) {
+    W32(g_scratch + kScratchRef, 0);
+    CallGuest(ctx, Method(node, kNodeClone), {g_scratch + kScratchRef, node});
+    return R32(g_scratch + kScratchRef);
+}
+
+std::string Label(const std::string& what, uint32_t object) {
+    return what + " " + Find(Attributes(object), "Name");
+}
+
+// the edit runs only while its object is still one of the mission's; undo puts its content back
+void QueueOn(uint32_t object, std::string what, std::function<void(PPCContext&)> edit) {
+    Queue([object, what = std::move(what), edit = std::move(edit)](PPCContext& ctx) {
+        if (!IsAiObject(object)) return;
+        uint32_t before = Clone(ctx, object);
+        edit(ctx);
+        NoteMapChanged();
+        if (!before) return;
+        auto undo = [object, before](PPCContext& ctx) {
+            uint32_t kept = before;
+            SwapContent(object, kept);
+            Release(ctx, kept);
+            g_stale = true;
+        };
+        auto forget = [before](PPCContext& ctx) {
+            uint32_t kept = before;
+            Release(ctx, kept);
+        };
+        PushUndo(ctx, Label(what, object), undo, forget);
     });
+}
+
+// a node put back where it was among parent's children
+void Reinsert(PPCContext& ctx, uint32_t parent, uint32_t node, uint32_t index) {
+    W32(g_scratch + kScratchRef, node);
+    CallGuest(ctx, Method(parent, kNodeAddChild), {parent, g_scratch + kScratchRef});
+    uint32_t first = R32(parent + kNodeChildFirst);
+    for (uint32_t i = ChildCount(parent) - 1; i > index; i--) {
+        uint32_t slot = first + i * 4;
+        W32(slot, R32(slot - 4));
+        W32(slot - 4, node);
+    }
+}
+
+uint32_t IndexOf(uint32_t parent, uint32_t child) {
+    for (uint32_t i = 0; i < ChildCount(parent); i++) {
+        if (ChildAt(parent, i) == child) return i;
+    }
+    return 0;
+}
+
+void ApplyRemoveObject(PPCContext& ctx, uint32_t object) {
+    uint32_t objects = ObjectsNode();
+    uint32_t index = IndexOf(objects, object);
+    std::string label = Label("Delete", object);
+    CallGuest(ctx, Method(object, kNodeAddRef), {object});
+    RemoveChild(ctx, objects, object);
+    NoteMapChanged();
+    auto undo = [object, index](PPCContext& ctx) {
+        if (uint32_t parent = ObjectsNode()) Reinsert(ctx, parent, object, index);
+        g_stale = true;
+    };
+    auto forget = [object](PPCContext& ctx) {
+        uint32_t kept = object;
+        Release(ctx, kept);
+    };
+    PushUndo(ctx, label, undo, forget);
+}
+
+void AddObjectWithUndo(PPCContext& ctx, const std::string& type, const std::array<float, 3>& pos) {
+    uint32_t node = ApplyAddObject(ctx, type, pos);
+    if (!node) return;
+    NoteMapChanged();
+    auto undo = [node](PPCContext& ctx) {
+        if (IsAiObject(node)) RemoveChild(ctx, ObjectsNode(), node);
+        g_stale = true;
+    };
+    PushUndo(ctx, Label("Add", node), undo);
+}
+
+// Pos moved, Angles turned, points moved with Pos and turned about it by the z turn
+void ApplyPlacement(PPCContext& ctx, uint32_t object, const std::array<float, 3>& move,
+                    const std::array<float, 3>& turn) {
+    std::vector<XmlAttribute> attributes = Attributes(object);
+    std::array<float, 3> pos{};
+    if (!ParseVec3(Find(attributes, "Pos"), pos.data())) return;
+    std::array<float, 3> angles{};
+    bool has_angles = ParseVec3(Find(attributes, "Angles"), angles.data());
+    std::array<float, 3> moved = {pos[0] + move[0], pos[1] + move[1], pos[2] + move[2]};
+    SetAttr(ctx, object, "Pos", FormatVec3(moved));
+    if (has_angles || turn != std::array<float, 3>{}) {
+        for (int i = 0; i < 3; i++) angles[size_t(i)] += turn[size_t(i)];
+        SetAttr(ctx, object, "Angles", FormatVec3(angles));
+    }
+    float radians = turn[2] * 3.14159265f / 180.0f;
+    float c = std::cos(radians);
+    float s = std::sin(radians);
+    uint32_t points = ChildTagged(object, kPoints);
+    for (uint32_t i = 0; points && i < ChildCount(points); i++) {
+        uint32_t point = ChildAt(points, i);
+        std::array<float, 3> p{};
+        if (!ParseVec3(Find(Attributes(point), "Pos"), p.data())) continue;
+        float x = p[0] - pos[0];
+        float y = p[1] - pos[1];
+        std::array<float, 3> placed = {moved[0] + x * c - y * s, moved[1] + x * s + y * c, p[2] + move[2]};
+        SetAttr(ctx, point, "Pos", FormatVec3(placed));
+    }
 }
 
 }  // namespace
@@ -366,6 +488,7 @@ void KeepLevelData(PPCContext& ctx, uint32_t node) { Keep(ctx, g_level_data, nod
 uint32_t KeptLevelData() { return g_level_data; }
 
 void ForgetMission(PPCContext& ctx) {
+    ClearUndo(ctx);
     {
         std::lock_guard lock(g_lock);
         g_edits.clear();
@@ -437,31 +560,37 @@ std::vector<std::string> AiObjectNames(const std::string& type) {
 }
 
 void SetAiAttribute(uint32_t object, std::vector<int> path, std::string key, std::string value) {
-    QueueOn(object, [=](PPCContext& ctx) {
+    QueueOn(object, "Set " + key + " of", [=](PPCContext& ctx) {
         if (uint32_t node = FindNode(object, path)) SetAttr(ctx, node, key, value);
     });
 }
 
 void AddAiChild(uint32_t object, std::vector<int> path, std::string tag) {
-    QueueOn(object, [=](PPCContext& ctx) {
+    QueueOn(object, "Add " + tag + " to", [=](PPCContext& ctx) {
         if (uint32_t node = FindNode(object, path)) NewChild(ctx, node, tag);
     });
 }
 
 void RemoveAiChild(uint32_t object, std::vector<int> path) {
-    QueueOn(object, [=](PPCContext& ctx) { ApplyRemove(ctx, object, path); });
+    QueueOn(object, "Remove from", [=](PPCContext& ctx) { ApplyRemove(ctx, object, path); });
 }
 
 void MoveAiChild(uint32_t object, std::vector<int> path, int delta) {
-    QueueOn(object, [=](PPCContext&) { ApplyMove(object, path, delta); });
+    QueueOn(object, "Reorder", [=](PPCContext&) { ApplyMove(object, path, delta); });
 }
 
 void AddAiObject(std::string type, std::array<float, 3> pos) {
-    Queue([=](PPCContext& ctx) { ApplyAddObject(ctx, type, pos); });
+    Queue([=](PPCContext& ctx) { AddObjectWithUndo(ctx, type, pos); });
 }
 
 void RemoveAiObject(uint32_t object) {
-    QueueOn(object, [=](PPCContext& ctx) { RemoveChild(ctx, ObjectsNode(), object); });
+    Queue([=](PPCContext& ctx) {
+        if (IsAiObject(object)) ApplyRemoveObject(ctx, object);
+    });
+}
+
+void PlaceAiObject(uint32_t object, std::array<float, 3> move, std::array<float, 3> turn) {
+    QueueOn(object, "Move", [=](PPCContext& ctx) { ApplyPlacement(ctx, object, move, turn); });
 }
 
 }  // namespace fcip::editor
