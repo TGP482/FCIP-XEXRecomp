@@ -22,8 +22,8 @@ constexpr bool kEditor = std::string_view(IMAGE_XEX) == "ige.xex";
 constexpr const wchar_t* kTitle =
     kEditor ? L"Far Cry Instincts: Predator - XEX Recomp Editor" : L"Far Cry Instincts: Predator - XEX Recomp";
 
-// custom levels live in levels\ beside the exe, custom: to the game and the editor
-void Loaded() { kernel::MountHostFolder("custom:", (app::ExeDir() / "levels").string()); }
+// custom levels live in levels\ beside the exe, laid over the disc's Levels for the game and the editor
+void Loaded() { kernel::MountDiscOverlay("Levels", (app::ExeDir() / "levels").string()); }
 
 void Init() {
     fcip::EnsureDisplay();

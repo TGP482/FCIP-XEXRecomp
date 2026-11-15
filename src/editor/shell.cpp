@@ -95,16 +95,23 @@ bool g_applying = false;  // the left button went down on the view
 
 // Menus and toolbar
 
-// the campaign's levels, opened as the game loads them
+// the campaign's levels, opened as the game loads them, and the custom levels in levels\ beside the exe
 void DrawOpenLevel() {
-    if (!ImGui::BeginMenu("Open Campaign Level")) return;
-    for (int i = 0; i < int(std::size(kCampaignLevels)); i++) {
-        if (ImGui::MenuItem(kCampaignLevels[i])) OpenCampaignLevel(i);
+    if (ImGui::BeginMenu("Open Campaign Level")) {
+        for (int i = 0; i < int(std::size(kCampaignLevels)); i++) {
+            if (ImGui::MenuItem(kCampaignLevels[i])) OpenCampaignLevel(i);
+        }
+        ImGui::EndMenu();
+    }
+    std::vector<fcip::CustomLevel> custom = fcip::FindCustomLevels();
+    if (!ImGui::BeginMenu("Open Custom Level", !custom.empty())) return;
+    for (const fcip::CustomLevel& level : custom) {
+        if (ImGui::MenuItem(level.name.c_str(), level.campaign.c_str())) OpenCustomLevel(level);
     }
     ImGui::EndMenu();
 }
 
-// OPEN A CAMPAIGN LEVEL's list over the level manager; true while it takes the mouse
+// OPEN A LEVEL's list over the level manager; true while it takes the mouse
 bool DrawLevelList() {
     for (const auto& [col, color] : kPanelColors) ImGui::PushStyleColor(col, color);
     float em = ImGui::GetFontSize();
@@ -113,9 +120,14 @@ bool DrawLevelList() {
     ImGui::SetNextWindowSize(ImVec2(em * 20.0f, 0.0f), ImGuiCond_Appearing);
     bool open = true;
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse;
-    if (ImGui::Begin("Open a Campaign Level", &open, kFlags)) {
+    if (ImGui::Begin("Open a Level", &open, kFlags)) {
+        ImGui::SeparatorText("Campaign Levels");
         for (int i = 0; i < int(std::size(kCampaignLevels)); i++) {
             if (ImGui::Selectable(kCampaignLevels[i])) OpenCampaignLevel(i);
+        }
+        ImGui::SeparatorText("Custom Levels");
+        for (const fcip::CustomLevel& level : fcip::FindCustomLevels()) {
+            if (ImGui::Selectable(level.name.c_str())) OpenCustomLevel(level);
         }
     }
     ImGui::End();

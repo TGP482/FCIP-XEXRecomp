@@ -63,7 +63,7 @@ constexpr Caption kCaptions[] = {
     {"ObjectCategoryNames", "Vehicles", "{DPLR} VEHICLES AND OBJECTS (1/8)"},
     {"ObjectCategoryNames", "Weapons", "{DPLR} ITEMS AND LOGIC (2/8)"},
     {"ObjectCategoryNames", "MultiplayerItems", "{DPLR} ENEMIES (3/8)"},
-    {"P_MapManager", "CreateMapInfo", "OPEN A LEVEL OF EITHER CAMPAIGN"},
+    {"P_MapManager", "CreateMapInfo", "OPEN A CAMPAIGN OR CUSTOM LEVEL"},
     {"P_MapManager", "LoadMapInfo", "LOAD A PREVIOUSLY SAVED LEVEL"},
     {"P_MapManager", "ShareMapInfo", "CREATE A NEW LEVEL FROM A TEMPLATE"},
     {"P_MapManager", "DeleteMapInfo", "DELETE A SAVED LEVEL"},

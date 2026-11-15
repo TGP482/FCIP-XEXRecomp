@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <string>
 
+#include "common/custom_levels.h"
+
 struct PPCContext;
 
 namespace fcip::editor {
@@ -15,12 +17,14 @@ inline constexpr const char* kCampaignLevels[] = {
     "23_DUNEC", "24_SHANTYDAY", "26_SHANTYNIGHT", "28_JUNGLE", "29_FOREST", "30_MOUNTAIN",
 };
 
-void OpenCampaignLevel(int index);  // window thread; an open map is left first, through the editor's exit
-void ForgetLevelRequest();          // the exit was cancelled
-std::string CampaignLevel();        // the campaign level open, empty for a map
+// window thread; an open map is left first, through the editor's exit
+void OpenCampaignLevel(int index);
+void OpenCustomLevel(const CustomLevel& level);
+void ForgetLevelRequest();    // the exit was cancelled
+std::string CampaignLevel();  // the campaign level open or the custom level open was made from, empty for a map
 std::filesystem::path OwnScriptPath();  // a custom level's script, levels\<name>\Mission.lua beside the executable
 
-// the LEVEL MANAGER (level_manager.cpp): OPEN A CAMPAIGN LEVEL's list over the page, window thread
+// the LEVEL MANAGER (level_manager.cpp): OPEN A LEVEL's list over the page, window thread
 bool LevelListUp();
 void CloseLevelList();
 void LevelManagerShown();                                 // editor thread, its handler is active

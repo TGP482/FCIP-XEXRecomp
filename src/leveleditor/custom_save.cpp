@@ -1,10 +1,12 @@
 // ige.xex, the solo level editor: a campaign level saves as a custom level, its own folder levels\<name>\ beside the
-// executable (custom: to the game). The editor's own save (82109BF8) puts a map into a user map, a 4 MB blob with room
+// executable, which is laid over game:\Levels. The editor's own save (82109BF8) puts a map into a user map, a 4 MB blob with room
 // for 255 files, which a campaign level's 550 files and 40 MB do not fit. Its writers make real files when no pack
-// takes them (File_Open 8234EF80), so the save runs them with the engine's level path on the custom folder: terrain,
+// takes them (File_Open 8234EF80), so the save runs them with the engine's level path on the custom level: terrain,
 // sectors, tools, ziplines and mounted weapons. The rest are written here: the campaign's level files the editor does
 // not write, its LevelData.xml naming the campaign level, the mission with the editor's entities and AI objects, the
 // paint layers, and a first Mission.lua that runs after the campaign's mission script.
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -39,7 +41,7 @@ constexpr const char* kCampaignLevelKey = "CampaignLevel";  // names the level a
 constexpr const char* kMissionFile = "Mission_Mission0.xml";
 constexpr const char* kScriptName = "Mission.lua";
 constexpr const char* kPaintFile = "textureinfo.ige";
-constexpr const char* kCustomDrive = "custom:\\";
+constexpr const char* kCustomSuffix = "_Custom";  // a custom level never takes a campaign level's folder
 
 // the mission object the save writes (82106B00 r3)
 constexpr uint32_t kMissionObject = 0x8296CBC0;
@@ -87,6 +89,14 @@ bool Saving() { return g_solo && !CampaignLevel().empty(); }
 
 uint32_t Text(uint32_t at, const std::string& text) { return WriteText(g_scratch + at, text, kScratchPathBytes); }
 
+bool IsCampaignLevel(const std::string& name) {
+    auto same = [](char a, char b) { return std::toupper(uint8_t(a)) == std::toupper(uint8_t(b)); };
+    for (std::string level : kCampaignLevels) {
+        if (std::equal(name.begin(), name.end(), level.begin(), level.end(), same)) return true;
+    }
+    return false;
+}
+
 // the map's name as the save page took it, the custom level's folder name
 std::string MapName() {
     uint32_t manager = R32(SYM_Editor_Manager_pointer);
@@ -97,7 +107,8 @@ std::string MapName() {
         bool keep = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
         name += keep ? char(c) : '_';
     }
-    return name.empty() ? CampaignLevel() : name;
+    if (name.empty()) name = CampaignLevel();
+    return IsCampaignLevel(name) ? name + kCustomSuffix : name;
 }
 
 fs::path LevelFolder() { return app::ExeDir() / "levels" / MapName(); }
@@ -222,7 +233,7 @@ void SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     fs::create_directories(LevelFolder() / "sdat", ec);
     uint32_t engine = R32(SYM_C3DEngine_pointer);
     std::string level_path = ReadCString(engine + kEngineLevelPath);
-    WriteText(engine + kEngineLevelPath, kCustomDrive + MapName(), kLevelPathBytes);
+    WriteText(engine + kEngineLevelPath, MapName(), kLevelPathBytes);
     uint32_t packs = uint32_t(CallGuest(ctx, SYM_PackManager_Get, {}));
     uint8_t writing = R8(packs + kPacksWriting);
     W8(packs + kPacksWriting, 0);
