@@ -66,6 +66,7 @@ void DrawTriggers(const View& v);     // trigger_markers.cpp
 bool IsTrigger(const std::string& cls);  // any thread
 void DrawSequences(const View& v);    // movie_markers.cpp
 bool SequenceStart(const std::string& name, float out[3]);  // any thread, false for none such
+std::vector<std::string> SequenceNames();  // any thread, moviedata.xml's sequences, sorted
 void DrawCulling(const View& v);      // culling_markers.cpp
 void DrawAi(const View& v);           // ai_markers.cpp
 bool IsAiEntity(const std::string& cls);  // any thread

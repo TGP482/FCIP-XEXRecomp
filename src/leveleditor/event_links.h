@@ -11,12 +11,13 @@ namespace fcip::editor {
 
 struct Link {
     std::string source;   // the event the entity sends
-    uint32_t target = 0;  // entity id
+    uint32_t target = 0;  // entity id, 0 for a call to the mission
     std::string event;    // the event the target gets
     std::string param;    // ExtraParam, mostly empty
 };
 
 std::vector<Link> LinksOf(uint32_t entity_id);
+std::vector<std::string> LevelMissionCalls();  // every mission call the level's links make, sorted
 void ForgetLinks();  // a level starts
 // editor thread: keeps the entity's links and rebuilds its script's Events table from them
 void SetLinks(PPCContext& ctx, uint32_t entity, const std::vector<Link>& links);

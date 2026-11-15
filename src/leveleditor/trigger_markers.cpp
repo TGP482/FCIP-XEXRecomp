@@ -117,7 +117,9 @@ void fcip::editor::DrawTriggers(const View& v) {
         look.by_name[e.name] = &e;
     }
     for (const AiObject& o : ai->objects) look.objects[o.name] = &o;
+    // every other entity's links too (a Merc's OnDeath, a door's Opened)
     for (const ViewEntity& e : *entities) {
         if (IsTrigger(e.cls)) DrawTrigger(v, e, look);
+        else DrawLinks(v, e, look);
     }
 }

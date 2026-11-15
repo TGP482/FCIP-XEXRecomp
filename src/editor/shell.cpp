@@ -32,6 +32,7 @@
 #include "leveleditor/campaign_levels.h"
 #include "leveleditor/gizmo.h"
 #include "leveleditor/level_objects.h"
+#include "leveleditor/link_edit.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
@@ -618,7 +619,8 @@ void DrawStatus(float top, float width, double fps, const State& s) {
 }
 
 // the mouse over the view: right drag looks, the wheel zooms, the left button uses the tool where it points
-// the solo editor's Edit Object tool: its gizmo or volume handles have the mouse, else a click picks a marker first
+// the solo editor's Edit Object tool: a link drag, its gizmo or volume handles have the mouse, else a click picks a
+// marker first
 bool SoloEditing(const State& s) { return editor::g_solo && s.tool == kEditObject; }
 bool PickedMarker(const State& s, ImVec2 m) { return SoloEditing(s) && PickMarker(m.x, m.y); }
 
@@ -630,7 +632,9 @@ void UpdateViewInput(const Box& view, const State& s) {
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) g_looking = over;
     bool clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-    bool held = SoloEditing(s) && (GizmoMouse(m, clicked && over, down) || VolumeMouse(m, clicked && over, down));
+    bool press = clicked && over;
+    bool held = SoloEditing(s) && (LinkMouse(m, press, down) || GizmoMouse(m, press, down) ||
+                                   VolumeMouse(m, press, down));
     if (clicked) g_applying = over && !held && !PickedMarker(s, m);
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_looking = false;
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_applying = false;
@@ -681,6 +685,7 @@ bool DrawShell(double fps) {
     if (g_show_dock) DrawDock(size.x - dock, top, bottom, s);
     if (g_show_status) DrawStatus(bottom, size.x, fps, s);
     if (editor::g_solo) editor::DrawMarkers();
+    if (editor::g_solo) editor::DrawLinkWindow();
     DrawControls();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(int(std::size(kPanelColors) + std::size(kShellColors)));

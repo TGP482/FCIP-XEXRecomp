@@ -14,6 +14,7 @@
 #include "kernel/memory.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/gizmo.h"
+#include "leveleditor/link_edit.h"
 #include "leveleditor/object_panel.h"
 #include "leveleditor/picking.h"
 #include "leveleditor/volumes.h"
@@ -189,6 +190,7 @@ void DrawMarkers() {
     DrawPicked(view);
     DrawVolumeHandles(view);
     DrawGizmo(view);
+    DrawLinkDrag(view);
     EndView(view);
 }
 

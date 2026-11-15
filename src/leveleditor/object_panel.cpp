@@ -17,7 +17,9 @@
 #include "editor/tools.h"
 #include "kernel/memory.h"
 #include "leveleditor/event_links.h"
+#include "leveleditor/entity_events.h"
 #include "leveleditor/gizmo.h"
+#include "leveleditor/link_edit.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mission.h"
@@ -53,13 +55,6 @@ constexpr uint32_t kScratchBytes = kScratchValue + kScratchValueBytes;
 
 constexpr size_t kValueChars = 256;
 constexpr size_t kEventChars = 64;
-// the events the campaign's links use most, offered beside the free text
-constexpr const char* kSourceEvents[] = {"Enter", "Leave", "Spawn", "OutputTrigger", "OnDeath", "Die", "Explode",
-                                         "Use", "StopUse", "PlayerEntered", "OnSpawnedEntityDied"};
-constexpr const char* kTargetEvents[] = {"Enable", "Disable", "Activate", "DeActivate", "InputTrigger", "Spawn",
-                                         "SpawnMax", "SwitchToGenericJob", "GoPath", "Play", "Stop", "Explode",
-                                         "Die", "SetCurrent", "DisplayText", "_Mission_Failed"};
-
 struct Attribute {
     std::string key;
     std::string value;
@@ -86,7 +81,7 @@ struct Snapshot {
     uint32_t generation = 0;
 };
 struct LinkEdit {
-    uint32_t object = 0;
+    uint32_t entity_id = 0;
     std::vector<fcip::editor::Link> links;
 };
 // one value of an entity's table: its node by child indices from the table, then by sub table names
@@ -255,6 +250,19 @@ void Apply(PPCContext& ctx, const Edit& e) {
     PushUndo(ctx, label, [back](PPCContext& ctx) { Apply(ctx, back); });
 }
 
+// the entity's links replaced, one step of undo
+void ApplyLinks(PPCContext& ctx, const LinkEdit& e) {
+    uint32_t entity = EntityOfId(e.entity_id);
+    if (!entity) return;
+    LinkEdit back{e.entity_id, LinksOf(e.entity_id)};
+    SetLinks(ctx, entity, e.links);
+    NoteMapChanged();
+    std::string label = "Change the links of " + GuestString(entity + kEntityName);
+    PushUndo(ctx, label, [back](PPCContext& ctx) {
+        if (uint32_t entity = EntityOfId(back.entity_id)) SetLinks(ctx, entity, back.links);
+    });
+}
+
 bool EnsureScratch() {
     if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
     return g_scratch != 0;
@@ -274,8 +282,7 @@ void Update(PPCContext& ctx, uint32_t object) {
         g_stale = true;
     }
     for (const LinkEdit& e : link_edits) {
-        if (e.object != object) continue;
-        SetLinks(ctx, R32(object + kObjectEntity), e.links);
+        ApplyLinks(ctx, e);
         g_stale = true;
     }
     if (object == g_shown && !g_stale) return;
@@ -356,30 +363,15 @@ void DrawFields() {
 
 void QueueLinks(std::vector<fcip::editor::Link> links) {
     std::lock_guard lock(g_lock);
-    g_link_edits.push_back({g_view.object, std::move(links)});
+    g_link_edits.push_back({g_view.entity_id, std::move(links)});
 }
 
 std::string TargetLabel(uint32_t id) {
+    if (id == 0) return "the mission";
     for (const Target& t : g_view.targets) {
         if (t.id == id) return t.label;
     }
     return "entity " + std::to_string(id);
-}
-
-// a text field with the usual values in a list beside it
-template <size_t N>
-void EventField(const char* id, char (&text)[kEventChars], const char* const (&usual)[N], float width) {
-    ImGui::PushID(id);
-    ImGui::SetNextItemWidth(width);
-    ImGui::InputText("##text", text, kEventChars);
-    ImGui::SameLine(0, 0);
-    if (ImGui::BeginCombo("##usual", nullptr, ImGuiComboFlags_NoPreview)) {
-        for (const char* e : usual) {
-            if (ImGui::Selectable(e)) std::snprintf(text, kEventChars, "%s", e);
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::PopID();
 }
 
 void TargetField(float width) {
@@ -408,7 +400,8 @@ void DrawLinks() {
         }
         ImGui::SameLine();
         std::string target = TargetLabel(l.target);
-        ImGui::Text("On %s, %s gets %s", l.source.c_str(), target.c_str(), l.event.c_str());
+        std::string param = l.param.empty() ? "" : " (" + l.param + ")";
+        ImGui::Text("On %s, %s gets %s%s", l.source.c_str(), target.c_str(), l.event.c_str(), param.c_str());
         ImGui::PopID();
     }
     // a line each, so the dock can be narrow
@@ -417,13 +410,14 @@ void DrawLinks() {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("On");
     ImGui::SameLine(label_w);
-    EventField("source", g_new_source, kSourceEvents, em * 9);
+    std::vector<std::string> sends = EventsOf(ClassOfEntity(g_view.entity_id));
+    EventField("source", g_new_source, kEventChars, sends, em * 9);
     ImGui::SetCursorPosX(label_w);
     TargetField(-1);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("gets");
     ImGui::SameLine(label_w);
-    EventField("event", g_new_event, kTargetEvents, em * 9);
+    EventField("event", g_new_event, kEventChars, EventsOf(ClassOfEntity(g_new_target)), em * 9);
     ImGui::SameLine();
     bool ready = g_new_target && g_new_source[0] && g_new_event[0];
     ImGui::BeginDisabled(!ready);
@@ -433,6 +427,8 @@ void DrawLinks() {
         QueueLinks(std::move(links));
     }
     ImGui::EndDisabled();
+    ImGui::Spacing();
+    DrawMissionCallRow(g_view.entity_id, g_view.links);
 }
 
 }  // namespace
@@ -457,6 +453,11 @@ std::vector<XmlAttribute> fcip::editor::ReadProperties(PPCContext& ctx, uint32_t
         }
     }
     return out;
+}
+
+void fcip::editor::SetEntityLinks(uint32_t entity_id, std::vector<Link> links) {
+    std::lock_guard lock(g_lock);
+    g_link_edits.push_back({entity_id, std::move(links)});
 }
 
 void fcip::editor::SetEntityProperty(uint32_t entity_id, const std::string& key, const std::string& value) {

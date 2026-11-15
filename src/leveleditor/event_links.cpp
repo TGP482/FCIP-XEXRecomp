@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 
 #include "kernel/memory.h"
@@ -113,8 +114,10 @@ void WriteSavedLinks(PPCContext& ctx) {
         uint32_t events = NewChild(ctx, saved.node, kEventTargets);
         if (!events) continue;
         for (const Link& link : found->second) {
+            // target 0 is the mission's own call
             auto target = g_saved.find(link.target);
-            if (target != g_saved.end()) WriteLink(ctx, events, link, target->second.number);
+            if (link.target == 0) WriteLink(ctx, events, link, 0);
+            else if (target != g_saved.end()) WriteLink(ctx, events, link, target->second.number);
         }
         Release(ctx, events);
     }
@@ -133,6 +136,17 @@ std::vector<Link> LinksOf(uint32_t entity_id) {
     std::lock_guard lock(g_lock);
     auto found = g_links.find(entity_id);
     return found == g_links.end() ? std::vector<Link>{} : found->second;
+}
+
+std::vector<std::string> LevelMissionCalls() {
+    std::set<std::string> calls;
+    std::lock_guard lock(g_lock);
+    for (const auto& [id, links] : g_links) {
+        for (const Link& l : links) {
+            if (l.target == 0) calls.insert(l.event);
+        }
+    }
+    return {calls.begin(), calls.end()};
 }
 
 void SetLinks(PPCContext& ctx, uint32_t entity, const std::vector<Link>& links) {

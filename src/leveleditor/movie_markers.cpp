@@ -198,6 +198,13 @@ void ForgetMovie() { Publish({}); }
 
 namespace fcip::editor {
 
+std::vector<std::string> SequenceNames() {
+    std::vector<std::string> names;
+    for (const Sequence& s : *CurrentMovie()) names.push_back(s.name);
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
 bool SequenceStart(const std::string& name, float out[3]) {
     for (const Sequence& s : *CurrentMovie()) {
         if (s.name != name || !s.has_start) continue;
