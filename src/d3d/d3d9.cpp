@@ -638,6 +638,21 @@ void VolumetricFog(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView
 
 namespace {
 
+constexpr uint32_t kCloudViews = 16;  // the camera's and the reflection's a frame, as the fog's
+gpu::CloudView g_cloud_views[kCloudViews];
+uint32_t g_cloud_next = 0;
+
+}  // namespace
+
+void VolumetricClouds(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::CloudView& v) {
+    gpu::OcclusionArgs marked = a;
+    marked.method = g_cloud_next++ % kCloudViews;
+    g_cloud_views[marked.method] = v;
+    MarkScene(dev, gpu::kClearClouds, marked);
+}
+
+namespace {
+
 std::mutex g_shade_lock;
 gpu::TerrainShade g_shade;
 uint32_t g_shade_generation = 0;
@@ -1139,3 +1154,5 @@ uint32_t gpu::TerrainShadeSince(uint32_t seen, TerrainShade& out) {
 }
 
 gpu::FogView gpu::FogViewAt(uint32_t slot) { return d3d::g_fog_views[slot % d3d::kFogViews]; }
+
+gpu::CloudView gpu::CloudViewAt(uint32_t slot) { return d3d::g_cloud_views[slot % d3d::kCloudViews]; }

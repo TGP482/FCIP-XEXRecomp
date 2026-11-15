@@ -126,8 +126,9 @@ void LoadSettings(const void* table) {
     s.ambient_occlusion = std::min(t["ambient_occlusion"].value_or(s.ambient_occlusion), 3u);
     s.global_illumination = t["global_illumination"].value_or(s.global_illumination);
     s.volumetric_fog = t["volumetric_fog"].value_or(s.volumetric_fog);
+    s.volumetric_clouds = t["volumetric_clouds"].value_or(s.volumetric_clouds);
     s.shadow_resolution = std::min(t["shadow_resolution"].value_or(s.shadow_resolution), 8192u);
-    s.shadow_filter = std::min(t["shadow_filter"].value_or(s.shadow_filter), uint32_t(kFilterRay));
+    s.shadow_filter = std::min(t["shadow_filter"].value_or(s.shadow_filter), uint32_t(kFilterRayUltra));
     s.ocean_reflection = std::min(t["ocean_reflection"].value_or(s.ocean_reflection), uint32_t(kOceanXbox));
     s.draw_distance = std::clamp(t["draw_distance"].value_or(s.draw_distance), 1u, 32u);
     s.blur = t["aim_and_sprint_blur"].value_or(s.blur);
@@ -168,6 +169,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("ambient_occlusion", int64_t(s.ambient_occlusion));
     t.insert_or_assign("global_illumination", s.global_illumination);
     t.insert_or_assign("volumetric_fog", s.volumetric_fog);
+    t.insert_or_assign("volumetric_clouds", s.volumetric_clouds);
     t.insert_or_assign("shadow_resolution", int64_t(s.shadow_resolution));
     t.insert_or_assign("shadow_filter", int64_t(s.shadow_filter));
     t.insert_or_assign("ocean_reflection", int64_t(s.ocean_reflection));

@@ -10,6 +10,7 @@ namespace fcip {
 
 constexpr uint32_t kPassCamera = 5;  // the camera's view
 constexpr uint32_t kPassShadow = 2;  // a light's shadow map, the sun's among them
+constexpr uint32_t kPassReflection = 1;  // types 0 and 1 draw the water's reflections
 
 // the type of the pass being submitted on this thread, 0 outside one
 uint32_t SubmittedPass();

@@ -8,7 +8,12 @@
 // draw left its albedo, the first person weapon's past the world too but not the ocean's. Volumetric fog replaces the
 // game's: the list draws without it, then the fog goes in through its own sun map and the terrain's heights before the
 // first item on the camera's side of the water, layer 9 on. Those are mostly blended and leave no depth for the fog to
-// read, so each of their pixels takes the fog in front of it as it draws, until the list ends.
+// read, so each of their pixels takes the fog in front of it as it draws, until the list ends. Volumetric clouds go in
+// after the sky box's draw (82372698, the Sky box pipeline's item 82508720), in the camera's pass and the water's
+// reflections, over the pixels nothing but sky covers. The box turns about the world's up axis by the degrees 825EE578
+// hands it at renderer +0x92A4, RotationSpeed (engine +0xA2C) times the render time plus SkyBoxAngle (+0xA28), and the
+// clouds turn by the same. The level's Rain node (+0xB60), set by the StartRain and StopRain script calls, thickens and
+// darkens them over kRainFade.
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -18,6 +23,7 @@
 #include "common/settings.h"
 #include "core/log.h"
 #include "d3d/occlusion.h"
+#include "game/frame_time.h"
 #include "game/motion_vectors.h"
 #include "game/ocean_reflection.h"
 #include "game/scene.h"
@@ -58,6 +64,11 @@ constexpr uint32_t kEngineFade = 0x1424;  // its scale at +0x440
 constexpr uint32_t kFadeScale = 0x440;
 constexpr uint32_t kVisAreaAmbient = 0xDC;
 constexpr uint32_t kAmbientFloor = 0xC;  // past the outdoor addition at Ambient_pointer
+constexpr uint32_t kEngineSunRender = 0x51C;  // SunVectorRender as a point 10000 units out, the sky's sun
+constexpr uint32_t kEngineRain = 0xB60;       // the Rain node's switch, a byte
+// renderer: what 82371DD0 keeps for the sky box's draw
+constexpr uint32_t kRendererSkyTurn = 0x92A4;  // degrees about the world's up axis
+constexpr uint32_t kRendererSkyQueued = 0x92D4;  // a byte, set when the frame hands the sky box a draw
 // device constant shadows, 16 bytes a register: GlobalVariables.fx's WaterLevel and SunLight colour
 constexpr uint32_t kDevVsConstants = 0x780;
 constexpr uint32_t kDevPsConstants = 0x1780;
@@ -301,6 +312,69 @@ void Fog(const FogSplit& f) {
     d3d::VolumetricFog(dev, a, v);
 }
 
+// the clouds' coverage, clear and in rain, and the seconds rain takes to build or clear
+constexpr float kClearCoverage = 0.42f;
+constexpr float kRainCoverage = 0.9f;
+constexpr float kRainFade = 12.0f;
+constexpr float kRadiansPerDegree = 3.14159265f / 180.0f;
+
+// title thread: the weather the clouds show, eased toward the level's, and their wind's clock
+struct Weather {
+    float rain = 0;
+    float seconds = 0;
+    bool raining = false;
+};
+Weather g_weather;
+
+bool Clouded() {
+    uint32_t pass = fcip::SubmittedPass();
+    return fcip::Get().volumetric_clouds && (pass == fcip::kPassCamera || pass <= fcip::kPassReflection);
+}
+
+// once a frame, in the camera's pass
+void UpdateWeather(uint32_t engine) {
+    float dt = float(fcip::FrameTime());
+    g_weather.seconds += dt;
+    bool raining = R8(engine + kEngineRain) != 0;
+    if (raining != g_weather.raining) LOGR("volumetric clouds: rain %s", raining ? "starts" : "stops");
+    g_weather.raining = raining;
+    float step = dt / kRainFade;
+    float target = raining ? 1.0f : 0.0f;
+    g_weather.rain += std::clamp(target - g_weather.rain, -step, step);
+}
+
+// over the sky box just drawn, turned as it is
+void Clouds(uint32_t renderer) {
+    uint32_t engine = R32(SYM_C3DEngine_pointer);
+    gpu::OcclusionArgs a;
+    float world[16];
+    if (!engine || !SceneArgs(a) || !ViewToWorld(world)) return;
+    if (fcip::SubmittedPass() == fcip::kPassCamera) UpdateWeather(engine);
+    gpu::CloudView v;
+    for (uint32_t r = 0; r < 3; r++) {
+        for (uint32_t c = 0; c < 3; c++) v.to_world[r * 4 + c] = world[r * 4 + c];
+    }
+    float sun[3];
+    for (uint32_t i = 0; i < 3; i++) sun[i] = GF(engine + kEngineSunRender + i * 4);
+    float length = std::sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
+    if (length <= 0) {
+        sun[2] = 1;
+        length = 1;
+    }
+    for (uint32_t i = 0; i < 3; i++) v.sun[i] = sun[i] / length;
+    uint32_t dev = R32(SYM_Device_pointer);
+    for (uint32_t i = 0; i < 3; i++) v.sun_colour[i] = GF(dev + kDevPsConstants + kPsSunColour * 16 + i * 4);
+    float turn = GF(renderer + kRendererSkyTurn) * kRadiansPerDegree;
+    float sea = GF(dev + kDevVsConstants + kVsWaterLevel * 16);
+    v.sky[0] = std::cos(turn);
+    v.sky[1] = std::sin(turn);
+    v.sky[2] = world[14] - sea;
+    v.sky[3] = g_weather.seconds;
+    v.weather[0] = kClearCoverage + (kRainCoverage - kClearCoverage) * g_weather.rain;
+    v.weather[1] = g_weather.rain;
+    d3d::VolumetricClouds(dev, a, v);
+}
+
 // the item about to be popped lies on the camera's side of the water
 bool NearLayer(uint32_t list) {
     uint32_t key = 0;
@@ -319,6 +393,7 @@ PPC_EXTERN_FUNC(GUEST_ORIG(Scene_Sort));
 PPC_EXTERN_FUNC(GUEST_ORIG(Scene_Push));
 PPC_EXTERN_FUNC(GUEST_ORIG(Scene_Draw));
 PPC_EXTERN_FUNC(GUEST_ORIG(Scene_Pop));
+PPC_EXTERN_FUNC(GUEST_ORIG(SkyBox_Draw));
 
 // the list's keys made and pushed, r3 the constant block
 PPC_FUNC(GUEST(Scene_Sort)) {
@@ -386,4 +461,11 @@ PPC_FUNC(GUEST(Scene_Pop)) {
     if (t_fog.list && t_fog.list == list && NearLayer(list)) FogIn();
     fcip::MotionScenePop(list);
     GUEST_ORIG(Scene_Pop)(ctx, base);
+}
+
+// the sky box's item draw, r3 the renderer
+PPC_FUNC(GUEST(SkyBox_Draw)) {
+    uint32_t renderer = uint32_t(ctx.r[3]);
+    GUEST_ORIG(SkyBox_Draw)(ctx, base);
+    if (Clouded() && R8(renderer + kRendererSkyQueued)) Clouds(renderer);
 }

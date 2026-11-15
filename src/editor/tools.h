@@ -1,0 +1,62 @@
+// the map editor's own tools, camera and undo as the desktop UI drives them (tools.cpp); window thread unless noted
+#pragma once
+#include <cstddef>
+#include <string>
+#include <vector>
+
+namespace fcip::editor {
+
+enum Tool : int { kTerrain, kAddObject, kEditObject, kEnvironment, kToolCount };
+
+// the terrain tool's actions: one of its four modes and the pad button the action is on
+enum Brush : int { kRaise, kLower, kBump, kDig, kSetHeight, kExtend, kSmooth, kTrim, kPaint, kErase, kBrushCount };
+
+constexpr int kRadiusSteps = 18;
+constexpr float kMaxSetHeight = 225.0f;
+constexpr int kTextureCount = 3;
+
+// any thread: a map is open and the editor is editing, not in first person
+bool ShellUp();
+
+// the tools as the editor has them now
+struct State {
+    int tool = kTerrain;
+    int brush = kRaise;
+    int radius_step = 0;
+    float radius = 0.0f;  // metres
+    float set_height = 0.0f;
+    int texture = 0;  // what Paint lays: sand, grass, cliff
+    bool square_cursor = false;
+    float cursor[3] = {};  // where the tools act
+    size_t undo_count = 0;
+    bool applying = false;
+};
+State Read();
+
+const char* ToolName(int tool);
+const char* BrushName(int brush);
+const char* TextureName(int texture);
+float RadiusMetres(int step);
+
+void SelectTool(int tool);
+void SelectBrush(int brush);
+void SetRadiusStep(int step);
+void SetSetHeight(float height);
+void SetTexture(int texture);
+void SetSquareCursor(bool square);
+void Undo(int steps);
+std::vector<std::string> History();  // the undo stack, oldest first
+
+// the mouse over the 3D view, each frame
+struct ViewInput {
+    bool inside = false;   // over the view, or dragging from it
+    float u = 0.0f;        // its place in the frame, 0 to 1 from the top left
+    float v = 0.0f;
+    float look_x = 0.0f;   // pixels dragged with the right button
+    float look_y = 0.0f;
+    float wheel = 0.0f;    // notches, up is positive
+    bool apply = false;    // the left button is held on the view
+};
+void SetViewInput(const ViewInput& in);
+
+}  // namespace fcip::editor

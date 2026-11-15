@@ -28,9 +28,11 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
 inline void (*g_menu_tick)(PPCContext& ctx, uint32_t mgr) = nullptr;
 // default.xex's debug page: queues a story level by folder name, false before START at the title screen
 inline bool (*g_load_level)(const char* folder) = nullptr;
-// FCIPEditor.exe's desktop editor around the 3D view, drawn first in the ImGui frame; true while the pointer is on its
-// panels, which then keep the mouse from the game
+// FCIPEditor.exe's desktop editor around the 3D view, drawn first in the ImGui frame; true while it is up, when it
+// takes the mouse from the game
 inline bool (*g_editor_ui)(double fps) = nullptr;
+// its keys, before the game's while the settings panel is closed; true when taken
+inline bool (*g_editor_key)(uint32_t msg, uintptr_t wp) = nullptr;
 // while the editor's panels take typing the game gets no keys, as with the settings panel
 inline std::atomic<bool> g_editor_typing{false};
 // FCIPEditor.exe's launch question, set by the level editor's sources (GameInfo::init)

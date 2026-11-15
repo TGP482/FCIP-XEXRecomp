@@ -24,6 +24,7 @@ struct Settings {
     uint32_t ambient_occlusion = 0;  // 0 off, 1 SSAO, 2 GTAO, 3 RTAO; the world only, under the fog
     bool global_illumination = false;  // ray traced bounce light over the camera's scene, under the fog
     bool volumetric_fog = false;       // height fog in place of the game's, shafts where the sun reaches
+    bool volumetric_clouds = false;    // cumulus over the sky box, turning with it and thickening in rain
     uint32_t shadow_resolution = 1344;  // sun shadow map edge, 0 follows the render scale; 1344 is stock
     uint32_t shadow_filter = 0;         // shadow edges, kFilterSharp as the game
     uint32_t ocean_reflection = 0;      // kOcean360 as the game, kOceanXbox the original Xbox game's look
@@ -46,7 +47,8 @@ struct Settings {
 
 Settings& Get();
 
-enum : uint32_t { kFilterSharp, kFilterSoft, kFilterPcss, kFilterRay };
+// ray traced shadows cover what the game's do, Ultra also what it leaves out: vehicles, dropped weapons, bushes
+enum : uint32_t { kFilterSharp, kFilterSoft, kFilterPcss, kFilterRay, kFilterRayUltra };
 enum : uint32_t { kOcean360, kOceanXbox };
 
 constexpr uint32_t kMaxWorldDistance = 8;  // past it only the shadow distance grows

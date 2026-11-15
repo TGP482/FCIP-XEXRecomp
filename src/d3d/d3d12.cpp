@@ -119,7 +119,8 @@ constexpr uint32_t kGiRtv = kAlbedoRtv + 1;
 constexpr int kGiTargets = 2;
 constexpr uint32_t kFogRtv = kGiRtv + kGiTargets;  // volumetric fog's march and first blur
 constexpr int kFogTargets = 2;
-constexpr uint32_t kRtvSlots = kFogRtv + kFogTargets;
+constexpr uint32_t kCloudRtv = kFogRtv + kFogTargets;  // volumetric clouds' march
+constexpr uint32_t kRtvSlots = kCloudRtv + 1;
 constexpr DXGI_FORMAT kAlbedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kGiFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 constexpr float kNoMotion = 32768;  // the drawn motion's clear: no draw wrote the pixel
@@ -1121,6 +1122,127 @@ float4 fog_medium(float4 pos : SV_Position) : SV_Target {
 }
 )";
 
+// Tropical cumulus over the sky box, marched at half size along each pixel's view ray through a layer curving with the
+// earth, then blended into the pixels nothing but sky covers. They sit in the sky box's frame, turned by height.xy,
+// and drift on the wind. sun[0..2] take a view direction into the world, sun[3] points at the sun, height.z is the
+// camera's height over the sea and height.w the wind's seconds, terrain[0] coverage and rain, opt.xy the march's size
+const char* kCloudHlsl = R"(
+Texture2D<float4> march : register(t1);  // in scatter, transmittance in a
+static const float kBase = 900;           // the layer over the sea, world units
+static const float kTop = 3600;
+static const float kEarth = 600000;       // the layer's curve, thinning it toward the horizon
+static const float kFar = 60000;          // the farthest a ray enters the layer
+static const float kSpan = 15000;         // the most of the layer one ray crosses
+static const float kCell = 5000;          // a cloud's size
+static const float kBillow = 640;         // the billows eroding its edges
+static const float kSigma = 0.02;         // extinction a unit at full density
+static const float kFade = 30000;         // distance over which clouds sink into the sky's haze
+static const float kSunGain = 0.6;
+static const float2 kWind = float2(7, 3);  // units a second
+static const int kSteps = 40;
+static const int kLightSteps = 4;
+float Hash(float3 p) {
+    p = frac(p * 0.3183099 + 0.1) * 17;
+    return frac(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+// value noise, smooth between lattice points
+float Noise(float3 p) {
+    float3 i = floor(p);
+    float3 f = p - i;
+    f = f * f * (3 - 2 * f);
+    float x00 = lerp(Hash(i), Hash(i + float3(1, 0, 0)), f.x);
+    float x10 = lerp(Hash(i + float3(0, 1, 0)), Hash(i + float3(1, 1, 0)), f.x);
+    float x01 = lerp(Hash(i + float3(0, 0, 1)), Hash(i + float3(1, 0, 1)), f.x);
+    float x11 = lerp(Hash(i + float3(0, 1, 1)), Hash(i + float3(1, 1, 1)), f.x);
+    return lerp(lerp(x00, x10, f.y), lerp(x01, x11, f.y), f.z);
+}
+// Henyey Greenstein, 1 averaged over the sphere
+float Phase(float mu, float g) { return (1 - g * g) / pow(1 + g * g - 2 * g * mu, 1.5); }
+float3 ToWorld(float3 d) { return d.x * sun[0].xyz + d.y * sun[1].xyz + d.z * sun[2].xyz; }
+// a world direction in the sky box's frame, which the box turned about z
+float3 ToSky(float3 d) { return float3(d.x * height.x + d.y * height.y, d.y * height.x - d.x * height.y, d.z); }
+// distance along a ray rising up a unit to the shell h over the sea, from below it
+float Shell(float h, float up) {
+    float centre = kEarth + height.z;
+    float b = centre * up;
+    float c = (height.z - h) * (2 * kEarth + height.z + h);
+    return max(sqrt(max(b * b - c, 0)) - b, 0);
+}
+// height over the sea t along a ray rising up a unit
+float Altitude(float t, float up) {
+    float along = kEarth + height.z + t * up;
+    return sqrt(along * along + t * t * (1 - up * up)) - kEarth;
+}
+// 0 at the layer's base, 1 at its top
+float Rise(float h) { return (h - kBase) / (kTop - kBase); }
+// density at p in the sky's frame, p.z over the sea: flat bases, towers narrowing as they rise, billows eating their
+// edges; the sunlight's march reads the shape alone
+float Density(float3 p, bool billows) {
+    float r = Rise(p.z);
+    if (r <= 0 || r >= 1) return 0;
+    float3 q = float3(p.xy + kWind * height.w, p.z);
+    float shape = Noise(q / kCell) * 0.65 + Noise(q / (kCell * 0.37) + 7.1) * 0.35;
+    float d = saturate((shape - (1 - terrain[0].x) - 0.3 * r * r) * 4) * saturate(r * 10);
+    if (!billows || d <= 0) return d;
+    float billow = Noise(q / kBillow) * 0.6 + Noise(q / (kBillow * 0.4)) * 0.4;
+    return saturate(d - billow * 0.45 * (1 - d));
+}
+// sunlight left at p past the cloud toward the sun, some of it scattered on through
+float SunThrough(float3 p, float3 toward) {
+    float depth = 0;
+    float stride = 120;
+    for (int i = 0; i < kLightSteps; i++) {
+        p += toward * stride;
+        depth += Density(p, false) * stride;
+        stride *= 2;
+    }
+    float tau = depth * kSigma;
+    return max(exp(-tau), 0.3 * exp(-0.25 * tau));
+}
+float4 cloud_march(float4 pos : SV_Position) : SV_Target {
+    float2 n = pos.xy * 2 * ndc.xy + ndc.zw;
+    float3 dir = ToSky(normalize(ToWorld(float3((n - proj.zw) * proj.xy, 1))));
+    if (dir.z <= 0.005) return float4(0, 0, 0, 1);
+    float t0 = Shell(kBase, dir.z);
+    if (t0 >= kFar) return float4(0, 0, 0, 1);
+    float t1 = min(Shell(kTop, dir.z), t0 + kSpan);
+    float3 toward = ToSky(sun[3].xyz);
+    float mu = dot(dir, toward);
+    float rain = terrain[0].y;
+    float3 sunlight = suncolour.rgb * kSunGain * (0.8 * Phase(mu, 0.55) + 0.2 * Phase(mu, -0.2)) * (1 - 0.65 * rain);
+    // the sky's haze around them, greyer and dimmer in rain
+    float grey = dot(fogcolor.rgb, float3(0.3, 0.59, 0.11));
+    float3 around = lerp(fogcolor.rgb, grey.xxx, 0.35 + 0.4 * rain) * (1 - 0.35 * rain);
+    float dt = (t1 - t0) / kSteps;
+    float jitter = frac(52.9829189 * frac(dot(pos.xy, float2(0.06711056, 0.00583715))));
+    float3 light = 0;
+    float trans = 1;
+    for (int i = 0; i < kSteps && trans > 0.02; i++) {
+        float t = t0 + (i + jitter) * dt;
+        float3 p = float3(dir.xy * t, Altitude(t, dir.z));
+        float d = Density(p, true);
+        if (d <= 0) continue;
+        float absorbed = 1 - exp(-d * kSigma * dt);
+        float3 lit = sunlight * SunThrough(p, toward) + around * (0.6 + 0.6 * saturate(Rise(p.z)));
+        light += trans * absorbed * lit;
+        trans *= 1 - absorbed;
+    }
+    float fade = exp(-t0 / kFade);
+    return float4(light * fade, lerp(1, trans, fade));
+}
+// the march's texel at p, held to its size
+float4 Marched(int2 p) { return march.Load(int3(clamp(p, 0, int2(opt.xy) - 1), 0)); }
+float4 cloud_apply(float4 pos : SV_Position) : SV_Target {
+    if (Raw(int2(pos.xy)) > 0) return float4(0, 0, 0, 1);
+    float2 at = pos.xy * 0.5 - 0.5;
+    int2 i = int2(floor(at));
+    float2 f = at - i;
+    float4 top = lerp(Marched(i), Marched(i + int2(1, 0)), f.x);
+    float4 bottom = lerp(Marched(i + int2(0, 1)), Marched(i + int2(1, 1)), f.x);
+    return lerp(top, bottom, f.y);
+}
+)";
+
 constexpr float kGiRadius = 32.0f;  // world units the bounce reaches
 constexpr float kGiGamma = 2.2f;
 
@@ -1707,6 +1829,7 @@ private:
         bool fog = false;        // kFogHlsl's, the sun map at t2
         Resolved* sun = nullptr;  // the far sun map, or the fog's own
         ID3D12Resource* shade = nullptr;  // the fog's terrain shade
+        bool clouds = false;      // kCloudHlsl's
         bool half = false;        // drawn to a target of half the depth's size
     };
     void Occlusion(const State& s, const OcclusionArgs& a);
@@ -1714,6 +1837,8 @@ private:
     void VolumetricFog(const State& s, const OcclusionArgs& a);
     bool EnsureFogTargets(uint32_t w, uint32_t h);
     ID3D12Resource* ShadeTexture();
+    void VolumetricClouds(const State& s, const OcclusionArgs& a);
+    bool EnsureCloudTarget(uint32_t w, uint32_t h);
 
     // global illumination of the camera pass: its draws' albedo beside the colour, its world's triangles traced
     void BeginIllumination(const State& s);
@@ -1868,6 +1993,11 @@ private:
     bool fog_near_ = false;
     uint64_t fog_rt_key_ = 0;
     ID3D12Resource* fog_view_ = nullptr;  // the medium the draw's pixel shader reads at fcip::kFogSlot
+    // volumetric clouds' march at half size, grown to the largest pass so far
+    ComPtr<ID3D12Resource> clouds_;
+    D3D12_RESOURCE_STATES clouds_state_ = D3D12_RESOURCE_STATE_COMMON;
+    uint32_t clouds_w_ = 0;
+    uint32_t clouds_h_ = 0;
     // the terrain shade as last published
     ComPtr<ID3D12Resource> shade_;
     D3D12_RESOURCE_STATES shade_state_ = D3D12_RESOURCE_STATE_COMMON;
@@ -4137,6 +4267,10 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         fog_near_ = false;
         return;
     }
+    if (flags & kClearClouds) {
+        if (rect) VolumetricClouds(s, UnpackOcclusion(color, z, stencil, *rect));
+        return;
+    }
     if (flags & kClearMotionBegin) {
         BeginMotion(s);
         return;
@@ -4266,6 +4400,7 @@ ID3D12PipelineState* D3D12Backend::EnsureOcclusionPipeline(const AoPass& p, bool
     std::string src = std::string(ms_depth ? "#define MS 1\n" : "") + (rt ? "#define RT 1\n" : "") + kViewHlsl;
     if (p.gi) src += std::string(kGiViewsHlsl) + fcip::kCasterHitHlsl + kGiHlsl;
     else if (p.fog) src += kFogHlsl;
+    else if (p.clouds) src += kCloudHlsl;
     else src += kAoHlsl;
     std::vector<uint8_t> vs;
     std::vector<uint8_t> ps;
@@ -4462,6 +4597,67 @@ bool D3D12Backend::EnsureFogTargets(uint32_t w, uint32_t h) {
     }
     fog_w_ = w;
     fog_h_ = h;
+    return true;
+}
+
+// Volumetric clouds
+
+// clouds marched at half size, then blended into the bound colour target where its depth holds only sky
+void D3D12Backend::VolumetricClouds(const State& s, const OcclusionArgs& a) {
+    uint32_t height = TargetHeight(s);
+    Target* rt = ColorTarget(s, 0, height);
+    Target* ds = DepthTarget(s, height);
+    if (!rt || !ds || rt->w != ds->w || rt->h != ds->h || rt->samples != ds->samples) return;
+    uint32_t w = (rt->w + 1) / 2;
+    uint32_t h = (rt->h + 1) / 2;
+    if (!EnsureCloudTarget(w, h)) return;
+    Bound b{TargetWidth(s), height, rt->scale};
+    DrawConstants d;
+    FillDrawConstants(s, b, d);
+    D3D12_RECT rect = HostRect(GuestScissor(s, b.w, b.h), b.scale);
+    if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+    CloudView view = CloudViewAt(a.method);
+    float c[kAoConstants];
+    OcclusionConstants(a, d, rect, rt->w, rt->h, c);
+    c[16] = float(w);
+    c[17] = float(h);
+    std::copy(std::begin(view.to_world), std::end(view.to_world), c + 32);
+    std::copy(std::begin(view.sun), std::end(view.sun), c + 44);
+    std::copy(std::begin(view.sky), std::end(view.sky), c + 48);
+    std::copy(std::begin(view.sun_colour), std::end(view.sun_colour), c + 52);
+    std::copy(std::begin(view.weather), std::end(view.weather), c + 56);
+    AoPass march{.entry = "cloud_march", .out = kGiFormat, .rtv = Rtv(kCloudRtv), .clouds = true, .half = true};
+    AoPass apply{.entry = "cloud_apply", .out = rt->fmt, .samples = rt->samples, .blend = true, .rtv = Rtv(rt->view),
+                 .src = clouds_.Get(), .src_format = kGiFormat, .clouds = true};
+    Transition(ds->res.Get(), ds->state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(clouds_.Get(), clouds_state_, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    bool ok = OcclusionPass(march, *ds, c, rect);
+    Transition(clouds_.Get(), clouds_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (ok) OcclusionPass(apply, *ds, c, rect);
+    Unbind();
+}
+
+// never shrinks: the water's reflections and the camera's pass take turns each frame
+bool D3D12Backend::EnsureCloudTarget(uint32_t w, uint32_t h) {
+    if (clouds_ && clouds_w_ >= w && clouds_h_ >= h) return true;
+    w = std::max(w, clouds_w_);
+    h = std::max(h, clouds_h_);
+    if (clouds_) Release(std::move(clouds_));
+    clouds_w_ = clouds_h_ = 0;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(kGiFormat, w, h);
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    clouds_state_ = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    HRESULT hr = dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, clouds_state_, nullptr,
+                                               IID_PPV_ARGS(&clouds_));
+    if (FAILED(hr)) {
+        LOGE("D3D12: no %ux%u volumetric clouds target", w, h);
+        return false;
+    }
+    dev_->CreateRenderTargetView(clouds_.Get(), nullptr, Rtv(kCloudRtv));
+    clouds_w_ = w;
+    clouds_h_ = h;
     return true;
 }
 
@@ -5263,7 +5459,7 @@ uint32_t D3D12Backend::CasterVertices(const State& s, const DrawArgs& a, const P
                                       CasterDraw& caster) {
     if (!divide_pso_ || !b.ds || !Bits(k.depth_control, 2, 1)) return 0;
     bool view = SceneCaster(k, b);
-    bool shadow = fcip::Get().shadow_filter == fcip::kFilterRay && ShadowWidth(b.ds->width);
+    bool shadow = fcip::Get().shadow_filter >= fcip::kFilterRay && ShadowWidth(b.ds->width);
     if (!view && !shadow) return 0;
     fcip::FirstFetch f = s.ps ? s.ps->first_fetch : fcip::FirstFetch{};
     bool coverage = view && !alpha_test && Bits(k.color_control, 4, 1);
@@ -5542,7 +5738,7 @@ void D3D12Backend::EndDivide() {
 
 // pixel shader fetches of a shadow map whose scene this frame built are traced, each flagged with its scene's slot
 void D3D12Backend::RayShadows(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
-    if (ray_shadows_.empty() || fcip::Get().shadow_filter != fcip::kFilterRay) return;
+    if (ray_shadows_.empty() || fcip::Get().shadow_filter < fcip::kFilterRay) return;
     if (info.textures.size() > fcip::kRayFirstSlot) return;
     fcip::SunMaps sun = fcip::SunMapsDrawn();
     uint32_t bases[fcip::kRayScenes] = {};

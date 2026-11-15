@@ -1,7 +1,7 @@
 // ige.xex, the solo level editor: the object panel in the editor's dock lists the script properties of the one object
-// the Edit Object tool has selected, as the editor saves them, and writes edits back into the entity's tables. The game's own
-// converters do the work: a table to XML as the editor saves, XML to a table as it loads. Below them are the object's
-// event links, which another object (a door, a spawner, the level) gets when this one sends an event.
+// the Edit Object tool has selected, as the editor saves them, and writes edits back into the entity's tables. The
+// game's own converters do the work: a table to XML as the editor saves, XML to a table as it loads. Below them are the
+// object's event links, which another object (a door, a spawner, the level) gets when this one sends an event.
 #include <algorithm>
 #include <array>
 #include <cstddef>

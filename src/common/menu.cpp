@@ -53,7 +53,7 @@ const char* const kMsaaNames[] = {"OFF", "2X MSAA", "4X MSAA", "8X MSAA"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
 const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
 const char* const kAmbientOcclusionNames[] = {"OFF", "SSAO", "GTAO", "RTAO"};
-const char* const kShadowFilterNames[] = {"SHARP (DEFAULT)", "SOFT", "PCSS", "RAY TRACED"};
+const char* const kShadowFilterNames[] = {"SHARP (DEFAULT)", "SOFT", "PCSS", "RAY TRACED", "RAY TRACED ULTRA"};
 const char* const kOceanReflectionNames[] = {"XBOX 360 (DEFAULT)", "ORIGINAL XBOX"};
 constexpr uint32_t kAudioOutputs[] = {audio::kOutputAuto, audio::kOutputMono, audio::kOutputStereo,
                                       audio::kOutputSurround};
@@ -120,7 +120,7 @@ enum RowId {
     kBlur, kDrawDistance,
     kInvincible, kNoclip, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kFrameGeneration, kSmaa, kAmbientOcclusion,
-    kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection
+    kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection, kVolumetricClouds
 };
 
 constexpr Row kSettingsRows[] = {
@@ -138,13 +138,15 @@ constexpr Row kSettingsRows[] = {
      "Caps the frame rate to your monitor's refresh rate or a custom value, or removes the cap"},
     {Kind::Value, kFpsCounter, "FPS COUNTER", "Displays the frame rate on screen"},
     {Kind::Value, kColourBlind, "COLOUR BLIND MODE", "Adjusts the colours for protanopia, deuteranopia or tritanopia"},
-    {Kind::Heading, -1, "GRAPHICS", "Antialiasing, ambient occlusion, global illumination, fog, ocean, texture filtering, shadows and draw distance"},
+    {Kind::Heading, -1, "GRAPHICS", "Antialiasing, ambient occlusion, global illumination, fog, clouds, ocean, texture filtering, shadows and draw distance"},
     {Kind::Value, kAmbientOcclusion, "AMBIENT OCCLUSION",
      "Shades the world's creases and corners, SSAO, the more accurate GTAO or ray traced RTAO, characters and fog left alone"},
     {Kind::Value, kGlobalIllumination, "GLOBAL ILLUMINATION",
      "Ray traces the light surfaces bounce onto each other, so a wall takes on the colour of the sand beside it"},
     {Kind::Value, kVolumetricFog, "VOLUMETRIC FOG",
      "Adds height fog lit by the sun over the game's own, with god rays where trees and buildings shade it"},
+    {Kind::Value, kVolumetricClouds, "VOLUMETRIC CLOUDS",
+     "Adds tropical cumulus clouds to the sky that turn with it and gather and darken when it rains"},
     {Kind::Value, kOceanReflection, "OCEAN REFLECTION",
      "Xbox 360 keeps the game's own ocean, Original Xbox mirrors the sky and shore over it like the original Xbox game"},
     {Kind::Value, kAntiAliasing, "ANTI ALIASING",
@@ -155,7 +157,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},
     {Kind::Value, kShadowFilter, "SHADOW FILTERING",
-     "Sharp keeps the game's own shadow edges, soft blurs them by the same amount at every resolution, PCSS widens sun shadows the further they fall from what casts them, ray traced traces every pixel's shadow from and onto every object, softer the further it falls"},
+     "Sharp keeps the game's own shadow edges, soft blurs them by the same amount at every resolution, PCSS widens sun shadows the further they fall from what casts them, ray traced traces every pixel's shadow against what casts it, softer the further it falls, ultra also from and onto vehicles, dropped weapons and foliage the game leaves out"},
     {Kind::Value, kDrawDistance, "DRAW DISTANCE",
      "Scales how far objects, grass and vegetation are drawn up to 8x and the area casting sun shadows up to 32x"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
@@ -497,8 +499,8 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             break;
         case kShadowFilter:
             StepName(Get().shadow_filter, kShadowFilterNames, step, text);
-            if (Get().shadow_filter == kFilterRay && !gpu::RayTracing()) {
-                std::snprintf(text, sizeof(text), "RAY TRACED (NOT SUPPORTED)");
+            if (Get().shadow_filter >= kFilterRay && !gpu::RayTracing()) {
+                std::snprintf(text, sizeof(text), "%s (NOT SUPPORTED)", kShadowFilterNames[Get().shadow_filter]);
             }
             break;
         case kGlobalIllumination:
@@ -511,6 +513,10 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
         case kVolumetricFog:
             Flip(Get().volumetric_fog, step);
             std::snprintf(text, sizeof(text), "%s", OnOff(Get().volumetric_fog));
+            break;
+        case kVolumetricClouds:
+            Flip(Get().volumetric_clouds, step);
+            std::snprintf(text, sizeof(text), "%s", OnOff(Get().volumetric_clouds));
             break;
         case kOceanReflection:
             StepName(Get().ocean_reflection, kOceanReflectionNames, step, text);

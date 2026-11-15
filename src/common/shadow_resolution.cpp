@@ -56,7 +56,6 @@ constexpr uint32_t kMaxSide = 8192;
 constexpr uint32_t kPassWidth = 0x1C;
 constexpr uint32_t kPassHeight = 0x20;
 constexpr uint32_t kPassType = 0x10;
-constexpr uint32_t kPassReflection = 1;      // types 0 and 1 draw the water's reflections
 constexpr uint32_t kPassWaterHeight = 0x30;  // the height a reflection clips at
 constexpr uint32_t kFetchAddress = 4;  // fetch constant dword 1: the base from bit 12
 constexpr uint32_t kFetchSize = 8;     // fetch constant dword 2: width - 1 and height - 1, 13 bits each
@@ -441,7 +440,7 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
     bool ok = pass >= 0x10000u && pass < 0xC0000000u;
     uint32_t outer = t_pass_type;
     t_pass_type = ok ? R32(pass + kPassType) : 0;
-    if (ok && t_pass_type <= kPassReflection) g_water = GF(pass + kPassWaterHeight);
+    if (ok && t_pass_type <= fcip::kPassReflection) g_water = GF(pass + kPassWaterHeight);
     if (ok && t_pass_type == fcip::kPassShadow && t_sun && t_map == kFarMap) LatchSunClip(R32(pass));
     if (ok && t_pass_type == fcip::kPassCamera) LatchViewClip(R32(pass));
     uint32_t w = ok ? R32(pass + kPassWidth) : 0;
@@ -537,7 +536,8 @@ bool fcip::FogMapRun() { return t_map == kFogMap; }
 
 void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     uint32_t distance = Get().draw_distance;
-    bool rays = Get().shadow_filter == kFilterRay && gpu::RayTracing();
+    bool rays = Get().shadow_filter >= kFilterRay && gpu::RayTracing();
+    bool every = rays && Get().shadow_filter == kFilterRayUltra;
     // the far map's texel grid must hold whole texels of each sharper map
     uint32_t maps = 0;
     while (!rays && maps < kSunMaps && (1u << maps) < distance && distance % (1u << maps) == 0) maps++;
@@ -546,8 +546,8 @@ void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     uint64_t quad = ctx.r[6];
     ctx.r[6] = 0;  // one frustum: the sharper maps hold only the sun
     for (uint32_t i = 0; i < maps; i++) RunCascade(ctx, base, int(i));
-    // ray traced shadows already make every object cast into the far map
-    if (Get().volumetric_fog && !rays) RunShadowMaps(ctx, base, kFogMap);
+    // ray traced ultra already makes every object cast into the far map
+    if (Get().volumetric_fog && !every) RunShadowMaps(ctx, base, kFogMap);
     ctx.r[6] = quad;
     RunShadowMaps(ctx, base, kFarMap);
 }

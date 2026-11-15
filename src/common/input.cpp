@@ -446,6 +446,7 @@ void GamePad(int port, input::Pad& pad) {
     pad.ry = Larger(pad.ry, kb.ry);
     if (start) pad.buttons |= input::kStart;
     if (g_noclip_pad) g_noclip_pad(pad);
+    if (g_editor_pad) g_editor_pad(pad);
 }
 
 void GameRumble(int, uint16_t& left, uint16_t& right) {

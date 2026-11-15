@@ -108,7 +108,7 @@ PlayMovie = 0x8233FFA0
 RaiseStartupScreen = 0x821558C8
 
 # CryRender and Cry3DEngine: aspect, field of view, blur, shadows, draw distance, grass, fps counter, ambient occlusion,
-# global illumination
+# global illumination, volumetric clouds
 Bink_DrawFrame = 0x8234DDB8
 C3DEngine_RenderWorld = 0x825EDB98
 CCamera_Update = 0x825C37D8
@@ -151,6 +151,7 @@ Shadow_Snap = 0x825D2220
 Shadow_Surface = 0x8236A448
 Shadow_Texture = 0x823B1208
 Shadow_Viewport = 0x8236A0E8
+SkyBox_Draw = 0x82372698
 UIRect_Draw = 0x823C8410
 UIWidget_Draw = 0x82479130
 UI_DrawQuad = 0x823809D8

@@ -1,9 +1,20 @@
-// ige.xex: once a map is open FCIPEditor.exe is a desktop editor, the 3D view between a menu bar, a dock on the right
-// and a status bar. The frame is drawn into the view alone (SetViewBox), at the view's shape.
+// ige.xex: once a map is open FCIPEditor.exe is a desktop editor: a menu bar and toolbar over the 3D view, a dock on
+// the right and a status bar. The frame is drawn into the view alone (SetViewBox), at the view's shape.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 #include <algorithm>
-#include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <iterator>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <imgui.h>
 
@@ -11,24 +22,23 @@
 #include "common/menu.h"
 #include "common/panel_colors.h"
 #include "common/view_clip.h"
-#include "kernel/kernel.h"
+#include "editor/icons.h"
+#include "editor/tools.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
 
 using namespace fcip;
+using namespace fcip::editor;
 
 namespace {
-
-// EditorInterfaceHandler, a static object: +0x104 is 1 while editing, 2 in first person
-constexpr uint32_t kEditorHandler = 0x8296F758;
-constexpr uint32_t kHandlerMode = 0x104;
-constexpr uint32_t kModeEditing = 1;
 
 constexpr float kDockEms = 30.0f;  // the dock's first width
 constexpr float kMinDockEms = 16.0f;
 constexpr float kMinViewEms = 20.0f;
 constexpr float kSplitterEms = 0.4f;
+constexpr float kIconEms = 1.6f;
+constexpr float kParametersShare = 0.45f;  // of the dock's height, above the tabs
 
 constexpr ImGuiWindowFlags kFixed = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
@@ -37,27 +47,211 @@ constexpr ImGuiWindowFlags kFixed = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFla
 
 constexpr std::pair<ImGuiCol, ImVec4> kShellColors[] = {
     {ImGuiCol_MenuBarBg, kTab}, {ImGuiCol_PopupBg, kPanelBg}, {ImGuiCol_CheckMark, kText},
+    {ImGuiCol_SliderGrab, kHeading}, {ImGuiCol_SliderGrabActive, kButtonHovered}, {ImGuiCol_Tab, kTab},
+    {ImGuiCol_TabHovered, kTabHovered}, {ImGuiCol_TabActive, kHighlight},
 };
 
-std::atomic<bool> g_map_open{false};  // from the main editor showing until the map manager does
+struct ToolEntry {
+    int tool;
+    Icon icon;
+    const char* key;
+};
+constexpr ToolEntry kToolEntries[] = {
+    {kTerrain, Icon::Terrain, "1"}, {kAddObject, Icon::AddObject, "2"},
+    {kEditObject, Icon::EditObject, "3"}, {kEnvironment, Icon::Environment, "4"},
+};
+constexpr Icon kBrushIcons[] = {Icon::Raise,     Icon::Lower,  Icon::Bump,   Icon::Dig,  Icon::SetHeight,
+                                Icon::Extend,    Icon::Smooth, Icon::Trim,   Icon::Paint, Icon::Erase};
+static_assert(std::size(kBrushIcons) == kBrushCount);
 
 // window thread
 float g_dock_width = 0.0f;  // pixels, 0 until the first frame
+bool g_show_toolbar = true;
 bool g_show_dock = true;
 bool g_show_status = true;
+bool g_looking = false;   // the right button went down on the view
+bool g_applying = false;  // the left button went down on the view
 
-bool ShellUp() { return g_map_open && kernel::R32(kEditorHandler + kHandlerMode) == kModeEditing; }
+// Menus and toolbar
 
-float DrawMenuBar() {
-    if (!ImGui::BeginMainMenuBar()) return 0.0f;
+void DrawMenuBar(const State& s) {
+    if (!ImGui::BeginMainMenuBar()) return;
+    if (ImGui::BeginMenu("Edit")) {
+        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, s.undo_count > 0)) Undo(1);
+        ImGui::EndMenu();
+    }
     if (ImGui::BeginMenu("View")) {
+        ImGui::MenuItem("Toolbar", nullptr, &g_show_toolbar);
         ImGui::MenuItem("Dock", nullptr, &g_show_dock);
         ImGui::MenuItem("Status Bar", nullptr, &g_show_status);
         ImGui::EndMenu();
     }
-    float height = ImGui::GetWindowSize().y;
+    if (ImGui::BeginMenu("Tools")) {
+        for (const ToolEntry& t : kToolEntries) {
+            if (ImGui::MenuItem(ToolName(t.tool), t.key, s.tool == t.tool)) SelectTool(t.tool);
+        }
+        ImGui::Separator();
+        for (int b = 0; b < kBrushCount; b++) {
+            if (ImGui::MenuItem(BrushName(b), nullptr, s.tool == kTerrain && s.brush == b)) SelectBrush(b);
+        }
+        ImGui::EndMenu();
+    }
     ImGui::EndMainMenuBar();
+}
+
+bool IconButton(const char* id, Icon icon, const char* tip, bool active, bool enabled) {
+    float size = ImGui::GetFontSize() * kIconEms;
+    ImGui::BeginDisabled(!enabled);
+    bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size));
+    ImVec2 min = ImGui::GetItemRectMin();
+    ImVec2 max = ImGui::GetItemRectMax();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    if (active) draw->AddRectFilled(min, max, ImGui::GetColorU32(kHighlight));
+    else if (ImGui::IsItemHovered()) draw->AddRectFilled(min, max, ImGui::GetColorU32(kTabHovered));
+    float pad = size * 0.15f;
+    ImU32 colour = ImGui::GetColorU32(enabled ? kText : kDim);
+    DrawIcon(draw, icon, ImVec2(min.x + pad, min.y + pad), size - pad * 2.0f, colour);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tip);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    return pressed;
+}
+
+void Gap() {
+    float em = ImGui::GetFontSize();
+    ImVec2 at = ImGui::GetCursorScreenPos();
+    float height = em * kIconEms;
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(at.x, at.y), ImVec2(at.x, at.y + height), ImGui::GetColorU32(kLine));
+    ImGui::Dummy(ImVec2(em * 0.3f, height));
+    ImGui::SameLine();
+}
+
+// the toolbar's height
+float DrawToolbar(float top, float width, const State& s) {
+    float em = ImGui::GetFontSize();
+    float height = em * kIconEms + em * 0.5f;
+    ImGui::SetNextWindowPos(ImVec2(0.0f, top));
+    ImGui::SetNextWindowSize(ImVec2(width, height));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.25f, em * 0.25f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.15f, 0.0f));
+    if (ImGui::Begin("##toolbar", nullptr, kFixed)) {
+        if (IconButton("##undo", Icon::Undo, "Undo (Ctrl+Z)", false, s.undo_count > 0)) Undo(1);
+        Gap();
+        for (const ToolEntry& t : kToolEntries) {
+            std::string tip = std::string(ToolName(t.tool)) + " (" + t.key + ")";
+            ImGui::PushID(t.tool);
+            if (IconButton("##tool", t.icon, tip.c_str(), s.tool == t.tool, true)) SelectTool(t.tool);
+            ImGui::PopID();
+        }
+        Gap();
+        for (int b = 0; b < kBrushCount; b++) {
+            std::string tip = std::string("Terrain: ") + BrushName(b);
+            ImGui::PushID(b);
+            if (IconButton("##brush", kBrushIcons[b], tip.c_str(), s.tool == kTerrain && s.brush == b, true))
+                SelectBrush(b);
+            ImGui::PopID();
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
     return height;
+}
+
+// Dock
+
+void Heading(const char* text) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kHeading);
+    ImGui::TextUnformatted(text);
+    ImGui::PopStyleColor();
+    ImGui::Separator();
+}
+
+// a slider with a number box beside it
+bool SliderWithBox(const char* label, float* value, float min, float max, const char* format) {
+    float em = ImGui::GetFontSize();
+    ImGui::PushID(label);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine(em * 7.0f);
+    ImGui::SetNextItemWidth(-em * 5.0f);
+    bool changed = ImGui::SliderFloat("##slider", value, min, max, format);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputFloat("##box", value, 0.0f, 0.0f, format);
+    changed |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::PopID();
+    *value = std::clamp(*value, min, max);
+    return changed;
+}
+
+void DrawTerrainParameters(const State& s) {
+    float em = ImGui::GetFontSize();
+    ImGui::Text("Brush: %s", BrushName(s.brush));
+    // the editor's radius comes in steps
+    int step = s.radius_step;
+    char metres[32];
+    std::snprintf(metres, sizeof(metres), "%.1f m", RadiusMetres(step));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Radius");
+    ImGui::SameLine(em * 7.0f);
+    ImGui::SetNextItemWidth(-em * 5.0f);
+    if (ImGui::SliderInt("##radius", &step, 0, kRadiusSteps - 1, metres)) SetRadiusStep(step);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1.0f);
+    int shown = step + 1;
+    if (ImGui::InputInt("##radius_box", &shown, 0) && shown >= 1 && shown <= kRadiusSteps) SetRadiusStep(shown - 1);
+    if (s.brush == kSetHeight || s.brush == kExtend) {
+        float height = s.set_height;
+        if (SliderWithBox("Height", &height, 0.0f, kMaxSetHeight, "%.0f")) SetSetHeight(height);
+    }
+    if (s.brush == kPaint) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Texture");
+        ImGui::SameLine(em * 7.0f);
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##texture", TextureName(s.texture))) {
+            for (int t = 0; t < kTextureCount; t++) {
+                if (ImGui::Selectable(TextureName(t), t == s.texture)) SetTexture(t);
+            }
+            ImGui::EndCombo();
+        }
+    }
+    bool square = s.square_cursor;
+    if (ImGui::Checkbox("Square cursor", &square)) SetSquareCursor(square);
+}
+
+void DrawToolParameters(const State& s) {
+    Heading("TOOL PARAMETERS");
+    ImGui::TextUnformatted(ToolName(s.tool));
+    if (s.tool == kTerrain) DrawTerrainParameters(s);
+}
+
+void DrawHistory(const State& s) {
+    std::vector<std::string> history = History();
+    if (history.empty()) ImGui::TextUnformatted("Nothing to undo.");
+    // undoing an entry undoes every one after it too
+    for (size_t i = 0; i < history.size(); i++) {
+        ImGui::PushID(int(i));
+        if (ImGui::Selectable(history[i].c_str(), i + 1 == history.size())) Undo(int(history.size() - i));
+        ImGui::PopID();
+    }
+    ImGui::Spacing();
+    ImGui::BeginDisabled(s.undo_count == 0);
+    if (ImGui::Button("Undo")) Undo(1);
+    ImGui::EndDisabled();
+}
+
+void DrawTabs(const State& s) {
+    if (!ImGui::BeginTabBar("##dock_tabs")) return;
+    if (editor::g_solo && ImGui::BeginTabItem("Properties")) {
+        editor::DrawObjectPanel();
+        ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("History")) {
+        DrawHistory(s);
+        ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
 }
 
 // a bar on the dock's left edge drags its width
@@ -72,7 +266,7 @@ void DrawSplitter(float height, float max_width) {
     ImGui::GetWindowDrawList()->AddRectFilled(min, max, ImGui::GetColorU32(ImGui::IsItemActive() ? kHeading : kLine));
 }
 
-void DrawDock(float x, float top, float bottom) {
+void DrawDock(float x, float top, float bottom, const State& s) {
     ImGui::SetNextWindowPos(ImVec2(x, top));
     ImGui::SetNextWindowSize(ImVec2(g_dock_width, bottom - top));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -82,23 +276,35 @@ void DrawDock(float x, float top, float bottom) {
         float max_width = ImGui::GetIO().DisplaySize.x - ImGui::GetFontSize() * kMinViewEms;
         DrawSplitter(bottom - top, max_width);
         ImGui::SameLine(0.0f, 0.0f);
-        ImGui::BeginChild("##dock_body", ImVec2(0.0f, 0.0f), ImGuiChildFlags_AlwaysUseWindowPadding);
-        if (editor::g_solo) editor::DrawObjectPanel();
+        ImGui::BeginGroup();
+        float parameters = (bottom - top) * kParametersShare;
+        ImGui::BeginChild("##parameters", ImVec2(0.0f, parameters), ImGuiChildFlags_AlwaysUseWindowPadding);
+        DrawToolParameters(s);
         ImGui::EndChild();
+        ImGui::BeginChild("##tabs", ImVec2(0.0f, 0.0f), ImGuiChildFlags_AlwaysUseWindowPadding);
+        DrawTabs(s);
+        ImGui::EndChild();
+        ImGui::EndGroup();
     }
     ImGui::End();
 }
 
-void DrawStatus(float top, float width, double fps) {
+// Status bar and view
+
+void DrawStatus(float top, float width, double fps, const State& s) {
     ImGui::SetNextWindowPos(ImVec2(0.0f, top));
     ImGui::SetNextWindowSize(ImVec2(width, ImGui::GetIO().DisplaySize.y - top));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetFontSize() * 0.5f, 0.0f));
     bool open = ImGui::Begin("##status", nullptr, kFixed);
     ImGui::PopStyleVar();
     if (open) {
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Ready");
         float em = ImGui::GetFontSize();
+        ImGui::AlignTextToFramePadding();
+        if (!s.applying) ImGui::TextUnformatted("Ready");
+        else if (s.tool == kTerrain) ImGui::Text("Terrain: %s", BrushName(s.brush));
+        else ImGui::Text("%s", ToolName(s.tool));
+        ImGui::SameLine(width - em * 44);
+        ImGui::Text("Cursor %.1f, %.1f, %.1f", s.cursor[0], s.cursor[1], s.cursor[2]);
         float camera[3];
         if (ViewPosition(camera)) {
             ImGui::SameLine(width - em * 24);
@@ -110,13 +316,40 @@ void DrawStatus(float top, float width, double fps) {
     ImGui::End();
 }
 
-// true while the pointer is on the panels
+// the mouse over the view: right drag looks, the wheel zooms, the left button uses the tool where it points
+void UpdateViewInput(const Box& view) {
+    ImGuiIO& io = ImGui::GetIO();
+    ImVec2 m = io.MousePos;
+    bool inside = m.x >= view.x && m.y >= view.y && m.x < view.x + view.w && m.y < view.y + view.h;
+    bool over = inside && !io.WantCaptureMouse;
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) g_looking = over;
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) g_applying = over;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_looking = false;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_applying = false;
+    if (g_looking) ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+    Box frame = FrameBox(io.DisplaySize.x, io.DisplaySize.y);
+    ViewInput in;
+    in.inside = over || g_looking || g_applying;
+    in.u = frame.w > 0.0f ? (m.x - frame.x) / frame.w : 0.5f;
+    in.v = frame.h > 0.0f ? (m.y - frame.y) / frame.h : 0.5f;
+    if (g_looking) {
+        in.look_x = io.MouseDelta.x;
+        in.look_y = io.MouseDelta.y;
+    }
+    if (over) in.wheel = io.MouseWheel;
+    in.apply = g_applying;
+    SetViewInput(in);
+}
+
+// true while up, when it takes the mouse
 bool DrawShell(double fps) {
     if (!ShellUp()) {
         SetViewBox({});
+        SetViewInput({});
         g_editor_typing = false;
         return false;
     }
+    State s = Read();
     float em = ImGui::GetFontSize();
     ImVec2 size = ImGui::GetIO().DisplaySize;
     if (g_dock_width <= 0.0f) g_dock_width = em * kDockEms;
@@ -125,34 +358,38 @@ bool DrawShell(double fps) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-    float top = DrawMenuBar();
+    DrawMenuBar(s);
+    float top = ImGui::GetFrameHeight();
+    if (g_show_toolbar) top += DrawToolbar(top, size.x, s);
     float bottom = g_show_status ? size.y - ImGui::GetFrameHeight() : size.y;
     float dock = g_show_dock ? std::min(g_dock_width, size.x - em * kMinViewEms) : 0.0f;
-    SetViewBox({0.0f, top, size.x - dock, bottom - top});
-    if (g_show_dock) DrawDock(size.x - dock, top, bottom);
-    if (g_show_status) DrawStatus(bottom, size.x, fps);
+    Box view{0.0f, top, size.x - dock, bottom - top};
+    SetViewBox(view);
+    UpdateViewInput(view);
+    if (g_show_dock) DrawDock(size.x - dock, top, bottom, s);
+    if (g_show_status) DrawStatus(bottom, size.x, fps, s);
     if (editor::g_solo) editor::DrawMarkers();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(int(std::size(kPanelColors) + std::size(kShellColors)));
     g_editor_typing = ImGui::GetIO().WantTextInput;
-    return ImGui::GetIO().WantCaptureMouse;
+    return true;
 }
 
-const bool g_registered = (g_editor_ui = DrawShell, true);
+// Ctrl+Z undoes, 1 to 4 pick the tools
+bool EditorKey(uint32_t msg, uintptr_t wp) {
+    if (msg != WM_KEYDOWN || !ShellUp() || g_editor_typing) return false;
+    bool ctrl = GetKeyState(VK_CONTROL) < 0;
+    if (ctrl && wp == 'Z') {
+        Undo(1);
+        return true;
+    }
+    if (!ctrl && wp >= '1' && wp < '1' + kToolCount) {
+        SelectTool(int(wp - '1'));
+        return true;
+    }
+    return false;
+}
+
+const bool g_registered = (g_editor_ui = DrawShell, g_editor_key = EditorKey, true);
 
 }  // namespace
-
-PPC_EXTERN_FUNC(__imp__sub_820C0340);
-PPC_EXTERN_FUNC(__imp__sub_820CABB8);
-
-// an editor interface handler (r3) becomes active: the main editor's once a map is open
-PPC_FUNC(sub_820C0340) {
-    if (uint32_t(ctx.r[3]) == kEditorHandler) g_map_open = true;
-    __imp__sub_820C0340(ctx, base);
-}
-
-// the map manager becomes active: no map is open
-PPC_FUNC(sub_820CABB8) {
-    g_map_open = false;
-    __imp__sub_820CABB8(ctx, base);
-}
