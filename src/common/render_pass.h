@@ -12,6 +12,8 @@ constexpr uint32_t kPassShadow = 2;  // a light's shadow map, the sun's among th
 
 // the type of the pass being submitted on this thread, 0 outside one
 uint32_t SubmittedPass();
+// title thread: the shadow update's run for the volumetric fog, which every object casts into
+bool FogMapRun();
 
 // the sun shadow map's guest side, 1344 at stock
 uint32_t SunShadowSide();
@@ -29,6 +31,7 @@ constexpr uint32_t kSunFirstSlot = 27;  // the pixel shader views the sharper ma
 // stock one
 struct SunMaps {
     uint32_t far_base = 0;
+    uint32_t fog_base = 0;  // the far map with every object casting, 0 when none was drawn for the fog
     uint32_t bases[kSunMaps] = {};
     uint32_t count = 0;
     uint32_t distance = 0;

@@ -636,6 +636,20 @@ void VolumetricFog(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView
     MarkView(dev, gpu::kClearFog, a, v);
 }
 
+namespace {
+
+std::mutex g_shade_lock;
+gpu::TerrainShade g_shade;
+uint32_t g_shade_generation = 0;
+
+}  // namespace
+
+void PublishTerrainShade(gpu::TerrainShade&& shade) {
+    std::lock_guard lock(g_shade_lock);
+    g_shade = std::move(shade);
+    g_shade_generation++;
+}
+
 void Illumination(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v) {
     MarkView(dev, gpu::kClearIllumination, a, v);
 }
@@ -1116,5 +1130,11 @@ PPC_FUNC(GUEST(D3DQuery_GetData)) {
 }
 
 }  // namespace d3d
+
+uint32_t gpu::TerrainShadeSince(uint32_t seen, TerrainShade& out) {
+    std::lock_guard lock(d3d::g_shade_lock);
+    if (d3d::g_shade_generation != seen) out = d3d::g_shade;
+    return d3d::g_shade_generation;
+}
 
 gpu::FogView gpu::FogViewAt(uint32_t slot) { return d3d::g_fog_views[slot % d3d::kFogViews]; }

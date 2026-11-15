@@ -204,7 +204,7 @@ LogoScreen_return = 0x823160CC
 UbisoftMovie_return = 0x82315F58
 
 # CryRender and Cry3DEngine: the display block, the engine, object manager and renderer objects, the bound depth texture
-# and the ambient's outdoor addition and floor
+# and the ambient's outdoor addition and floor, then the terrain's sectors to a side (820B0A80)
 Ambient_pointer = 0x82913484
 C3DEngine_pointer = 0x829122C8
 Device_pointer = 0x829161B4
@@ -212,6 +212,7 @@ DisplayBlock = 0x829161A0
 ObjManager_pointer = 0x82913474
 RenderTargets_Depth = 0x829160DC
 Renderer_pointer = 0x829127E8
+Terrain_SectorsPerSide = 0x828B400C
 
 # CryGame, the debug page: the save and user managers
 SaveManager_pointer = 0x8293A79C

@@ -5,8 +5,9 @@
 // the characters, the blended layers and the ocean land on top. The fog is linear over view distance, from the
 // renderer's constant block. RTAO traces the world's draws from the start of the camera's list to that point. Global
 // illumination traces every world layer, the characters included, and is added after the list's last item wherever a
-// draw left its albedo, the first person weapon's past the world too but not the ocean's. Volumetric fog goes in after
-// that, over the whole list, through the far sun map.
+// draw left its albedo, the first person weapon's past the world too but not the ocean's. Volumetric fog replaces the
+// game's: the list draws without it, then the fog goes in over the whole list, through its own sun map and the
+// terrain's heights.
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -19,6 +20,7 @@
 #include "game/motion_vectors.h"
 #include "game/ocean_reflection.h"
 #include "game/scene.h"
+#include "game/terrain_shade.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
 
@@ -274,6 +276,8 @@ void Fog() {
     if (!SceneArgs(a)) return;
     gpu::FogView v = SunView();
     uint32_t dev = R32(SYM_Device_pointer);
+    float world[16];
+    if (ViewToWorld(world)) fcip::UpdateTerrainShade(world, GF(dev + kDevVsConstants + kVsWaterLevel * 16), v);
     static float logged[3] = {-1, -1, -1};
     const float* c = v.sun_colour;
     if (std::fabs(c[0] - logged[0]) + std::fabs(c[1] - logged[1]) + std::fabs(c[2] - logged[2]) > 0.02f) {
@@ -325,12 +329,24 @@ PPC_FUNC(GUEST(Scene_Draw)) {
         t_world_list = uint32_t(ctx.r[3]) + kBlockList;
         d3d::IlluminationScene(R32(SYM_Device_pointer));
     }
+    // the volumetric fog replaces the game's: 82502D18 hands the list's draws a fog scale and bias of 0
+    uint32_t block = uint32_t(ctx.r[3]);
+    uint32_t fog_scale = R32(block + kBlockFogScale);
+    uint32_t fog_bias = R32(block + kBlockFogBias);
+    if (fogged) {
+        W32(block + kBlockFogScale, 0);
+        W32(block + kBlockFogBias, 0);
+    }
     GUEST_ORIG(Scene_Draw)(ctx, base);
     if (t_draw_list) Occlude();
     if (lit) Illuminate(ctx);
     t_past_list = 0;
     t_ocean = false;
-    if (fogged) Fog();
+    if (fogged) {
+        W32(block + kBlockFogScale, fog_scale);
+        W32(block + kBlockFogBias, fog_bias);
+        Fog();
+    }
     fcip::MotionSceneDone();
 }
 

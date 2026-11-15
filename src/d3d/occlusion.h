@@ -1,6 +1,7 @@
 #pragma once
 #include <bit>
 #include <cstdint>
+#include <vector>
 
 #include "gpu/state.h"
 
@@ -43,10 +44,20 @@ struct FogView {
     float sun[16] = {};     // into the far sun map's clip space, column j from sun[j * 4]
     float height[4] = {};   // to the height over the sea
     float sun_colour[4] = {};
+    float terrain[8] = {};  // into the terrain shade's texels, x then y
     bool shadowed = false;  // without a sun map the sun lights none of it
+    bool shaded = false;    // with a terrain shade
 };
 // render thread: the view a kClearFog or kClearIllumination marker names
 FogView FogViewAt(uint32_t slot);
+
+// the volumetric fog's terrain shade: a square of heights over the sea below which the terrain hides the sun
+struct TerrainShade {
+    uint32_t side = 0;
+    std::vector<float> heights;
+};
+// render thread: the shade published since generation seen, its generation, else seen
+uint32_t TerrainShadeSince(uint32_t seen, TerrainShade& out);
 
 inline void PackOcclusion(const OcclusionArgs& a, float color[4], float& z, uint32_t& stencil, Rect& r) {
     for (int i = 0; i < 4; i++) color[i] = a.proj[i];
@@ -83,4 +94,6 @@ void IlluminationOcean(uint32_t dev, bool ocean);
 void Illumination(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);
 // on the title's thread after the camera pass's last item
 void VolumetricFog(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);
+// title thread: a new terrain shade for the volumetric fog
+void PublishTerrainShade(gpu::TerrainShade&& shade);
 }  // namespace d3d

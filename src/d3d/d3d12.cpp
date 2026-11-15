@@ -638,6 +638,7 @@ cbuffer A : register(b1) {
     float4 sun[4];
     float4 height;
     float4 suncolour;
+    float4 terrain[2];
 };
 #ifdef MS
 Texture2DMS<float> depth : register(t0);
@@ -1009,46 +1010,63 @@ float4 gi_apply(float4 pos : SV_Position) : SV_Target {
     return float4(pow(Linear(lit) + bounce, 1 / opt.y), 0);
 }
 )";
-// Volumetric fog over the game's: height fog marched through the far sun map, at least the game's fog density, thinning
-// over the sea; lit by the sun's colour ahead and the fog colour around, over the sky too.
-// colour * transmittance + in scatter. opt.x: 1 with the sun map bound
+// Volumetric fog in place of the game's: humid height fog marched through the sun map and the terrain shade, thickest
+// at the sea, over the sky too; lit by the fog colour around and the sun ahead, scattered forward as wet air does.
+// colour * transmittance + in scatter. opt.x: 1 with the sun map bound, opt.y with the terrain shade
 const char* kFogHlsl = R"(
 Texture2D<float4> haze : register(t1);  // in scatter, transmittance in a
 Texture2D<float> sunmap : register(t2);
+Texture2D<float> shade : register(t3);  // height over the sea below which the terrain hides the sun
 static const int kSteps = 16;
-static const float kReach = 250;      // world units marched
-static const float kThinning = 0.02;  // density falloff a unit up
+static const float kSky = 250;          // world units of fog in front of the sky
+static const float kDensity = 3;        // over the game's fog slope: about 95% fog where the game's ends
+static const float kThinning = 0.015;   // density falloff a unit up
+static const float3 kHumid = float3(0.92, 1, 1.06);  // wet air's faint aqua over the fog colour
+static const float kGround = 0.25;      // units a lit ground point may sit under its shade texel
+// Henyey Greenstein, 1 averaged over the sphere
+float Phase(float mu, float g) { return (1 - g * g) / pow(1 + g * g - 2 * g * mu, 1.5); }
 // no map counts as shaded
 float FogSunLit(float3 p) { return opt.x == 0 ? 0 : SunLit(sunmap, p); }
-// a pixel's view space point; the sky, depth 0, at the march's reach
+// 1 where no terrain stands between p, up over the sea, and the sun; off the shade counts as lit
+float TerrainLit(float3 p, float up) {
+    if (opt.y == 0) return 1;
+    float4 at = float4(p, 1);
+    int2 t = int2(round(float2(dot(at, terrain[0]), dot(at, terrain[1]))));
+    uint w;
+    uint h;
+    shade.GetDimensions(w, h);
+    if (any(t < 0) || any(t >= int2(w, h))) return 1;
+    return up + kGround >= shade.Load(int3(t, 0)) ? 1 : 0;
+}
+// a pixel's view space point; the sky, depth 0, kSky away
 float3 Seen(float2 px) {
     int2 p = clamp(int2(px), int2(vp.xy), int2(vp.xy + vp.zw) - 1);
     if (Raw(p) > 0) return View(px);
     float2 n = (p + 0.5) * ndc.xy + ndc.zw;
     float3 dir = float3((n - proj.zw) * proj.xy, 1);
-    return dir * (kReach / length(dir));
+    return dir * (kSky / length(dir));
 }
 float4 fog_march(float4 pos : SV_Position) : SV_Target {
     float3 c = Seen(pos.xy);
     float dist = length(c);
-    float reach = min(dist, kReach);
-    // the sun map's depth grows toward the sun; Henyey Greenstein at g 0.5 over 4 pi
+    // the sun map's depth grows toward the sun
     float3 axis = sun[2].xyz;
     float mu = dot(axis, axis) > 0 ? dot(c / dist, normalize(axis)) : 0;
-    float3 sunlight = suncolour.rgb * (0.4 + 0.6 * 0.75 / pow(1.25 - mu, 1.5)) * 0.5;
-    float3 ambient = fogcolor.rgb * 0.3;
-    float sigma = max(fog.x, 2e-4);
+    // a bright lobe toward the sun over a faint wide one
+    float3 sunlight = suncolour.rgb * (0.12 * Phase(mu, 0.75) + 0.05 * Phase(mu, 0.2));
+    float3 ambient = fogcolor.rgb * kHumid;
+    float sigma = max(fog.x * kDensity, 2e-4);
     int2 cell = int2(pos.xy) & 3;
     float jitter = kDither[cell.y * 4 + cell.x] / 16;
     float3 light = 0;
     float trans = 1;
     for (int i = 0; i < kSteps; i++) {
         float s = (i + jitter) / kSteps;
-        float3 p = c * (reach / dist * s * s);
-        float above = max(dot(float4(p, 1), height), 0);
-        // steps spread by s squared: this one spans (2i + 1) / kSteps^2 of the reach
-        float ext = sigma * exp(-kThinning * above) * reach * (2 * i + 1) / (kSteps * kSteps);
-        light += trans * ext * (sunlight * FogSunLit(p) + ambient);
+        float3 p = c * (s * s);
+        float up = dot(float4(p, 1), height);
+        // steps spread by s squared: this one spans (2i + 1) / kSteps^2 of the distance
+        float ext = sigma * exp(-kThinning * max(up, 0)) * dist * (2 * i + 1) / (kSteps * kSteps);
+        light += trans * ext * (sunlight * FogSunLit(p) * TerrainLit(p, up) + ambient);
         trans *= exp(-ext);
     }
     return float4(light, trans);
@@ -1076,7 +1094,7 @@ float4 fog_apply(float4 pos : SV_Position) : SV_Target { return Smooth(pos.xy); 
 constexpr float kGiRadius = 32.0f;  // world units the bounce reaches
 constexpr float kGiGamma = 2.2f;
 
-constexpr int kAoConstants = 56;  // kViewHlsl's b1
+constexpr int kAoConstants = 64;  // kViewHlsl's b1
 constexpr DXGI_FORMAT kAoFormat = DXGI_FORMAT_R16G16_FLOAT;
 constexpr float kAoRadius = 0.8f;    // world units, the engine's are metres
 constexpr float kAoMaxSpan = 0.15f;  // of the view's height, the most one pixel's samples may cover
@@ -1655,13 +1673,15 @@ private:
         ID3D12Resource* colour = nullptr;  // the scene kGiHlsl reads, a copy
         DXGI_FORMAT colour_format = DXGI_FORMAT_UNKNOWN;
         bool fog = false;        // kFogHlsl's, the sun map at t2
-        Resolved* sun = nullptr;  // the far sun map
+        Resolved* sun = nullptr;  // the far sun map, or the fog's own
+        ID3D12Resource* shade = nullptr;  // the fog's terrain shade
         bool half = false;        // drawn to a target of half the depth's size
     };
     void Occlusion(const State& s, const OcclusionArgs& a);
     void BeginRayScene();
     void VolumetricFog(const State& s, const OcclusionArgs& a);
     bool EnsureFogTargets(uint32_t w, uint32_t h);
+    ID3D12Resource* ShadeTexture();
 
     // global illumination of the camera pass: its draws' albedo beside the colour, its world's triangles traced
     void BeginIllumination(const State& s);
@@ -1809,6 +1829,10 @@ private:
     D3D12_RESOURCE_STATES fog_state_[kFogTargets] = {};
     uint32_t fog_w_ = 0;
     uint32_t fog_h_ = 0;
+    // the terrain shade as last published
+    ComPtr<ID3D12Resource> shade_;
+    D3D12_RESOURCE_STATES shade_state_ = D3D12_RESOURCE_STATE_COMMON;
+    uint32_t shade_generation_ = 0;
     // motion vectors: as the scene's draws wrote them, then completed by reprojecting the depth where none did
     struct Motion {
         bool open = false;    // between kClearMotionBegin and the scene's end
@@ -4255,6 +4279,9 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
         if (p.sun) SunMapView(*p.sun, ViewCpu(views + used));
         else NullViews(views + used, 1);
         used++;
+        if (p.shade) ShaderView(p.shade, DXGI_FORMAT_R32_FLOAT, views + used);
+        else NullViews(views + used, 1);
+        used++;
     }
     NullViews(views + used, kPsTextures - used);
     cl_->OMSetRenderTargets(1, &p.rtv, FALSE, nullptr);
@@ -4274,7 +4301,7 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
 
 // Volumetric fog
 
-// fog marched through the far sun map, blended over the bound colour target
+// fog marched through its own sun map, else the far one, blended over the bound colour target
 void D3D12Backend::VolumetricFog(const State& s, const OcclusionArgs& a) {
     uint32_t height = TargetHeight(s);
     Target* rt = ColorTarget(s, 0, height);
@@ -4287,14 +4314,20 @@ void D3D12Backend::VolumetricFog(const State& s, const OcclusionArgs& a) {
     D3D12_RECT rect = HostRect(GuestScissor(s, b.w, b.h), b.scale);
     if (rect.right <= rect.left || rect.bottom <= rect.top) return;
     FogView view = FogViewAt(a.method);
-    Resolved* sun = view.shadowed ? SunMap(fcip::SunMapsDrawn().far_base) : nullptr;
+    fcip::SunMaps maps = fcip::SunMapsDrawn();
+    uint32_t map = maps.fog_base ? maps.fog_base : maps.far_base;
+    Resolved* sun = view.shadowed ? SunMap(map) : nullptr;
+    ID3D12Resource* shade = view.shaded ? ShadeTexture() : nullptr;
     float c[kAoConstants];
     OcclusionConstants(a, d, rect, rt->w, rt->h, c);
     c[16] = sun ? 1.0f : 0.0f;
+    c[17] = shade ? 1.0f : 0.0f;
     std::copy(std::begin(view.sun), std::end(view.sun), c + 32);
     std::copy(std::begin(view.height), std::end(view.height), c + 48);
     std::copy(std::begin(view.sun_colour), std::end(view.sun_colour), c + 52);
-    AoPass march{.entry = "fog_march", .out = kGiFormat, .rtv = Rtv(kFogRtv), .fog = true, .sun = sun};
+    std::copy(std::begin(view.terrain), std::end(view.terrain), c + 56);
+    AoPass march{.entry = "fog_march", .out = kGiFormat, .rtv = Rtv(kFogRtv), .fog = true, .sun = sun,
+                 .shade = shade};
     AoPass across{.entry = "fog_blur", .out = kGiFormat, .rtv = Rtv(kFogRtv + 1), .src = fog_[0].Get(), .step_x = 1,
                   .src_format = kGiFormat, .fog = true};
     AoPass down{.entry = "fog_apply", .out = rt->fmt, .samples = rt->samples, .blend = true, .rtv = Rtv(rt->view),
@@ -4309,6 +4342,33 @@ void D3D12Backend::VolumetricFog(const State& s, const OcclusionArgs& a) {
     Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
     if (ok) OcclusionPass(down, *ds, c, rect);
     Unbind();
+}
+
+// the terrain shade, uploaded when a new one was published; null before the first
+ID3D12Resource* D3D12Backend::ShadeTexture() {
+    gpu::TerrainShade shade;
+    uint32_t generation = gpu::TerrainShadeSince(shade_generation_, shade);
+    if (generation == shade_generation_) return shade_.Get();
+    shade_generation_ = generation;
+    if (shade.heights.size() != size_t(shade.side) * shade.side || !shade.side) return shade_.Get();
+    if (!shade_ || shade_->GetDesc().Width != shade.side) {
+        if (shade_) Release(std::move(shade_));
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        D3D12_RESOURCE_DESC d = TextureDesc(DXGI_FORMAT_R32_FLOAT, shade.side, shade.side);
+        shade_state_ = D3D12_RESOURCE_STATE_COPY_DEST;
+        HRESULT hr = dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, shade_state_, nullptr,
+                                                   IID_PPV_ARGS(&shade_));
+        if (FAILED(hr)) {
+            LOGE("D3D12: no %ux%u terrain shade", shade.side, shade.side);
+            return nullptr;
+        }
+    }
+    std::vector<uint8_t> rows(shade.heights.size() * sizeof(float));
+    std::memcpy(rows.data(), shade.heights.data(), rows.size());
+    Transition(shade_.Get(), shade_state_, D3D12_RESOURCE_STATE_COPY_DEST);
+    UploadRows(shade_.Get(), 0, rows, shade.side * sizeof(float));
+    Transition(shade_.Get(), shade_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    return shade_.Get();
 }
 
 bool D3D12Backend::EnsureFogTargets(uint32_t w, uint32_t h) {

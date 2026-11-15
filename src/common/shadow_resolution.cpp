@@ -21,6 +21,8 @@
 // one that covers the point. Ray traced shadows read the far map's casters, not its texels, so no sharper map is
 // drawn for them. Inside a vis area the far run draws the game's four light frustums, the sun among them;
 // the sharper runs draw one frustum, the top scored light, normally the sun. Only the sun's resolves are recorded.
+// With volumetric fog on, one more run before the far one draws the far map again with every object casting, those
+// without CastShadowMaps too; only the fog reads it.
 //
 // Each sun camera culls its casters to the part of its map a receiver can read: receivers lie in the view frustum, or
 // with water in its reflection, and a caster only shades what it covers along the sun. The camera's side planes are
@@ -100,6 +102,7 @@ thread_local bool t_scene = false;  // the camera's pass FSR upscales, until its
 // sharper maps by index, map i at 2^i times the stock radius, then the far one
 constexpr int kNoMap = -1;
 constexpr int kFarMap = int(fcip::kSunMaps);
+constexpr int kFogMap = kFarMap + 1;  // the far map again with every object casting, for the volumetric fog
 thread_local int t_map = kNoMap;
 thread_local bool t_sun = false;
 
@@ -127,9 +130,10 @@ SunResolve g_ring[kResolveRing];
 std::atomic<uint32_t> g_issued{0};
 uint32_t g_matched = 0;   // render thread
 fcip::SunMaps g_drawn;    // render thread
+uint32_t g_fog_base = 0;  // render thread, the fog map until its far map resolves
 
 // a map's radius over the stock one
-uint32_t Reach(int map) { return map == kFarMap ? g_distance.load() : 1u << map; }
+uint32_t Reach(int map) { return map >= kFarMap ? g_distance.load() : 1u << map; }
 
 // the replacement side, 0 when this is not the shadow map or the side stays
 uint32_t Wanted(uint32_t side) {
@@ -503,6 +507,8 @@ void RunCascade(PPCContext& ctx, uint8_t* base, int map) {
 
 uint32_t fcip::SubmittedPass() { return t_pass_type; }
 
+bool fcip::FogMapRun() { return t_map == kFogMap; }
+
 void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     uint32_t distance = Get().draw_distance;
     bool rays = Get().shadow_filter == kFilterRay && gpu::RayTracing();
@@ -514,6 +520,8 @@ void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     uint64_t quad = ctx.r[6];
     ctx.r[6] = 0;  // one frustum: the sharper maps hold only the sun
     for (uint32_t i = 0; i < maps; i++) RunCascade(ctx, base, int(i));
+    // ray traced shadows already make every object cast into the far map
+    if (Get().volumetric_fog && !rays) RunShadowMaps(ctx, base, kFogMap);
     ctx.r[6] = quad;
     RunShadowMaps(ctx, base, kFarMap);
 }
@@ -525,12 +533,17 @@ int fcip::SunResolved(uint32_t address) {
         const SunResolve& r = g_ring[i % kResolveRing];
         if (r.address != address) continue;
         g_matched = i + 1;
+        if (r.map == kFogMap) {
+            g_fog_base = address;
+            return r.map;
+        }
         if (r.map != kFarMap) {
             g_drawn.bases[r.map] = address;
             g_drawn.near_side = r.side;
             return r.map;
         }
         g_drawn.far_base = address;
+        g_drawn.fog_base = std::exchange(g_fog_base, 0);
         g_drawn.count = r.count;
         g_drawn.distance = r.distance;
         g_drawn.side = r.side;
