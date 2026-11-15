@@ -143,12 +143,22 @@ void LoadSettings(const void* table) {
     s.invert_y = t["invert_mouse_y"].value_or(s.invert_y);
     s.hold_aim = t["hold_to_aim"].value_or(s.hold_aim);
     s.hold_sprint = t["hold_to_sprint"].value_or(s.hold_sprint);
+    for (auto [key, value] : {std::pair{"controller_sensitivity_x", &s.pad_sensitivity_x},
+                              {"controller_sensitivity_y", &s.pad_sensitivity_y},
+                              {"controller_aim_sensitivity_x", &s.pad_aim_sensitivity_x},
+                              {"controller_aim_sensitivity_y", &s.pad_aim_sensitivity_y}})
+        *value = std::clamp(t[key].value_or(*value), 0.02f, 4.0f);
+    s.pad_invert_x = t["invert_controller_x"].value_or(s.pad_invert_x);
+    s.pad_invert_y = t["invert_controller_y"].value_or(s.pad_invert_y);
+    s.pad_hold_aim = t["controller_hold_to_aim"].value_or(s.pad_hold_aim);
     s.skip_intros = t["skip_intros"].value_or(s.skip_intros);
     s.gyro.enabled = t["gyro_aiming"].value_or(s.gyro.enabled);
     s.gyro.sensitivity = std::clamp(t["gyro_sensitivity"].value_or(s.gyro.sensitivity), 0.1f, 5.0f);
     s.gyro.axis = std::min(t["gyro_axis"].value_or(s.gyro.axis), uint32_t(gyro::kWorld));
     s.gyro.button = std::min(t["gyro_button"].value_or(s.gyro.button), uint32_t(std::size(gyro::kButtonNames) - 1));
     s.gyro.button_mode = std::min(t["gyro_button_mode"].value_or(s.gyro.button_mode), uint32_t(gyro::kToggle));
+    uint32_t last_button = uint32_t(std::size(gyro::kButtonNames) - 1);
+    s.gyro.recenter_button = std::min(t["gyro_recenter_button"].value_or(s.gyro.recenter_button), last_button);
     s.invincible = t["invincibility"].value_or(s.invincible);
     s.noclip = t["noclip"].value_or(s.noclip);
     LoadDisplay(t);
@@ -192,12 +202,20 @@ void SaveSettings(void* table) {
     t.insert_or_assign("invert_mouse_y", s.invert_y);
     t.insert_or_assign("hold_to_aim", s.hold_aim);
     t.insert_or_assign("hold_to_sprint", s.hold_sprint);
+    t.insert_or_assign("controller_sensitivity_x", double(s.pad_sensitivity_x));
+    t.insert_or_assign("controller_sensitivity_y", double(s.pad_sensitivity_y));
+    t.insert_or_assign("controller_aim_sensitivity_x", double(s.pad_aim_sensitivity_x));
+    t.insert_or_assign("controller_aim_sensitivity_y", double(s.pad_aim_sensitivity_y));
+    t.insert_or_assign("invert_controller_x", s.pad_invert_x);
+    t.insert_or_assign("invert_controller_y", s.pad_invert_y);
+    t.insert_or_assign("controller_hold_to_aim", s.pad_hold_aim);
     t.insert_or_assign("skip_intros", s.skip_intros);
     t.insert_or_assign("gyro_aiming", s.gyro.enabled);
     t.insert_or_assign("gyro_sensitivity", double(s.gyro.sensitivity));
     t.insert_or_assign("gyro_axis", int64_t(s.gyro.axis));
     t.insert_or_assign("gyro_button", int64_t(s.gyro.button));
     t.insert_or_assign("gyro_button_mode", int64_t(s.gyro.button_mode));
+    t.insert_or_assign("gyro_recenter_button", int64_t(s.gyro.recenter_button));
     t.insert_or_assign("invincibility", s.invincible);
     t.insert_or_assign("noclip", s.noclip);
     SaveDisplay(t);

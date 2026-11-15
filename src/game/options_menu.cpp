@@ -73,18 +73,18 @@ void ShowEntry(uint32_t self) {
     Write8(widget + kWidgetEnabled, Read8(widget + kWidgetEnabled) | Read8(sibling + kWidgetEnabled));
 }
 
-// buttons cloned from GAME OPTIONS: MOUSE AND KEYBOARD on the User page takes RESET DEFAULTS' row, which moves to the
-// bottom; the pause menu's copy of P_EditProfile has no spare slot, so it gets both
+// buttons cloned from GAME OPTIONS: MOUSE AND KEYBOARD and CONTROLLER on the User page take RESET DEFAULTS' row, which
+// moves to the bottom; the pause menu's copy of P_EditProfile has no spare slot, so it gets all three
 void AddEntriesFor(PPCContext& ctx, uint32_t self) {
     uint32_t vtable = Read32(self);
     if (vtable == kVtProfile) {
         uint32_t page = ProfilePage(self, 1);
-        AddEntries(ctx, page, FindWidget(page, kCrcMultiplayerSetup), kCrcVideo, kCrcControlSetup, {kCrcMouseKeyboard},
-                   FindWidget(page, kCrcResetDefault));
+        AddEntries(ctx, page, FindWidget(page, kCrcMultiplayerSetup), kCrcVideo, kCrcControlSetup,
+                   {kCrcMouseKeyboard, kCrcControllerSettings}, FindWidget(page, kCrcResetDefault));
     } else if (vtable == kVtInGame) {
         uint32_t page = ProfilePage(self, 4);
         AddEntries(ctx, page, FindWidget(page, kCrcVideo), kCrcVideo, kCrcControlSetup,
-                   {kCrcRecompSettings, kCrcMouseKeyboard});
+                   {kCrcRecompSettings, kCrcMouseKeyboard, kCrcControllerSettings});
     } else if (vtable == kVtPreGame) {
         uint32_t page = MainPage(self);
         AddEntries(ctx, page, LastMainRow(page), kCrcCredits, kCrcOptions, {kCrcExit});
@@ -296,7 +296,7 @@ void NativeHelp(PPCContext& ctx) {
 
 void NativeTitle(PPCContext& ctx) {
     uint32_t title = FindWidget(g_native.page, kCrcTitle);
-    const char* caption = CaptionFor(g_native.mode ? kCrcMouseKeyboard : kCrcRecompSettings);
+    const char* caption = CaptionFor(EntryFor(g_native.mode));
     if (g_native.section >= 0) caption = rows::Page(g_native.mode)[size_t(g_native.section)].label;
     SetCaption(ctx, Read32(title + kWidgetElement), caption);
 }

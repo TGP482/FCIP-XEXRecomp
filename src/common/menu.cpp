@@ -127,7 +127,8 @@ enum RowId {
     kInvincible, kNoclip, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kFrameGeneration, kSmaa, kAmbientOcclusion,
     kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection, kVolumetricClouds,
-    kCaustics
+    kCaustics, kPadSensitivityX, kPadSensitivityY, kPadAimSensitivityX, kPadAimSensitivityY, kPadInvertX, kPadInvertY,
+    kPadHoldAim, kGyroRecenter
 };
 
 constexpr Row kSettingsRows[] = {
@@ -174,13 +175,6 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
     {Kind::Value, kAudioOutput, "AUDIO OUTPUT",
      "Mono, stereo or 5.1 surround, automatic follows the speakers set up in Windows"},
-    {Kind::Heading, -1, "GYRO", "Gyro aiming for controllers with motion sensors"},
-    {Kind::Value, kGyroAiming, "GYRO AIMING", "Turns the view with the controller's gyro, beside the right stick"},
-    {Kind::Value, kGyroSensitivity, "GYRO SENSITIVITY", "Degrees the view turns for each degree the controller turns"},
-    {Kind::Value, kGyroAxis, "GYRO AXIS", "Turns with the controller's yaw, its roll, or about the real world's up"},
-    {Kind::Value, kGyroButton, "GYRO BUTTON", "A button the game leaves free that switches the gyro"},
-    {Kind::Value, kGyroButtonMode, "GYRO BUTTON MODE", "Whether the gyro button turns the gyro off, on or flips it"},
-    {Kind::Value, kGyroCalibrate, "CALIBRATE GYRO", "Lay the controller still while its drift is measured"},
     {Kind::Heading, -1, "TEXTURES", "Texture replacement and dumping"},
     {Kind::Value, kTextureReplacement, "TEXTURE REPLACEMENT",
      "Replaces the game's textures with the images in the textures\\replacement folder beside the exe"},
@@ -248,6 +242,28 @@ const std::vector<Row>& KeyboardRows() {
     }();
     return list;
 }
+
+constexpr Row kControllerRows[] = {
+    {Kind::Heading, -1, "GENERAL", "Controller sensitivity, inversion and hold or toggle"},
+    {Kind::Value, kPadSensitivityX, "HORIZONTAL SENSITIVITY", "Adjusts horizontal controller look sensitivity"},
+    {Kind::Value, kPadSensitivityY, "VERTICAL SENSITIVITY", "Adjusts vertical controller look sensitivity"},
+    {Kind::Value, kPadAimSensitivityX, "AIM HORIZONTAL SENSITIVITY",
+     "Adjusts horizontal controller look sensitivity while aiming"},
+    {Kind::Value, kPadAimSensitivityY, "AIM VERTICAL SENSITIVITY",
+     "Adjusts vertical controller look sensitivity while aiming"},
+    {Kind::Value, kPadInvertX, "INVERT X-AXIS", "Inverts the horizontal right stick and gyro look"},
+    {Kind::Value, kPadInvertY, "INVERT Y-AXIS", "Inverts the vertical right stick and gyro look"},
+    {Kind::Value, kPadHoldAim, "HOLD TO AIM", "Aim only while the right stick is held in instead of toggling"},
+    {Kind::Heading, -1, "GYRO", "Gyro aiming for controllers with motion sensors"},
+    {Kind::Value, kGyroAiming, "GYRO AIMING", "Turns the view with the controller's gyro, beside the right stick"},
+    {Kind::Value, kGyroSensitivity, "GYRO SENSITIVITY", "Degrees the view turns for each degree the controller turns"},
+    {Kind::Value, kGyroAxis, "GYRO AXIS", "Turns with the controller's yaw, its roll, or about the real world's up"},
+    {Kind::Value, kGyroButton, "GYRO BUTTON", "A button the game leaves free that switches the gyro"},
+    {Kind::Value, kGyroButtonMode, "GYRO BUTTON MODE", "Whether the gyro button turns the gyro off, on or flips it"},
+    {Kind::Value, kGyroRecenter, "RECENTER BUTTON", "A button the game leaves free that levels the view"},
+    {Kind::Value, kGyroCalibrate, "CALIBRATE GYRO", "Lay the controller still while its drift is measured"},
+    {Kind::Defaults, -1, "RESTORE DEFAULTS", "Puts every controller setting back to its default"},
+};
 
 bool DisplayRow(int id) { return id == kMonitor || id == kDisplayMode || id == kResolution; }
 
@@ -342,6 +358,9 @@ bool* ToggleFlag(int id) {
         case kInvertY: return &g.invert_y;
         case kHoldAim: return &g.hold_aim;
         case kHoldSprint: return &g.hold_sprint;
+        case kPadInvertX: return &g.pad_invert_x;
+        case kPadInvertY: return &g.pad_invert_y;
+        case kPadHoldAim: return &g.pad_hold_aim;
         case kSkipIntros: return &g.skip_intros;
         case kFpsCounter: return &g.fps_counter;
         case kHdrOutput: return &g.hdr_output;
@@ -361,6 +380,10 @@ float* SensitivityField(int id) {
         case kSensitivityY: return &g.sensitivity_y;
         case kAimSensitivityX: return &g.aim_sensitivity_x;
         case kAimSensitivityY: return &g.aim_sensitivity_y;
+        case kPadSensitivityX: return &g.pad_sensitivity_x;
+        case kPadSensitivityY: return &g.pad_sensitivity_y;
+        case kPadAimSensitivityX: return &g.pad_aim_sensitivity_x;
+        case kPadAimSensitivityY: return &g.pad_aim_sensitivity_y;
         default: return nullptr;
     }
 }
@@ -424,6 +447,7 @@ void StepGyroRow(int id, int step, char (&text)[64]) {
         case kGyroAxis: StepName(g.axis, gyro::kAxisNames, step, text); break;
         case kGyroButton: StepName(g.button, gyro::kButtonNames, step, text); break;
         case kGyroButtonMode: StepName(g.button_mode, gyro::kButtonModeNames, step, text); break;
+        case kGyroRecenter: StepName(g.recenter_button, gyro::kButtonNames, step, text); break;
         case kGyroCalibrate:
             if (step) gyro::StartCalibration();
             std::snprintf(text, sizeof(text), "%s", gyro::Calibrating() ? "KEEP STILL" : "START");
@@ -558,6 +582,7 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
         case kGyroAxis:
         case kGyroButton:
         case kGyroButtonMode:
+        case kGyroRecenter:
         case kGyroCalibrate:
             StepGyroRow(id, step, text);
             break;
@@ -594,6 +619,18 @@ void CopyMouseSettings(Settings& to, const Settings& from) {
     to.hold_sprint = from.hold_sprint;
 }
 
+// the CONTROLLER page's settings
+void CopyPadSettings(Settings& to, const Settings& from) {
+    to.pad_sensitivity_x = from.pad_sensitivity_x;
+    to.pad_sensitivity_y = from.pad_sensitivity_y;
+    to.pad_aim_sensitivity_x = from.pad_aim_sensitivity_x;
+    to.pad_aim_sensitivity_y = from.pad_aim_sensitivity_y;
+    to.pad_invert_x = from.pad_invert_x;
+    to.pad_invert_y = from.pad_invert_y;
+    to.pad_hold_aim = from.pad_hold_aim;
+    to.gyro = from.gyro;
+}
+
 void RestoreDefaults(int page) {
     if (page == kDebugPage) {
         Get().invincible = false;
@@ -604,6 +641,11 @@ void RestoreDefaults(int page) {
     if (page == kKeyboardPage) {
         CopyMouseSettings(Get(), Settings{});
         keys::ResetBinds();
+        Changed(false);
+        return;
+    }
+    if (page == kControllerPage) {
+        CopyPadSettings(Get(), Settings{});
         Changed(false);
         return;
     }
@@ -619,10 +661,11 @@ void RestoreDefaults(int page) {
     s.custom_textures = def.custom_textures;
     s.dump_textures = def.dump_textures;
     s.texture_dump_format = def.texture_dump_format;
-    // the mouse settings belong to the other page
+    // the mouse and controller settings belong to their own pages
     const Settings keep = Get();
     Get() = Settings{};
     CopyMouseSettings(Get(), keep);
+    CopyPadSettings(Get(), keep);
     Get().invincible = keep.invincible;
     Get().noclip = keep.noclip;
     Changed(true);
@@ -689,7 +732,7 @@ int OptionRow(const char* label, const char* value) {
     return step;
 }
 
-const char* const kPages[] = {"RECOMP SETTINGS", "MOUSE AND KEYBOARD", "DEBUG"};
+const char* const kPages[] = {"RECOMP SETTINGS", "MOUSE AND KEYBOARD", "CONTROLLER", "DEBUG"};
 
 // the debug page is default.xex's only
 int PageCount() { return g_load_level ? int(std::size(kPages)) : kDebugPage; }
@@ -1007,6 +1050,7 @@ namespace rows {
 std::span<const Row> Page(int page) {
     if (page == kSettingsPage) return kSettingsRows;
     if (page == kKeyboardPage) return KeyboardRows();
+    if (page == kControllerPage) return kControllerRows;
     if (page == kDebugPage) return DebugRows();
     return {};
 }

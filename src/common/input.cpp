@@ -34,6 +34,7 @@ namespace {
 
 // CXEntityProcessingCmd, see CXGame::OnAction and CPlayer::ProcessMovements
 constexpr uint32_t kCmdActions = 0x04;  // bit (id - 1) for ids below 32
+constexpr uint32_t kCmdAnglePitch = 0x18;  // the view's pitch in degrees, positive looks down
 constexpr uint32_t kCmdMoveX = 0x0C;    // MOVE_LR, strafe
 constexpr uint32_t kCmdMoveY = 0x10;    // MOVE_FB, forward
 constexpr uint32_t kCmdYaw = 0xBC;      // look deltas in degrees, written by CAimHelper::Update
@@ -96,6 +97,7 @@ std::atomic<uint32_t> g_local_player{0};  // set by ProcessView, which only runs
 std::atomic<bool> g_reload_only{false};
 std::atomic<bool> g_interact_only{false};
 std::atomic<bool> g_pad_y{false};  // the pad's own Y, before the keys merge in
+std::atomic<bool> g_pad_aim{false};  // the pad's own right stick click
 std::atomic<int64_t> g_start_until{0};  // steady clock ns START stays held to
 std::atomic<uint64_t> g_menu_ms{0};  // the last frame the menus took input
 std::atomic<bool> g_title{false};
@@ -284,13 +286,30 @@ void MouseLook(uint32_t cmd) {
     WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) + pitch);
 }
 
-// the controller's gyro turns the view beside the right stick
+// the pad's turn this frame at the controller sensitivity; the look keys ride the pad's stick, so only while the pad
+// leads
+void PadLook(uint32_t cmd) {
+    if (!cmd || K::KbmActive()) return;
+    const fcip::Settings& s = fcip::Get();
+    bool aiming = Zoomed(g_local_player);
+    float kx = aiming ? s.pad_aim_sensitivity_x : s.pad_sensitivity_x;
+    float ky = aiming ? s.pad_aim_sensitivity_y : s.pad_sensitivity_y;
+    WF(cmd + kCmdYaw, GF(cmd + kCmdYaw) * kx);
+    WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) * ky);
+}
+
+// the controller's gyro turns the view beside the right stick, its recenter button levels it
 void GyroLook(uint32_t cmd) {
-    gyro::Turn turn = gyro::Take(fcip::Get().gyro);
-    if (!cmd || fcip::MenuOpen() || InCutscene(g_local_player) || (turn.yaw == 0.0f && turn.pitch == 0.0f)) return;
-    // the gyro turns left positive, the command right positive
-    WF(cmd + kCmdYaw, GF(cmd + kCmdYaw) - turn.yaw);
-    WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) + turn.pitch);
+    const fcip::Settings& s = fcip::Get();
+    gyro::Turn turn = gyro::Take(s.gyro);
+    if (!cmd || fcip::MenuOpen() || InCutscene(g_local_player)) return;
+    if (turn.recenter) WF(cmd + kCmdPitch, -std::remainder(GF(cmd + kCmdAnglePitch), 360.0f));
+    if (turn.yaw == 0.0f && turn.pitch == 0.0f) return;
+    // the gyro turns left positive, the command right positive; both pitch down positive
+    float yaw = s.pad_invert_x ? turn.yaw : -turn.yaw;
+    float pitch = s.pad_invert_y ? -turn.pitch : turn.pitch;
+    WF(cmd + kCmdYaw, GF(cmd + kCmdYaw) + yaw);
+    WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) + pitch);
 }
 
 bool StandingCrouchPress(uint32_t player) {
@@ -362,9 +381,9 @@ void CycleSlot(uint32_t player, uint32_t cmd, uint32_t avail, int steps) {
     }
 }
 
-// hold to aim sets ZOOM_TOGGLE for one frame only when the key and the zoom disagree; if the game drops the zoom
-// itself (reload) the key must be pressed again
-void HoldToAim(uint32_t player, uint32_t cmd) {
+// hold to aim sets ZOOM_TOGGLE for one frame only when the held key or stick and the zoom disagree; if the game drops
+// the zoom itself (reload) it must be pressed again
+void HoldToAim(uint32_t player, uint32_t cmd, bool held) {
     static bool was_in = false;
     static bool latched = false;
     static bool exiting = false;
@@ -372,7 +391,6 @@ void HoldToAim(uint32_t player, uint32_t cmd) {
     uint32_t zoom = R32(player + kPlayerZoom);
     bool in = GuestOk(zoom) && R8(zoom + kZoomOn);
     bool leaving = in && R8(zoom + kZoomLeaving);
-    bool held = Held(K::kAim);
     if (was_in && !in && held && !exiting) latched = true;
     if (!held) latched = false;
     if (!in) exiting = false;
@@ -428,6 +446,7 @@ void GamePad(int port, input::Pad& pad) {
     bool start = std::chrono::steady_clock::now().time_since_epoch().count() < g_start_until;
     K::TrackKeys(pad.connected && !Neutral(pad), MenuOpen());
     g_pad_y = pad.buttons & input::kY;
+    g_pad_aim = pad.buttons & input::kRightThumb;
     if (MenuOpen()) {
         g_reload_only = g_interact_only = false;
         pad = {.connected = true};
@@ -435,6 +454,9 @@ void GamePad(int port, input::Pad& pad) {
     }
     ToggleHud();
     input::Pad kb = Keyboard(pad);
+    // not plain negation: -32768 has no positive
+    if (fcip::Get().pad_invert_x && !InMenu()) pad.rx = int16_t(-1 - pad.rx);
+    if (fcip::Get().pad_invert_y && !InMenu()) pad.ry = int16_t(-1 - pad.ry);
     // keyboard and mouse ride on port 0, a controller or not
     pad.connected = true;
     pad.buttons |= kb.buttons;
@@ -561,7 +583,10 @@ PPC_FUNC(GUEST(CPlayer_Zoom)) {
         // the aim key fires the second gun, a zoom would also drop akimbo
         W32(cmd + kCmdActions, R32(cmd + kCmdActions) & ~kZoomBit);
     } else if (Local(player, cmd) && fcip::Get().hold_aim && K::KbmActive() && !K::PadRecent() && !InCutscene(player)) {
-        HoldToAim(player, cmd);
+        HoldToAim(player, cmd, Held(K::kAim));
+    } else if (Local(player, cmd) && fcip::Get().pad_hold_aim && !K::KbmActive() && !InCutscene(player) &&
+               !R8(player + kPlayerAkimbo)) {
+        HoldToAim(player, cmd, g_pad_aim);
     }
     // zoom steps set the scope blur; the lock keeps it off
     bool lock = !fcip::Get().blur && GuestOk(player);
@@ -628,7 +653,7 @@ PPC_FUNC(GUEST(CPlayer_FireWeapon)) {
     RestoreAutoAim(over);
 }
 
-// (helper, cmd): mouse look and the gyro add this frame's turn to the look the pad produced; the aiming helper is off
+// (helper, cmd): the pad's look scaled, then mouse look and the gyro add this frame's turn; the aiming helper is off
 // for the call while the keyboard or mouse is in use
 PPC_FUNC(GUEST(CAimHelper_Update)) {
     uint32_t cmd = uint32_t(ctx.r[4]);
@@ -636,6 +661,7 @@ PPC_FUNC(GUEST(CAimHelper_Update)) {
     HelperOverride helper = SuppressAimingHelper();
     GUEST_ORIG(CAimHelper_Update)(ctx, base);
     if (helper.slot) W32(helper.slot, helper.saved);
+    PadLook(cmd);
     MouseLook(cmd);
     GyroLook(cmd);
 }

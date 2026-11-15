@@ -40,6 +40,14 @@ struct Settings {
     bool invert_y = false;
     bool hold_aim = true;          // aim while the key is held, not a toggle
     bool hold_sprint = true;       // feral run while its key is held, not a toggle
+    // controller look over the game's own turn, 1 keeps it; while aiming only the aim pair applies
+    float pad_sensitivity_x = 1.0f;
+    float pad_sensitivity_y = 1.0f;
+    float pad_aim_sensitivity_x = 1.0f;
+    float pad_aim_sensitivity_y = 1.0f;
+    bool pad_invert_x = false;
+    bool pad_invert_y = false;
+    bool pad_hold_aim = false;     // aim while the right stick is held in, the game toggles on each click
     bool skip_intros = true;       // the logo, the branding plate and the intro movie
     gyro::Settings gyro;           // the controller's gyro turns the view, beside the right stick
     bool invincible = false;

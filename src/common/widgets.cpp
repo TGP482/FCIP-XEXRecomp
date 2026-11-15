@@ -35,6 +35,8 @@ constexpr const char* kRecompCaption = "RECOMP SETTINGS";
 constexpr const char* kRecompHelp = "Display and graphics settings";
 constexpr const char* kInputCaption = "MOUSE AND KEYBOARD";
 constexpr const char* kInputHelp = "Mouse settings and keyboard bindings";
+constexpr const char* kControllerCaption = "CONTROLLER";
+constexpr const char* kControllerHelp = "Controller sensitivity and gyro settings";
 constexpr const char* kExitCaption = "EXIT";
 constexpr const char* kExitHelp = "Close the game and return to the desktop";
 
@@ -248,6 +250,7 @@ void MoveWidget(uint32_t widget, uint32_t place) {
 const char* CaptionFor(uint32_t crc) {
     if (crc == kCrcMultiplayerSetup || crc == kCrcRecompSettings) return kRecompCaption;
     if (crc == kCrcMouseKeyboard) return kInputCaption;
+    if (crc == kCrcControllerSettings) return kControllerCaption;
     if (crc == kCrcExit) return kExitCaption;
     return nullptr;
 }
@@ -255,6 +258,7 @@ const char* CaptionFor(uint32_t crc) {
 const char* HelpFor(uint32_t crc) {
     if (crc == kCrcMultiplayerSetup || crc == kCrcRecompSettings) return kRecompHelp;
     if (crc == kCrcMouseKeyboard) return kInputHelp;
+    if (crc == kCrcControllerSettings) return kControllerHelp;
     if (crc == kCrcExit) return kExitHelp;
     return nullptr;
 }
@@ -262,11 +266,20 @@ const char* HelpFor(uint32_t crc) {
 int PageFor(uint32_t crc) {
     if (crc == kCrcMultiplayerSetup || crc == kCrcRecompSettings) return kSettingsPage;
     if (crc == kCrcMouseKeyboard) return kKeyboardPage;
+    if (crc == kCrcControllerSettings) return kControllerPage;
     return -1;
 }
 
+uint32_t EntryFor(int page) {
+    if (page == kKeyboardPage) return kCrcMouseKeyboard;
+    if (page == kControllerPage) return kCrcControllerSettings;
+    return kCrcRecompSettings;
+}
+
 void SetEntryCaptions(PPCContext& ctx, uint32_t page) {
-    for (uint32_t crc : {kCrcMultiplayerSetup, kCrcRecompSettings, kCrcMouseKeyboard, kCrcExit}) {
+    constexpr uint32_t kEntries[] = {kCrcMultiplayerSetup, kCrcRecompSettings, kCrcMouseKeyboard,
+                                     kCrcControllerSettings, kCrcExit};
+    for (uint32_t crc : kEntries) {
         if (uint32_t widget = FindWidget(page, crc)) SetCaption(ctx, Read32(widget + kWidgetElement), CaptionFor(crc));
     }
 }

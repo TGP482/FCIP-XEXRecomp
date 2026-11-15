@@ -13,7 +13,8 @@ namespace fcip {
 
 constexpr int kSettingsPage = 0;
 constexpr int kKeyboardPage = 1;
-constexpr int kDebugPage = 2;
+constexpr int kControllerPage = 2;
+constexpr int kDebugPage = 3;
 
 bool MenuOpen();
 void ToggleMenu();

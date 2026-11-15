@@ -19,7 +19,7 @@ void AddStartMenuEntries(PPCContext& ctx, uint32_t handler) {
     uint32_t page = Read32(handler + kHandlerPage);
     if (!page || Read32(page + kPageNameCrc) != kCrcStartMenu) return;
     AddEntries(ctx, page, FindWidget(page, kCrcExitEditor), kCrcHintsTips, kCrcControls,
-               {kCrcRecompSettings, kCrcMouseKeyboard});
+               {kCrcRecompSettings, kCrcMouseKeyboard, kCrcControllerSettings});
     SetEntryCaptions(ctx, page);
 }
 
