@@ -121,8 +121,38 @@ int64_t NowMs() {
 
 namespace fcip {
 
+namespace {
+
+std::atomic<uint64_t> g_view{0};  // x, y, width and height, 16 bits each
+
+Box ViewBox() {
+    uint64_t v = g_view;
+    return {float(v & 0xFFFF), float(v >> 16 & 0xFFFF), float(v >> 32 & 0xFFFF), float(v >> 48)};
+}
+
+}  // namespace
+
+void SetViewBox(const Box& view) {
+    auto part = [](float f) { return uint64_t(std::clamp(f, 0.0f, 65535.0f)); };
+    g_view = part(view.x) | part(view.y) << 16 | part(view.w) << 32 | part(view.h) << 48;
+}
+
+Box FrameBox(float w, float h) {
+    Box area = ViewBox();
+    if (area.w <= 0.0f || area.h <= 0.0f) area = {0.0f, 0.0f, w, h};
+    // a view set for a larger window waits a frame for the new layout
+    area.w = std::min(area.w, w - area.x);
+    area.h = std::min(area.h, h - area.y);
+    float aspect = DisplayAspect();
+    float fw = std::max(std::min(area.w, area.h * aspect), 0.0f);
+    float fh = fw / aspect;
+    return {area.x + (area.w - fw) * 0.5f, area.y + (area.h - fh) * 0.5f, fw, fh};
+}
+
 // Output() may read the registry, so it is cached per setting and refreshed each second
 float DisplayAspect() {
+    Box view = ViewBox();
+    if (view.w > 0.0f && view.h > 0.0f) return std::max(view.w / view.h, 4.0f / 3.0f);
     static std::atomic<float> aspect{16.0f / 9.0f};
     static std::atomic<uint64_t> key{~0ull};
     static std::atomic<int64_t> due{0};

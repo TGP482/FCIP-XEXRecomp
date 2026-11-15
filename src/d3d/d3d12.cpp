@@ -6081,7 +6081,7 @@ std::array<float, 9> ColourBlindMatrix(uint32_t mode) {
     return m;
 }
 
-// the frame over the window at the output's aspect, 4:3 at the narrowest, bars around it
+// the frame over its box in the window (FrameBox), bars around it
 void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, DXGI_FORMAT rtv,
                               D3D12_CPU_DESCRIPTOR_HANDLE target, UINT mapping, uint32_t w, uint32_t h) {
     ID3D12PipelineState* pso = EnsureResolvePipeline(rtv, false, true);
@@ -6095,9 +6095,7 @@ void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state,
         }
         cl_->OMSetRenderTargets(1, &target, FALSE, nullptr);
     }
-    float aspect = fcip::DisplayAspect();
-    float vw = std::min(float(swap_w_), swap_h_ * aspect);
-    float vh = vw / aspect;
+    fcip::Box box = fcip::FrameBox(float(swap_w_), float(swap_h_));
     uint32_t views = AllocViews(kPsTextures);
     NullViews(views + 1, kPsTextures - 1);
     D3D12_SHADER_RESOURCE_VIEW_DESC v{};
@@ -6114,12 +6112,12 @@ void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state,
         for (int row = 0; row < 3; row++) std::memcpy(cb + 8 + row * 4, colour.data() + row * 3, 3 * sizeof(float));
     }
     D3D12_GPU_VIRTUAL_ADDRESS addr = UploadConstants(cb, sizeof(cb));
-    D3D12_VIEWPORT vp{(swap_w_ - vw) / 2, (swap_h_ - vh) / 2, vw, vh, 0, 1};
+    D3D12_VIEWPORT vp{box.x, box.y, box.w, box.h, 0, 1};
     D3D12_RECT sc{0, 0, LONG(swap_w_), LONG(swap_h_)};
-    frame_rect_[0] = uint32_t(vp.TopLeftX);
-    frame_rect_[1] = uint32_t(vp.TopLeftY);
-    frame_rect_[2] = uint32_t(vw);
-    frame_rect_[3] = uint32_t(vh);
+    frame_rect_[0] = uint32_t(box.x);
+    frame_rect_[1] = uint32_t(box.y);
+    frame_rect_[2] = uint32_t(box.w);
+    frame_rect_[3] = uint32_t(box.h);
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &sc);
     cl_->SetPipelineState(pso);

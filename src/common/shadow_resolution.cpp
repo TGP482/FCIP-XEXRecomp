@@ -118,6 +118,7 @@ float g_sun_clip[16] = {};  // title thread, SunClip's
 bool g_sun_clip_set = false;
 std::mutex g_view_clip_lock;  // ViewClip's, read on other threads
 float g_view_clip[16] = {};
+float g_view_position[3] = {};
 bool g_view_clip_set = false;
 
 // sun map resolves in the order the title issues them; the render thread runs up to a frame behind, so it matches each
@@ -359,6 +360,7 @@ void LatchViewClip(uint32_t cam) {
     }
     std::lock_guard lock(g_view_clip_lock);
     std::copy(std::begin(clip), std::end(clip), g_view_clip);
+    for (uint32_t i = 0; i < 3; i++) g_view_position[i] = GF(cam + kCameraPosition + i * 4);
     g_view_clip_set = true;
 }
 
@@ -587,6 +589,12 @@ bool fcip::SunClip(float out[16]) {
 bool fcip::ViewClip(float out[16]) {
     std::lock_guard lock(g_view_clip_lock);
     std::copy(std::begin(g_view_clip), std::end(g_view_clip), out);
+    return g_view_clip_set;
+}
+
+bool fcip::ViewPosition(float out[3]) {
+    std::lock_guard lock(g_view_clip_lock);
+    std::copy(std::begin(g_view_position), std::end(g_view_position), out);
     return g_view_clip_set;
 }
 

@@ -1,5 +1,5 @@
-// ige.xex, the solo level editor: the object panel (F4) lists the script properties of the one object the Edit
-// Object tool has selected, as the editor saves them, and writes edits back into the entity's tables. The game's own
+// ige.xex, the solo level editor: the object panel in the editor's dock lists the script properties of the one object
+// the Edit Object tool has selected, as the editor saves them, and writes edits back into the entity's tables. The game's own
 // converters do the work: a table to XML as the editor saves, XML to a table as it loads. Below them are the object's
 // event links, which another object (a door, a spawner, the level) gets when this one sends an event.
 #include <algorithm>
@@ -11,17 +11,15 @@
 #include <string>
 #include <vector>
 
-#include <windows.h>
-
 #include <imgui.h>
 
-#include "common/menu.h"
 #include "common/panel_colors.h"
 #include "kernel/memory.h"
 #include "leveleditor/event_links.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mode.h"
+#include "leveleditor/object_panel.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -29,7 +27,6 @@ using namespace fcip::editor;
 
 namespace {
 
-constexpr uintptr_t kPanelKey = VK_F4;
 // the tables the editor saves for an object: its Properties and an AI's per instance ones
 constexpr const char* kTables[] = {"Properties", "PropertiesInstance"};
 
@@ -109,7 +106,6 @@ uint32_t g_shown = 0;  // the object the snapshot holds, editor thread only
 bool g_stale = false;
 
 // panel side, window thread
-bool g_open = false;
 Snapshot g_view;
 std::vector<std::array<char, kValueChars>> g_fields;
 // the link being added
@@ -365,16 +361,19 @@ void DrawLinks() {
         ImGui::Text("On %s, %s gets %s", l.source.c_str(), target.c_str(), l.event.c_str());
         ImGui::PopID();
     }
+    // a line each, so the dock can be narrow
     float em = ImGui::GetFontSize();
+    float label_w = em * 3;
+    ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("On");
-    ImGui::SameLine();
-    EventField("source", g_new_source, kSourceEvents, em * 7);
-    ImGui::SameLine();
-    TargetField(em * 12);
-    ImGui::SameLine();
+    ImGui::SameLine(label_w);
+    EventField("source", g_new_source, kSourceEvents, em * 9);
+    ImGui::SetCursorPosX(label_w);
+    TargetField(-1);
+    ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("gets");
-    ImGui::SameLine();
-    EventField("event", g_new_event, kTargetEvents, em * 7);
+    ImGui::SameLine(label_w);
+    EventField("event", g_new_event, kTargetEvents, em * 9);
     ImGui::SameLine();
     bool ready = g_new_target && g_new_source[0] && g_new_event[0];
     ImGui::BeginDisabled(!ready);
@@ -386,57 +385,22 @@ void DrawLinks() {
     ImGui::EndDisabled();
 }
 
-void DrawPanel() {
-    if (!g_open) return;
-    TakeSnapshot();
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    float em = ImGui::GetFontSize();
-    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - em, vp->Pos.y + em), ImGuiCond_Always, ImVec2(1, 0));
-    ImGui::SetNextWindowSize(ImVec2(em * 36, vp->Size.y - em * 2), ImGuiCond_Always);
-    for (const auto& [col, color] : fcip::kPanelColors) ImGui::PushStyleColor(col, color);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
-    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
-                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar;
-    if (ImGui::Begin("##object_panel", nullptr, kFlags)) {
-        ImGui::TextUnformatted("OBJECT PROPERTIES");
-        ImGui::PushStyleColor(ImGuiCol_Text, fcip::kDim);
-        ImGui::TextUnformatted("Enter or a click elsewhere applies a value, F4 or Escape closes");
-        ImGui::PopStyleColor();
-        ImGui::Separator();
-        if (!g_view.object) ImGui::TextUnformatted("Select one object with the Edit Object tool.");
-        else ImGui::Text("Object: %s", g_view.name.c_str());
-        ImGui::BeginChild("##fields");
-        DrawFields();
-        if (g_view.object) DrawLinks();
-        ImGui::EndChild();
-    }
-    ImGui::End();
-    ImGui::PopStyleVar(3);
-    ImGui::PopStyleColor(int(std::size(fcip::kPanelColors)));
-}
-
-bool PanelKey(uint32_t, uintptr_t wp) {
-    if (!fcip::editor::g_solo) return false;
-    bool toggle = wp == kPanelKey;
-    bool close = wp == VK_ESCAPE && g_open;
-    if (!toggle && !close) return false;
-    g_open = toggle ? !g_open : false;
-    fcip::g_editor_panel_open = g_open;
-    return true;
-}
-
-// the markers under the panel
-void DrawEditorUi() {
-    if (!fcip::editor::g_solo) return;
-    DrawMarkers();
-    DrawPanel();
-}
-
-const bool g_registered = (fcip::g_editor_panel = DrawEditorUi, fcip::g_editor_panel_key = PanelKey, true);
-
 }  // namespace
+
+void fcip::editor::DrawObjectPanel() {
+    TakeSnapshot();
+    ImGui::TextUnformatted("OBJECT PROPERTIES");
+    ImGui::PushStyleColor(ImGuiCol_Text, fcip::kDim);
+    ImGui::TextUnformatted("Enter or a click elsewhere applies a value");
+    ImGui::PopStyleColor();
+    ImGui::Separator();
+    if (!g_view.object) ImGui::TextUnformatted("Select one object with the Edit Object tool.");
+    else ImGui::Text("Object: %s", g_view.name.c_str());
+    ImGui::BeginChild("##fields");
+    DrawFields();
+    if (g_view.object) DrawLinks();
+    ImGui::EndChild();
+}
 
 PPC_EXTERN_FUNC(__imp__sub_820DE570);
 PPC_EXTERN_FUNC(__imp__sub_820DD258);

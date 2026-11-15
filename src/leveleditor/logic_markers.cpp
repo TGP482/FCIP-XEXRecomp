@@ -12,6 +12,7 @@
 
 #include <imgui.h>
 
+#include "common/aspect.h"
 #include "common/panel_colors.h"
 #include "common/view_clip.h"
 #include "leveleditor/guest.h"
@@ -73,8 +74,10 @@ void DrawMarkers() {
         markers = g_markers;
     }
     if (markers.empty() || !ViewClip(clip)) return;
-    ImDrawList* draw = ImGui::GetBackgroundDrawList();
     ImVec2 size = ImGui::GetIO().DisplaySize;
+    Box frame = FrameBox(size.x, size.y);
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    draw->PushClipRect(ImVec2(frame.x, frame.y), ImVec2(frame.x + frame.w, frame.y + frame.h));
     ImU32 colour = ImGui::GetColorU32(kHeading);
     for (const Marker& m : markers) {
         const float* p = m.pos;
@@ -82,11 +85,12 @@ void DrawMarkers() {
         float y = p[0] * clip[1] + p[1] * clip[5] + p[2] * clip[9] + clip[13];
         float w = p[0] * clip[3] + p[1] * clip[7] + p[2] * clip[11] + clip[15];
         if (w < kMinClipW) continue;
-        ImVec2 at((x / w * 0.5f + 0.5f) * size.x, (0.5f - y / w * 0.5f) * size.y);
+        ImVec2 at(frame.x + (x / w * 0.5f + 0.5f) * frame.w, frame.y + (0.5f - y / w * 0.5f) * frame.h);
         draw->AddRect(ImVec2(at.x - kMarkerHalf, at.y - kMarkerHalf), ImVec2(at.x + kMarkerHalf, at.y + kMarkerHalf),
                       colour, 0.0f, 0, 2.0f);
         draw->AddText(ImVec2(at.x + kMarkerHalf * 1.5f, at.y - kMarkerHalf), colour, m.label.c_str());
     }
+    draw->PopClipRect();
 }
 
 }  // namespace fcip::editor

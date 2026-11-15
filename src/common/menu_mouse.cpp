@@ -100,14 +100,10 @@ Input g_input;
 void SetPos(HWND hwnd, intptr_t lp) {
     RECT r;
     GetClientRect(hwnd, &r);
-    float w = float(r.right);
-    float h = float(r.bottom);
-    if (w <= 0.0f || h <= 0.0f) return;
-    float a = fcip::DisplayAspect();
-    float fw = std::min(w, h * a);
-    float fh = fw / a;
-    float u = (float(GET_X_LPARAM(lp)) - (w - fw) * 0.5f) / fw;
-    float v = (float(GET_Y_LPARAM(lp)) - (h - fh) * 0.5f) / fh;
+    fcip::Box frame = fcip::FrameBox(float(r.right), float(r.bottom));
+    if (frame.w <= 0.0f || frame.h <= 0.0f) return;
+    float u = (float(GET_X_LPARAM(lp)) - frame.x) / frame.w;
+    float v = (float(GET_Y_LPARAM(lp)) - frame.y) / frame.h;
     if (!g_input.have_pos || u != g_input.u || v != g_input.v) g_input.moved = true;
     g_input.u = u;
     g_input.v = v;

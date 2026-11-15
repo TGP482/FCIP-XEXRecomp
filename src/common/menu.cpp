@@ -42,6 +42,7 @@ using rows::Row;
 
 std::atomic<bool> g_open{false};
 std::atomic<uint32_t> g_revision{0};
+std::atomic<bool> g_editor_hovered{false};  // the pointer is on the editor's panels
 
 constexpr uint32_t kHostApplyDisplay = WM_APP + 1;  // main.cpp's kApplyDisplay
 
@@ -908,7 +909,7 @@ void DrawPanel() {
 }  // namespace
 
 bool MenuOpen() {
-    return g_open.load(std::memory_order_relaxed) || g_editor_panel_open.load(std::memory_order_relaxed);
+    return g_open.load(std::memory_order_relaxed) || g_editor_typing.load(std::memory_order_relaxed);
 }
 
 uint32_t SettingsRevision() { return g_revision; }
@@ -930,16 +931,16 @@ void OpenMenuPage(int page) {
     g_open = true;
 }
 
-void DrawUi(double) {
+void DrawUi(double fps) {
     ImGuiIO& io = ImGui::GetIO();
-    if (MenuOpen()) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+    if (MenuOpen() || g_editor_hovered) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
     else io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     io.KeyRepeatRate = 0.1f;  // held arrows step ten times a second, ImGui's twenty is too fast for settings
     io.FontGlobalScale = std::max(1.0f, io.DisplaySize.y / 720.0f);
     // the key being captured must not also move the selection
     if (g_capture >= 0) io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     else io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    if (g_editor_panel) g_editor_panel();
+    g_editor_hovered = g_editor_ui && g_editor_ui(fps);
     if (!g_open) return;
     PollCapture();
     DrawPanel();
@@ -961,15 +962,13 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
     bool capturing = keys::Capturing();
     uint8_t key = keys::PositionKey(wp);
     bool panel_key = key && (key == keys::Key(keys::kSettings, 0) || key == keys::Key(keys::kSettings, 1));
-    if (key_down && !capturing && g_editor_panel_key && g_editor_panel_key(msg, wp)) {
-        *result = 0;
-        return true;
-    }
     if (key_down && !capturing && (panel_key || (wp == VK_ESCAPE && g_open))) {
         ToggleMenu();
         *result = 0;
         return true;
     }
+    bool mouse = msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST;
+    if (mouse && g_editor_hovered) return false;
     if (CursorMessage(hwnd, msg, lp, result)) return true;
     MenuMouseMessage(hwnd, msg, wp, lp);
     bool taken = keys::Message(hwnd, msg, wp, lp) || (capturing && key_down);

@@ -166,8 +166,7 @@ void* MenuCursor() {
     RECT r;
     HWND hwnd = static_cast<HWND>(app::Window());
     if (!g_image || !hwnd || !GetClientRect(hwnd, &r)) return nullptr;
-    // the frame is shown in the middle of the window
-    int frame_height = int(std::min(float(r.bottom), r.right / DisplayAspect()));
+    int frame_height = int(FrameBox(float(r.right), float(r.bottom)).h);
     if (frame_height <= 0) return nullptr;
     if (frame_height != g_height || !g_cursor) {
         HCURSOR cursor = Build(frame_height);
