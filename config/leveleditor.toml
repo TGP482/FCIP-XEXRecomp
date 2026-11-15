@@ -51,6 +51,10 @@ Zipline_Load = 0x820F68A8         # zipline.dat
 MountedWeapon_Load = 0x820F6DC0   # MountedWeapon.dat
 EditorObjects_FromEntities = 0x8210B3D0
 Game_LocalPlayer = 0x8213A068  # (game)
+# the terrain tool's per sector buffers (terrain_limits.cpp)
+Undo_Pop = 0x8210DDD8                 # the newest record, 0 when empty
+TerrainPaint_RebuildAll = 0x820D4FE8  # every sector's textures from the paint layers
+Memory_Free = 0x8230F208              # (heap tag, line, pointer)
 
 [data]
 Catalogue_Lists = 0x8296C760
@@ -68,3 +72,126 @@ MountedWeapons = 0x828C5E7C
 Texture_None = 0x8289F690
 Thumbnail_Camera = 0x8296B280
 Thumbnail_Stale = 0x8296B267
+Terrain_SectorsPerSide = 0x8289F428
+
+# instruction hooks, defined in src/leveleditor/terrain_limits.cpp; each runs after its instruction
+
+[[hook]]  # li r6, 0x40: the height undo snapshot's table
+at = 0x820D2DB0
+call = "SectorTableBytes"
+after = true
+
+[[hook]]  # li r6, 0x40: the paint undo record's table
+at = 0x820D22AC
+call = "SectorTableBytes"
+after = true
+
+[[hook]]  # li r31, 0x10: the height undo snapshot's buffers made
+at = 0x820D2DC8
+call = "SectorBufferCount"
+after = true
+
+[[hook]]  # li r31, 0x10: the height undo record's buffers freed
+at = 0x82110E58
+call = "SectorBufferCount"
+after = true
+
+[[hook]]  # li r31, 0x10: the height undo's buffers freed once applied
+at = 0x82110ED4
+call = "SectorBufferCount"
+after = true
+
+[[hook]]  # li r31, 0x10: the paint undo record's copies freed
+at = 0x821119F0
+call = "SectorBufferCount"
+after = true
+
+[[hook]]  # the paint layers copied into an undo record
+at = 0x820D22CC
+call = "PaintLayersR30"
+after = true
+
+[[hook]]
+at = 0x820D2304
+call = "PaintLayersEndR11"
+after = true
+
+[[hook]]  # the paint layers made, 0xFF each
+at = 0x820D4A14
+call = "PaintLayersR30"
+after = true
+
+[[hook]]
+at = 0x820D4A50
+call = "PaintLayersEndR3"
+after = true
+
+[[hook]]  # the paint layers read from textureinfo.ige
+at = 0x820D4AD0
+call = "PaintLayersR30"
+after = true
+
+[[hook]]
+at = 0x820D4AF0
+call = "PaintLayersEndR10"
+after = true
+
+[[hook]]
+at = 0x820D4B4C
+call = "PaintLayersEndR8"
+after = true
+
+[[hook]]  # the paint layers freed as the editor leaves a level
+at = 0x820D4C3C
+call = "PaintLayersR30"
+after = true
+
+[[hook]]
+at = 0x820D4C58
+call = "PaintLayersEndR11"
+after = true
+
+[[hook]]  # the paint brush
+at = 0x820D4CD4
+call = "PaintLayersR24"
+after = true
+
+[[hook]]  # the erase brush
+at = 0x820D4E3C
+call = "PaintLayersR26"
+after = true
+
+[[hook]]  # a paint layer's weight at a texel
+at = 0x820D58BC
+call = "PaintLayersR8"
+after = true
+
+[[hook]]  # a sector's surface types from its layer
+at = 0x820D5F18
+call = "PaintLayersR24"
+after = true
+
+[[hook]]  # the paint layers written to textureinfo.ige
+at = 0x82109E24
+call = "PaintLayersR29"
+after = true
+
+[[hook]]
+at = 0x82109E44
+call = "PaintLayersEndR4"
+after = true
+
+[[hook]]  # lfs f13, 225.0: the set height target lowered
+at = 0x820D2A9C
+call = "TerrainCeiling"
+after = true
+
+[[hook]]  # lfs f13, 225.0: the set height target raised
+at = 0x820D2AF4
+call = "TerrainCeiling"
+after = true
+
+[[hook]]  # lfs f13, 225.0: the raise brush's cap
+at = 0x820D3ADC
+call = "TerrainCeiling"
+after = true

@@ -655,7 +655,9 @@ void SelectBrush(int brush) {
 }
 
 void SetRadiusStep(int step) { Queue({Op::RadiusStep, std::clamp(step, 0, kRadiusSteps - 1)}); }
-void SetSetHeight(float height) { Queue({Op::SetHeight, 0, std::clamp(height, 0.0f, kMaxSetHeight)}); }
+
+float MaxSetHeight() { return fcip::editor::g_solo ? kHeightmapMaxHeight : kMapMaxHeight; }
+void SetSetHeight(float height) { Queue({Op::SetHeight, 0, std::clamp(height, 0.0f, MaxSetHeight())}); }
 void SetTexture(int texture) { Queue({Op::Texture, std::clamp(texture, 0, kTextureCount - 1)}); }
 void SetSquareCursor(bool square) { Queue({Op::SquareCursor, square ? 1 : 0}); }
 

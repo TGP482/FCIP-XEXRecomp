@@ -12,7 +12,8 @@ enum Tool : int { kTerrain, kAddObject, kEditObject, kEnvironment, kToolCount };
 enum Brush : int { kRaise, kLower, kBump, kDig, kSetHeight, kExtend, kSmooth, kTrim, kPaint, kErase, kBrushCount };
 
 constexpr int kRadiusSteps = 18;
-constexpr float kMaxSetHeight = 225.0f;
+constexpr float kMapMaxHeight = 225.0f;                    // the map editor's set height and raise cap
+constexpr float kHeightmapMaxHeight = 65535.0f / 128.0f;  // 16 bit heights in 1/128 m
 constexpr int kTextureCount = 3;
 constexpr int kCategoryCount = 8;
 constexpr int kOptionCount = 9;
@@ -33,6 +34,7 @@ bool MapOpen();
 bool ShellUp();
 bool ConsoleMenuUp();  // a console page (start menu, save, map info) has the editor's input
 bool MapChanged();     // since it was last saved
+float MaxSetHeight();  // the solo editor's terrain reaches the heightmap's limit
 std::string MapName(); // empty before it is first saved
 
 // the tools as the editor has them now

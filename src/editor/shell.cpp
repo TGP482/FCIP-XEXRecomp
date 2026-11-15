@@ -275,7 +275,7 @@ void DrawTerrainParameters(const State& s) {
     if (ImGui::InputInt("##radius_box", &shown, 0) && shown >= 1 && shown <= kRadiusSteps) SetRadiusStep(shown - 1);
     if (s.brush == kSetHeight || s.brush == kExtend) {
         float height = s.set_height;
-        if (SliderWithBox("Height", &height, 0.0f, kMaxSetHeight, "%.0f")) SetSetHeight(height);
+        if (SliderWithBox("Height", &height, 0.0f, MaxSetHeight(), "%.0f")) SetSetHeight(height);
     }
     if (s.brush == kPaint) {
         ImGui::AlignTextToFramePadding();
