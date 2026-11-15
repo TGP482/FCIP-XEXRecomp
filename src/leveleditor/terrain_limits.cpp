@@ -4,10 +4,17 @@
 // table moves to one sized for it ([[hook]] in config/leveleditor.toml), and the solo editor leaves a level with its
 // undo stack, whose records were sized for that level. A campaign level's sectors keep their own colour maps and
 // surface types: a terrain edit rebuilds a sector from the editor's three map textures by height (820D5A08, 820D5EF8),
-// which a campaign level has none of, so only its painted texels change their surface type.
+// which a campaign level has none of, so only its painted texels change their surface type. Paint lays any of the
+// level's own surface types (LevelData SurfaceTypes) in place of the map editor's sand, grass and cliff.
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <string>
+#include <vector>
 
+#include "common/widgets.h"
 #include "editor/tools.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
@@ -33,6 +40,9 @@ constexpr uint32_t kTerrainHeap = 0xB03;
 constexpr uint32_t kCopyFreeLine = 0xF5;
 constexpr uint32_t kTableFreeLine = 0xF8;
 constexpr uint32_t kDeletingDestructor = 0x00;
+// the terrain tool: the surface type Paint lays, and the widget its caption is on
+constexpr uint32_t kPaintTexture = 0x12C;
+constexpr uint32_t kTextureWidget = 0x82067C70;  // "B_xBoxBtn_Power"
 
 uint32_t g_layers = 0;  // the paint layer table
 uint32_t g_capacity = 0;
@@ -95,12 +105,40 @@ void PaintLayersEndR8(PPCContext& ctx, uint8_t*) { ctx.r[8] = LayersEnd(ctx.r[30
 void PaintLayersEndR10(PPCContext& ctx, uint8_t*) { ctx.r[10] = LayersEnd(ctx.r[30]); }
 void PaintLayersEndR11(PPCContext& ctx, uint8_t*) { ctx.r[11] = LayersEnd(ctx.r[30]); }
 
+// the number Paint lays, r25 from the map editor's table of three (820D4CB0); a campaign level's is r4, its surface type
+void PaintSurfaceNumber(PPCContext& ctx, uint8_t*) {
+    if (CampaignTerrain()) ctx.r[25] = ctx.r[4];
+}
+
+// the pad's next texture stops at the last (820D28FC compares r11 with 2); a campaign level's last surface type
+void PaintTextureLast(PPCContext& ctx, uint8_t*) {
+    if (!CampaignTerrain()) return;
+    int64_t number = int32_t(ctx.r[11]);
+    int64_t last = int64_t(fcip::editor::PaintTextures().size()) - 1;
+    ctx.cr[6] = {number < last, number > last, number == last, ctx.cr[6].so};
+}
+
 // the terrain's height cap, f13 where the guest loads 225: set height target (820D2A9C, 820D2AF4), raise (820D3ADC)
 void TerrainCeiling(PPCContext& ctx, uint8_t*) { ctx.f[13] = fcip::editor::MaxSetHeight(); }
 
 PPC_EXTERN_FUNC(__imp__sub_82112FD8);
 PPC_EXTERN_FUNC(__imp__sub_820D5EF8);
 PPC_EXTERN_FUNC(__imp__sub_820D5A08);
+PPC_EXTERN_FUNC(__imp__sub_820D18D0);
+
+// the texture's caption (r3 the terrain tool), from the editor's string table; a campaign level's own name, as the
+// table words them
+PPC_FUNC(sub_820D18D0) {
+    if (!CampaignTerrain()) return __imp__sub_820D18D0(ctx, base);
+    uint32_t tool = uint32_t(ctx.r[3]);
+    std::vector<std::string> textures = fcip::editor::PaintTextures();
+    uint32_t number = R32(tool + kPaintTexture);
+    std::string name = number < textures.size() ? textures[number] : std::string();
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::toupper(c)); });
+    char caption[96];
+    std::snprintf(caption, sizeof(caption), "{DPUD} %s (%u/%zu)", name.c_str(), number + 1, textures.size());
+    if (uint32_t text = fcip::ui::View(caption)) CallGuest(ctx, SYM_Page_SetText, {tool, kTextureWidget, text});
+}
 
 // a sector's surface types from its paint layer (r3 the sector), unpainted texels by height
 PPC_FUNC(sub_820D5EF8) {

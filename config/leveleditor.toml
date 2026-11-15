@@ -72,6 +72,8 @@ Engine_UseUserMap = 0x8233B2F0        # (3D engine) the level folder becomes the
 Streaming_OpenLevelPack = 0x8238E260  # (streaming, level folder, from user content)
 Script_ExecuteFile = 0x823243D8       # (script system, path, 0, 0)
 TerrainPaint_Load = 0x820D4A90        # textureinfo.ige
+# the terrain tool's paint texture caption (terrain_limits.cpp)
+Page_SetText = 0x820C0EB0  # (page, widget name, std::wstring)
 
 [data]
 Catalogue_Lists = 0x8296C760
@@ -212,4 +214,106 @@ after = true
 [[hook]]  # lfs f13, 225.0: the raise brush's cap
 at = 0x820D3ADC
 call = "TerrainCeiling"
+after = true
+
+[[hook]]  # lwzx r25: the number the paint brush lays
+at = 0x820D4CB0
+call = "PaintSurfaceNumber"
+after = true
+
+[[hook]]  # cmpi cr6, r11, 2: the pad's last paint texture
+at = 0x820D28FC
+call = "PaintTextureLast"
+after = true
+
+# the Add Object tool's budgets, defined in src/leveleditor/object_budgets.cpp: each count before its compare
+
+[[hook]]  # srawi r11: brushes, 300
+at = 0x820D8164
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: team flags, 12
+at = 0x820D8A0C
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: retrieval stations, 6
+at = 0x820D8AD8
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: predator station lights, 2
+at = 0x820D8B50
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: weapons and items, 50
+at = 0x820D988C
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: a team's respawn points, 16
+at = 0x820D9D5C
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # add r11: trees, 800
+at = 0x820DA4A8
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: vehicles, 12
+at = 0x820DA934
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: ladders, 32
+at = 0x820DB684
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: mounted weapons, 12
+at = 0x820DB93C
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: zipline ends, 16
+at = 0x820DBD9C
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: vehicles a level loads, 12
+at = 0x820F7184
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: weapons and items a level loads, 50
+at = 0x820F71D0
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: team flags a level loads, 12
+at = 0x820F721C
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: ladders a level loads, 32
+at = 0x820F727C
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # srawi r11: predator station lights a level loads, 2
+at = 0x820F72D8
+call = "BudgetCountR11"
+after = true
+
+[[hook]]  # cmpli cr6, r10, 6: retrieval stations a level loads
+at = 0x820F73E4
+call = "RetrievalStationsLoaded"
+after = true
+
+[[hook]]  # bcctrl: a category's cap for its bar
+at = 0x820D7394
+call = "ShownBudgetR3"
 after = true

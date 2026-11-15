@@ -57,6 +57,10 @@ constexpr uint32_t kUndoRun = 0x4;
 constexpr uint32_t kToolUndone = 0x3C;  // tool method
 constexpr size_t kUndoKept = 5;
 constexpr uint32_t kEngineTerrain = 0x364;
+// the terrain's surface types in LevelData order (CTerrain::SetDetailTextures 82469CE0)
+constexpr uint32_t kSurfaceBytes = 0x1BC;
+constexpr uint32_t kSurfaceTexture = 0xB0;  // Texture_None when unused
+constexpr uint32_t kSurfaceName = 0x1EC;
 // add object tool: +0x244 the category object shown, +0x248 the item picked in each category, +0x26C its category
 // objects, +0x27C the category shown
 constexpr uint32_t kAddTool = kEditorHandler + 0x248;
@@ -437,7 +441,7 @@ void ReadCatalogue(PPCContext& ctx) {
         if (category == R32(kAddTool + kAddShown)) g_category_shown[c] = true;
         if (g_category_shown[c]) {
             k.used = int(CallGuest(ctx, Method(category, kCategoryPlaced), {category}));
-            k.limit = int(CallGuest(ctx, Method(category, kCategoryLimit), {category}));
+            k.limit = int(CallGuest(ctx, Method(category, kCategoryLimit), {category})) * fcip::editor::BudgetScale();
         }
         uint32_t count = uint32_t(CallGuest(ctx, Method(category, kCategoryItems), {category}));
         if (count == k.items.size()) continue;
@@ -611,7 +615,7 @@ State Read() {
     s.radius_step = std::clamp(int(R32(kTerrainTool + kTerrainRadiusStep)), 0, kRadiusSteps - 1);
     s.radius = GF(kRadius);
     s.set_height = GF(kHeightTarget);
-    s.texture = std::clamp(int(R32(kTerrainTool + kTerrainTexture)), 0, kTextureCount - 1);
+    s.texture = std::clamp(int(R32(kTerrainTool + kTerrainTexture)), 0, kMaxTextures - 1);
     s.square_cursor = R32(kSquareCursor) != 0;
     Vec c = ReadVec(kToolCursor);
     s.cursor[0] = c.x;
@@ -636,7 +640,22 @@ State Read() {
 
 const char* ToolName(int tool) { return kToolNames[std::clamp(tool, 0, kToolCount - 1)]; }
 const char* BrushName(int brush) { return kBrushes[std::clamp(brush, 0, kBrushCount - 1)].name; }
-const char* TextureName(int texture) { return kTextureNames[std::clamp(texture, 0, kTextureCount - 1)]; }
+
+// the map editor's three, or a campaign level's own
+std::vector<std::string> PaintTextures() {
+    if (!g_solo || CampaignLevel().empty()) return {std::begin(kTextureNames), std::end(kTextureNames)};
+    uint32_t engine = R32(SYM_C3DEngine_pointer);
+    uint32_t terrain = engine ? R32(engine + kEngineTerrain) : 0;
+    std::vector<std::string> names;
+    for (uint32_t i = 0; terrain && i < uint32_t(kMaxTextures); i++) {
+        uint32_t type = terrain + i * kSurfaceBytes;
+        if (R32(type + kSurfaceTexture) == R32(SYM_Texture_None)) continue;
+        names.resize(i + 1);
+        names[i] = ReadCString(type + kSurfaceName);
+    }
+    return names;
+}
+
 float RadiusMetres(int step) { return GF(kRadiusTable + uint32_t(std::clamp(step, 0, kRadiusSteps - 1)) * 4); }
 const char* OptionName(int option) { return kOptionNames[std::clamp(option, 0, kOptionCount - 1)]; }
 const char* CategoryName(int category) { return kCategoryNames[std::clamp(category, 0, kCategoryCount - 1)]; }
@@ -658,7 +677,10 @@ void SetRadiusStep(int step) { Queue({Op::RadiusStep, std::clamp(step, 0, kRadiu
 
 float MaxSetHeight() { return fcip::editor::g_solo ? kHeightmapMaxHeight : kMapMaxHeight; }
 void SetSetHeight(float height) { Queue({Op::SetHeight, 0, std::clamp(height, 0.0f, MaxSetHeight())}); }
-void SetTexture(int texture) { Queue({Op::Texture, std::clamp(texture, 0, kTextureCount - 1)}); }
+void SetTexture(int texture) {
+    int last = std::max(int(PaintTextures().size()) - 1, 0);
+    Queue({Op::Texture, std::clamp(texture, 0, last)});
+}
 void SetSquareCursor(bool square) { Queue({Op::SquareCursor, square ? 1 : 0}); }
 
 void SetEnvironment(int row, float value) { Queue({Op::Environment, std::clamp(row, 0, kEnvironmentRows - 1), value}); }

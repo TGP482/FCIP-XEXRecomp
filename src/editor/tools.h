@@ -14,7 +14,7 @@ enum Brush : int { kRaise, kLower, kBump, kDig, kSetHeight, kExtend, kSmooth, kT
 constexpr int kRadiusSteps = 18;
 constexpr float kMapMaxHeight = 225.0f;                    // the map editor's set height and raise cap
 constexpr float kHeightmapMaxHeight = 65535.0f / 128.0f;  // 16 bit heights in 1/128 m
-constexpr int kTextureCount = 3;
+constexpr int kMaxTextures = 8;  // a heightmap cell keeps 3 bits of surface type
 constexpr int kCategoryCount = 8;
 constexpr int kOptionCount = 9;
 constexpr int kOptionOcean = 0;
@@ -35,6 +35,7 @@ bool ShellUp();
 bool ConsoleMenuUp();  // a console page (start menu, save, map info) has the editor's input
 bool MapChanged();     // since it was last saved
 float MaxSetHeight();  // the solo editor's terrain reaches the heightmap's limit
+int BudgetScale();     // the solo editor's object budgets follow the level's sectors (object_budgets.cpp)
 std::string MapName(); // empty before it is first saved
 
 // the tools as the editor has them now
@@ -44,7 +45,7 @@ struct State {
     int radius_step = 0;
     float radius = 0.0f;  // metres
     float set_height = 0.0f;
-    int texture = 0;  // what Paint lays: sand, grass, cliff
+    int texture = 0;  // the surface type Paint lays
     bool square_cursor = false;
     float cursor[3] = {};  // where the tools act
     size_t undo_count = 0;
@@ -59,7 +60,7 @@ State Read();
 
 const char* ToolName(int tool);
 const char* BrushName(int brush);
-const char* TextureName(int texture);
+std::vector<std::string> PaintTextures();  // by surface type number, empty where the level has none
 float RadiusMetres(int step);
 const char* OptionName(int option);
 const char* CategoryName(int category);

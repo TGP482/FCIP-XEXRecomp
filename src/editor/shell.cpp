@@ -285,13 +285,18 @@ void DrawTerrainParameters(const State& s) {
         if (SliderWithBox("Height", &height, 0.0f, MaxSetHeight(), "%.0f")) SetSetHeight(height);
     }
     if (s.brush == kPaint) {
+        std::vector<std::string> textures = PaintTextures();
+        const char* shown = size_t(s.texture) < textures.size() ? textures[size_t(s.texture)].c_str() : "";
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Texture");
         ImGui::SameLine(em * 7.0f);
         ImGui::SetNextItemWidth(-1.0f);
-        if (ImGui::BeginCombo("##texture", TextureName(s.texture))) {
-            for (int t = 0; t < kTextureCount; t++) {
-                if (ImGui::Selectable(TextureName(t), t == s.texture)) SetTexture(t);
+        if (ImGui::BeginCombo("##texture", shown)) {
+            for (int t = 0; t < int(textures.size()); t++) {
+                if (textures[size_t(t)].empty()) continue;
+                ImGui::PushID(t);
+                if (ImGui::Selectable(textures[size_t(t)].c_str(), t == s.texture)) SetTexture(t);
+                ImGui::PopID();
             }
             ImGui::EndCombo();
         }
