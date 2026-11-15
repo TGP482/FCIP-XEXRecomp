@@ -51,6 +51,7 @@ Zipline_LoadBrushes = 0x820F06A8
 Zipline_Load = 0x820F68A8         # zipline.dat
 MountedWeapon_Load = 0x820F6DC0   # MountedWeapon.dat
 EditorObjects_FromEntities = 0x8210B3D0
+Game_LocalPlayer = 0x8213A068  # (game)
 
 [data]
 Catalogue_Lists = 0x8296C760
@@ -66,6 +67,5 @@ Editor_NextObjectNumber = 0x8296B268  # placed objects are named "<class>%d" wit
 Ziplines = 0x828C5E40
 MountedWeapons = 0x828C5E7C
 Texture_None = 0x8289F690
-GameTypes_pointer = 0x8296B9D0
 Thumbnail_Camera = 0x8296B280
 Thumbnail_Stale = 0x8296B267

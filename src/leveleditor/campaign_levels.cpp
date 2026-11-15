@@ -53,14 +53,6 @@ constexpr uint32_t kCheatGodMode = 0x4;
 constexpr uint32_t kGodModeVariable = 0x8206E344;  // "GodMode"
 // set once at start in ige (821175B4): levels then run the game type scripts instead of scripts/main.lua
 constexpr uint32_t kEditorGame = 0x3D4;
-// game types: entries of 0x70 bytes in [+0x08, +0x0C), the current one at +0x18; a level's server takes its rules from
-// the current one's folder, the single player's in default.xex
-constexpr uint32_t kGameTypesFirst = 0x08;
-constexpr uint32_t kGameTypesLast = 0x0C;
-constexpr uint32_t kGameTypeCurrent = 0x18;
-constexpr uint32_t kGameTypeBytes = 0x70;
-constexpr uint32_t kGameTypeFolder = 0x38;  // std::string
-constexpr const char* kSinglePlayerGameType = "Scripts\\Default\\";
 // user map info, a new one per level started: 0x164 bytes at +0x30, named for the signed in profile
 constexpr uint32_t kUserMapInfo = 0x30;
 constexpr uint32_t kUserMapInfoBytes = 0x164;
@@ -82,13 +74,16 @@ constexpr uint32_t kScratchMissionBytes = 0x20;
 constexpr uint32_t kScratchPathBytes = 0x80;
 constexpr uint32_t kScratchBytes = 0x100;
 
+// living entity cylinder phys_geometry (0x6E4) surface_idx (0x34); surface 0 is Materials.dat's first
+constexpr uint32_t kLivingCylinderSurface = 0x718;
+constexpr uint32_t kDefaultSurface = 0;
+
 constexpr int kNone = -1;
 constexpr uint32_t kMb = 1024 * 1024;
 
 std::atomic<int> g_requested{kNone};  // from the menu
 std::atomic<int> g_open{kNone};       // the campaign level open
 int g_starting = kNone;               // editor thread, requested of the editor's update
-int g_editor_game_type = kNone;       // the editor's, while a campaign level has the single player one
 std::atomic<bool> g_loading{false};
 uint32_t g_scratch = 0;
 
@@ -108,27 +103,6 @@ uint32_t VectorCount(uint32_t vector) {
 }
 
 // as for a new map, named after the profile signed in
-void UseSinglePlayerGameType() {
-    uint32_t types = R32(SYM_GameTypes_pointer);
-    uint32_t first = types ? R32(types + kGameTypesFirst) : 0;
-    uint32_t last = types ? R32(types + kGameTypesLast) : 0;
-    uint32_t index = 0;
-    for (uint32_t entry = first; entry && entry < last; entry += kGameTypeBytes, index++) {
-        if (GuestString(entry + kGameTypeFolder) != kSinglePlayerGameType) continue;
-        if (g_editor_game_type == kNone) g_editor_game_type = int(R32(types + kGameTypeCurrent));
-        W32(types + kGameTypeCurrent, index);
-        LOGR("level editor: single player game type %u, the editor's %d", index, g_editor_game_type);
-        return;
-    }
-    LOGE("level editor: no single player game type");
-}
-
-void RestoreEditorGameType() {
-    if (g_editor_game_type == kNone) return;
-    W32(R32(SYM_GameTypes_pointer) + kGameTypeCurrent, uint32_t(g_editor_game_type));
-    g_editor_game_type = kNone;
-}
-
 void NewMapInfo(PPCContext& ctx, uint32_t manager) {
     uint32_t maps = R32(SYM_UserMaps_pointer);
     if (R32(maps + kUserMapInfo)) CallGuest(ctx, SYM_UserMapInfo_Free, {maps});
@@ -206,7 +180,6 @@ void StartCampaignLevel(PPCContext& ctx, uint32_t manager, const char* level) {
     W16(manager + kMapName, 0);
     NewMapInfo(ctx, manager);
     W8(manager + kFromTemplate, 0);
-    UseSinglePlayerGameType();
     g_loading = true;
     CallGuest(ctx, SYM_Game_StartLevel, {game, 0, name, mission, 0, 1, 0, 0});
     g_loading = false;
@@ -255,6 +228,8 @@ PPC_EXTERN_FUNC(__imp__sub_8239D908);
 PPC_EXTERN_FUNC(__imp__sub_820E0240);
 PPC_EXTERN_FUNC(__imp__sub_82138CD8);
 PPC_EXTERN_FUNC(__imp__sub_82109BF8);
+PPC_EXTERN_FUNC(__imp__sub_820E3C88);
+PPC_EXTERN_FUNC(__imp__sub_82449A08);
 
 // the editor's interface manager (r3) each frame
 PPC_FUNC(sub_82112AD0) {
@@ -268,10 +243,7 @@ PPC_FUNC(sub_821124B0) {
     ForgetLinks();
     g_open = g_starting;
     g_starting = kNone;
-    if (g_open == kNone) {
-        RestoreEditorGameType();
-        return __imp__sub_821124B0(ctx, base);
-    }
+    if (g_open == kNone) return __imp__sub_821124B0(ctx, base);
     StartCampaignLevel(ctx, uint32_t(ctx.r[3]), kCampaignLevels[g_open]);
 }
 
@@ -286,7 +258,8 @@ PPC_FUNC(sub_8239D908) {
     CallGuest(ctx, SYM_Dependencies_Load, {manager, WriteText(g_scratch + kScratchPath, path, kScratchPathBytes)});
 }
 
-// a level's game scripts (r3 the game): a campaign level gets default.xex's single player ones (scripts/main.lua)
+// a level's game scripts (r3 the game): a campaign level gets default.xex's single player ones, scripts/main.lua,
+// whose Init loads what the campaign's entities use (helicommon.lua's HC for the Gunship)
 PPC_FUNC(sub_82138CD8) {
     if (!g_loading) return __imp__sub_82138CD8(ctx, base);
     uint32_t game = uint32_t(ctx.r[3]);
@@ -302,9 +275,21 @@ PPC_FUNC(sub_820E0240) {
     __imp__sub_820E0240(ctx, base);
 }
 
+// snaps an editor object to its entity: r3 null for a campaign entity with no editor object (AI, triggers)
+PPC_FUNC(sub_820E3C88) {
+    if (uint32_t(ctx.r[3])) __imp__sub_820E3C88(ctx, base);
+}
+
+// a living entity (r3 back): its cylinder's surface is left unset, and the editor's ground ray reads it
+PPC_FUNC(sub_82449A08) {
+    __imp__sub_82449A08(ctx, base);
+    W32(uint32_t(ctx.r[3]) + kLivingCylinderSurface, kDefaultSurface);
+}
+
 // the editor's map save writes a template map; a campaign level saves as a custom level
 PPC_FUNC(sub_82109BF8) {
     if (!fcip::editor::g_solo || g_open == kNone) return __imp__sub_82109BF8(ctx, base);
     LOGR("level editor: %s not saved, campaign levels save as custom levels", kCampaignLevels[int(g_open)]);
     ctx.r[3] = 0;
 }
+

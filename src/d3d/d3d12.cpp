@@ -1140,8 +1140,8 @@ static const float kSigma = 0.02;         // extinction a unit at full density
 static const float kFade = 14000;         // distance over which clouds sink into the sky's haze
 static const float kSunGain = 0.6;
 static const float2 kWind = float2(7, 3);  // units a second
-static const float kGrowth = 20;           // units a second the shapes form and fade by
-static const float kChurn = 45;            // the same for the billows on their edges
+static const float kGrowth = 16;           // units a second the shapes form and fade by
+static const float kChurn = 36;            // the same for the billows on their edges
 static const int kSteps = 40;
 static const int kLightSteps = 4;
 float Hash(float3 p) {
