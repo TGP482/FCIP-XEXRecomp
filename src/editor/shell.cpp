@@ -1,5 +1,6 @@
 // ige.xex: once a map is open FCIPEditor.exe is a desktop editor: a menu bar and toolbar over the 3D view, a dock on
-// the right and a status bar. The frame is drawn into the view alone (SetViewBox), at the view's shape.
+// the right and a status bar, the map in the window's title. The frame is drawn into the view alone (SetViewBox), at
+// the view's shape.
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -12,12 +13,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <imgui.h>
 
+#include "app/app.h"
 #include "common/aspect.h"
 #include "common/menu.h"
 #include "common/panel_colors.h"
@@ -39,6 +42,17 @@ constexpr float kMinViewEms = 20.0f;
 constexpr float kSplitterEms = 0.4f;
 constexpr float kIconEms = 1.6f;
 constexpr float kParametersShare = 0.45f;  // of the dock's height, above the tabs
+
+constexpr uint32_t kSetTitle = WM_APP + 3;  // the window thread sets g_title
+constexpr const wchar_t* kGameName = L"Far Cry Instincts: Predator";
+
+// a line of the controls window: what, then the keys
+constexpr std::pair<const char*, const char*> kControls[] = {
+    {"Look", "Right mouse drag"},     {"Move", "W A S D"},           {"Zoom", "Mouse wheel"},
+    {"Use the tool", "Left click"},   {"Pick a tool", "1 to 4"},     {"Undo", "Ctrl+Z"},
+    {"Delete object", "Del"},         {"Save", "Ctrl+S"},            {"Play test", "F5"},
+    {"Settings", "F10"},
+};
 
 constexpr ImGuiWindowFlags kFixed = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
@@ -70,6 +84,7 @@ bool g_show_toolbar = true;
 bool g_show_dock = true;
 bool g_show_status = true;
 bool g_show_markers = true;
+bool g_show_controls = false;
 char g_search[64] = "";
 bool g_looking = false;   // the right button went down on the view
 bool g_applying = false;  // the left button went down on the view
@@ -78,6 +93,15 @@ bool g_applying = false;  // the left button went down on the view
 
 void DrawMenuBar(const State& s) {
     if (!ImGui::BeginMainMenuBar()) return;
+    // new and open are the map manager's, the editor asks to save before it goes there
+    if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("New Map...")) ExitToMapManager();
+        if (ImGui::MenuItem("Open Map...")) ExitToMapManager();
+        if (ImGui::MenuItem("Save", "Ctrl+S")) Save();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Exit to Map Manager")) ExitToMapManager();
+        ImGui::EndMenu();
+    }
     if (ImGui::BeginMenu("Edit")) {
         if (ImGui::MenuItem("Undo", "Ctrl+Z", false, s.undo_count > 0)) Undo(1);
         if (ImGui::MenuItem("Delete", "Del", false, s.tool == kEditObject)) DeleteSelected();
@@ -94,6 +118,10 @@ void DrawMenuBar(const State& s) {
         if (editor::g_solo) ImGui::MenuItem("Logic Markers", nullptr, &g_show_markers);
         ImGui::EndMenu();
     }
+    if (ImGui::BeginMenu("Game")) {
+        if (ImGui::MenuItem("Play Test", "F5")) PlayTest();
+        ImGui::EndMenu();
+    }
     if (ImGui::BeginMenu("Tools")) {
         for (const ToolEntry& t : kToolEntries) {
             if (ImGui::MenuItem(ToolName(t.tool), t.key, s.tool == t.tool)) SelectTool(t.tool);
@@ -102,6 +130,11 @@ void DrawMenuBar(const State& s) {
         for (int b = 0; b < kBrushCount; b++) {
             if (ImGui::MenuItem(BrushName(b), nullptr, s.tool == kTerrain && s.brush == b)) SelectBrush(b);
         }
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Help")) {
+        ImGui::MenuItem("Controls", nullptr, &g_show_controls);
+        if (ImGui::MenuItem("Controller Layout")) ShowControllerLayout();
         ImGui::EndMenu();
     }
     ImGui::EndMainMenuBar();
@@ -411,6 +444,47 @@ void DrawDock(float x, float top, float bottom, const State& s) {
     ImGui::End();
 }
 
+void DrawControls() {
+    if (!g_show_controls) return;
+    float em = ImGui::GetFontSize();
+    ImGui::SetNextWindowSize(ImVec2(em * 20.0f, 0.0f), ImGuiCond_Appearing);
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse;
+    if (ImGui::Begin("Controls", &g_show_controls, kFlags)) {
+        for (const auto& [what, keys] : kControls) {
+            ImGui::TextUnformatted(what);
+            ImGui::SameLine(em * 9.0f);
+            ImGui::TextUnformatted(keys);
+        }
+    }
+    ImGui::End();
+}
+
+// Title
+
+std::mutex g_title_lock;
+std::wstring g_title;
+
+std::wstring Title() {
+    if (!MapOpen()) return app::kGame.title;
+    std::string name = MapName();
+    std::wstring map(name.begin(), name.end());
+    if (map.empty()) map = L"Untitled Map";
+    if (MapChanged()) map += L"*";
+    const wchar_t* editor = editor::g_solo ? L"MAP EDITOR SOLO" : L"MAP EDITOR";
+    return std::wstring(kGameName) + L" - " + editor + L" - " + map + L" - XEX Recomp Editor";
+}
+
+// SetWindowText from here would wait on the window thread, which can be waiting for this frame
+void UpdateTitle() {
+    std::wstring title = Title();
+    {
+        std::lock_guard lock(g_title_lock);
+        if (title == g_title) return;
+        g_title = title;
+    }
+    PostMessageW(static_cast<HWND>(app::Window()), kSetTitle, 0, 0);
+}
+
 // Status bar and view
 
 void DrawStatus(float top, float width, double fps, const State& s) {
@@ -463,8 +537,9 @@ void UpdateViewInput(const Box& view) {
     SetViewInput(in);
 }
 
-// true while up, when it takes the mouse
+// true while it takes the mouse: always but over the view while a console page has the editor's input
 bool DrawShell(double fps) {
+    UpdateTitle();
     if (!ShellUp()) {
         SetViewBox({});
         SetViewInput({});
@@ -487,22 +562,34 @@ bool DrawShell(double fps) {
     float dock = g_show_dock ? std::min(g_dock_width, size.x - em * kMinViewEms) : 0.0f;
     Box view{0.0f, top, size.x - dock, bottom - top};
     SetViewBox(view);
-    UpdateViewInput(view);
+    bool console = ConsoleMenuUp();
+    if (console) SetViewInput({});
+    else UpdateViewInput(view);
     if (g_show_dock) DrawDock(size.x - dock, top, bottom, s);
     if (g_show_status) DrawStatus(bottom, size.x, fps, s);
     if (editor::g_solo && g_show_markers) editor::DrawMarkers();
+    DrawControls();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(int(std::size(kPanelColors) + std::size(kShellColors)));
     g_editor_typing = ImGui::GetIO().WantTextInput;
-    return true;
+    return !console || ImGui::GetIO().WantCaptureMouse;
 }
 
-// Ctrl+Z undoes, Del deletes, 1 to 4 pick the tools
-bool EditorKey(uint32_t msg, uintptr_t wp) {
-    if (msg != WM_KEYDOWN || !ShellUp() || g_editor_typing) return false;
+// Ctrl+Z undoes, Ctrl+S saves, Del deletes, 1 to 4 pick the tools, F5 play tests
+bool EditorKey(uintptr_t wp) {
+    if (!MapOpen() || g_editor_typing) return false;
+    if (wp == VK_F5) {
+        PlayTest();
+        return true;
+    }
+    if (!ShellUp() || ConsoleMenuUp()) return false;
     bool ctrl = GetKeyState(VK_CONTROL) < 0;
     if (ctrl && wp == 'Z') {
         Undo(1);
+        return true;
+    }
+    if (ctrl && wp == 'S') {
+        Save();
         return true;
     }
     if (wp == VK_DELETE) {
@@ -516,6 +603,15 @@ bool EditorKey(uint32_t msg, uintptr_t wp) {
     return false;
 }
 
-const bool g_registered = (g_editor_ui = DrawShell, g_editor_key = EditorKey, true);
+bool EditorMessage(void* hwnd, uint32_t msg, uintptr_t wp) {
+    if (msg == kSetTitle) {
+        std::lock_guard lock(g_title_lock);
+        SetWindowTextW(static_cast<HWND>(hwnd), g_title.c_str());
+        return true;
+    }
+    return msg == WM_KEYDOWN && EditorKey(wp);
+}
+
+const bool g_registered = (g_editor_ui = DrawShell, g_editor_message = EditorMessage, true);
 
 }  // namespace

@@ -118,6 +118,8 @@ bool g_sun_clip_set = false;
 std::mutex g_view_clip_lock;  // ViewClip's, read on other threads
 float g_view_clip[16] = {};
 float g_view_position[3] = {};
+float g_view[16] = {};
+float g_view_lens[4] = {};  // the projection's x and y scales and centre offsets
 bool g_view_clip_set = false;
 
 // sun map resolves in the order the title issues them; the render thread runs up to a frame behind, so it matches each
@@ -360,6 +362,9 @@ void LatchViewClip(uint32_t cam) {
     std::lock_guard lock(g_view_clip_lock);
     std::copy(std::begin(clip), std::end(clip), g_view_clip);
     for (uint32_t i = 0; i < 3; i++) g_view_position[i] = GF(cam + kCameraPosition + i * 4);
+    for (uint32_t i = 0; i < 16; i++) g_view[i] = GF(cam + kCameraView + i * 4);
+    constexpr uint32_t kLens[] = {0, 5, 8, 9};
+    for (uint32_t i = 0; i < 4; i++) g_view_lens[i] = GF(cam + kCameraProjection + kLens[i] * 4);
     g_view_clip_set = true;
 }
 
@@ -596,6 +601,19 @@ bool fcip::ViewPosition(float out[3]) {
     std::lock_guard lock(g_view_clip_lock);
     std::copy(std::begin(g_view_position), std::end(g_view_position), out);
     return g_view_clip_set;
+}
+
+// camera space looks down -z; the view's rotation is orthonormal, so its transpose turns a direction back to the world
+bool fcip::ViewRay(float u, float v, float origin[3], float dir[3]) {
+    std::lock_guard lock(g_view_clip_lock);
+    if (!g_view_clip_set || g_view_lens[0] == 0.0f || g_view_lens[1] == 0.0f) return false;
+    float x = (u * 2.0f - 1.0f + g_view_lens[2]) / g_view_lens[0];
+    float y = (1.0f - v * 2.0f + g_view_lens[3]) / g_view_lens[1];
+    for (int i = 0; i < 3; i++) {
+        origin[i] = g_view_position[i];
+        dir[i] = x * g_view[i * 4] + y * g_view[i * 4 + 1] - g_view[i * 4 + 2];
+    }
+    return true;
 }
 
 uint32_t fcip::SunShadowSide() {

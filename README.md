@@ -58,6 +58,9 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 - **Controller** - Controller with SDL3 support.
 - **Gyro Aiming** - Adds gyro aiming for controllers with motion sensors, such as the DualSense, DualShock 4 and Switch Pro Controller. Works together with the right stick.
 
+### Map Editor
+- **Map Editor** - 
+
 ### Miscellaneous
 - **Custom Menu Cursor** - Place a `cursor.png` (or `cursor.dds`) beside the exe to replace the Windows arrow in the game's menus.
 - **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.

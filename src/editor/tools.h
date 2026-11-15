@@ -28,8 +28,12 @@ constexpr float kMinFogThickness = 0.2f;
 constexpr float kMaxFogThickness = 1.0f;
 constexpr int kTimesOfDay = 4;
 
-// any thread: a map is open and the editor is editing, not in first person
+// any thread: a map is open; ShellUp while editing, not in first person
+bool MapOpen();
 bool ShellUp();
+bool ConsoleMenuUp();  // a console page (start menu, save, map info) has the editor's input
+bool MapChanged();     // since it was last saved
+std::string MapName(); // empty before it is first saved
 
 // the tools as the editor has them now
 struct State {
@@ -72,6 +76,11 @@ void SetEnvironment(int row, float value);
 void SetOption(int option, bool on);
 void DeleteSelected();  // the Edit Object tool's selection
 void PickObject(int category, int item);  // into the Add Object tool, which a click in the view then places
+// the start menu's buttons as a player presses them, and first person in the map and back
+void Save();
+void ExitToMapManager();  // asks to save first
+void ShowControllerLayout();
+void PlayTest();
 
 // the Add Object tool's categories as last read on the editor's thread, with their object budgets
 struct Category {

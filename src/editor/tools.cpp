@@ -38,7 +38,7 @@ constexpr uint32_t kTerrainRadiusStep = 0x10C;
 constexpr uint32_t kTerrainTexture = 0x12C;
 constexpr uint32_t kRadiusTable = 0x82067C10;  // metres per step
 constexpr uint32_t kRadius = 0x8296B1BC;       // the step's metres, which the brushes read
-constexpr uint32_t kSetHeight = 0x828C4A54;
+constexpr uint32_t kHeightTarget = 0x828C4A54;
 constexpr uint32_t kSquareCursor = 0x8296B1D4;
 constexpr uint32_t kToolCursor = 0x828C5D50;   // xyz, where the tools act
 constexpr uint32_t kMapChanged = 0x8296B266;
@@ -55,25 +55,38 @@ constexpr uint32_t kUndoRun = 0x4;
 constexpr uint32_t kToolUndone = 0x3C;  // tool method
 constexpr size_t kUndoKept = 5;
 constexpr uint32_t kEngineTerrain = 0x364;
-// add object tool: +0x248 the item picked in each category, +0x26C its category objects, +0x27C the category shown
+// add object tool: +0x244 the category object shown, +0x248 the item picked in each category, +0x26C its category
+// objects, +0x27C the category shown
 constexpr uint32_t kAddTool = kEditorHandler + 0x248;
+constexpr uint32_t kAddShown = 0x244;
 constexpr uint32_t kAddPicked = 0x248;
 constexpr uint32_t kAddCategories = 0x26C;
 constexpr uint32_t kAddCategory = 0x27C;
-// category methods: count(this), item name(out wstring, this, index), objects placed(this), their limit(this)
+// category methods: count(this), item name(out wstring, this, index), objects placed(this), their limit(this); the
+// last two look up state the category gets once shown (respawn points crash before)
 constexpr uint32_t kCategoryItems = 0x0;
 constexpr uint32_t kCategoryItemName = 0x4;
 constexpr uint32_t kCategoryPlaced = 0x10;
 constexpr uint32_t kCategoryLimit = 0x14;
 constexpr int kCatalogueFrames = 30;  // between reads of the catalogue
-// environment tool: +0x110 changes since its row was picked; the map's settings hold its values
+// environment tool: +0x110 changes since its row was picked; the editor's manager holds its values
 constexpr uint32_t kEnvironmentTool = kEditorHandler + 0x628;
 constexpr uint32_t kEnvironmentChanges = 0x110;
-constexpr uint32_t kMapSettings = 0x8296B2CC;
-constexpr uint32_t kTimeOfDay = 0x1F8;
-constexpr uint32_t kFogThickness = 0x1FC;
-constexpr uint32_t kFogDistance = 0x200;
-constexpr uint32_t kSounds = 0x220;
+// the editor's interface manager, which also holds the map's settings and name (+0x68, 16 UTF-16 characters)
+constexpr uint32_t kManager = 0x8296B2CC;
+constexpr uint32_t kMapName = 0x68;
+constexpr uint32_t kMapNameChars = 16;
+constexpr uint32_t kHandlerActive = 0xF0;
+// the start menu, a static object, and its buttons by their names' crc32
+constexpr uint32_t kStartMenuListener = 0x82971908 + 0x8;
+constexpr uint32_t kStartMenuName = 0x82067EBC;  // "StartMenuInterfaceHandler"
+constexpr uint32_t kButtonSave = 0x6535D687u;     // B_SaveMap
+constexpr uint32_t kButtonExit = 0xD23F714Cu;     // B_ExitEditor
+constexpr uint32_t kButtonControls = 0xB297004Cu; // B_Controls
+constexpr uint32_t kMapTimeOfDay = 0x1F8;
+constexpr uint32_t kMapFogThickness = 0x1FC;
+constexpr uint32_t kMapFogDistance = 0x200;
+constexpr uint32_t kMapSounds = 0x220;
 constexpr uint32_t kFogDistanceTable = 0x828C49D8;
 // editing options, bytes in the object at *0x8296B130, in the options list's order
 constexpr uint32_t kOptions = 0x8296B130;
@@ -117,6 +130,9 @@ constexpr uint32_t kSetFogThickness = 0x823364A8;  // (f1, engine)
 constexpr uint32_t kFindVariable = 0x8233DF48;     // (console, name)
 constexpr uint32_t kSetVariable = 0x8233C0B0;      // (variable, value)
 constexpr uint32_t kFree = 0x8230F2D8;
+constexpr uint32_t kShowHandler = 0x82113178;     // (manager, handler name)
+constexpr uint32_t kStartMenuPress = 0x820C2C88;  // (listener, widget), the widget's name crc at +4
+constexpr uint32_t kSetEditorMode = 0x820C5548;   // (handler, 1 editing or 2 first person)
 
 // how the editor turns its look inputs into motion each second, an input of v moving v * |v| times this
 constexpr double kYawPerSecond = 90.0;
@@ -155,6 +171,7 @@ constexpr auto kPulse = std::chrono::milliseconds(120);  // a pad press long eno
 
 enum class Op {
     SelectTool, TerrainMode, RadiusStep, SetHeight, Texture, SquareCursor, Undo, Environment, Option, Pick,
+    StartMenu, PlayTest,
 };
 struct Command {
     Op op;
@@ -195,7 +212,9 @@ Vec g_orbit;    // what the camera orbits, kept while the cursor follows the mou
 Vec g_written;  // the cursor as we left it
 uint32_t g_scratch = 0;
 uint32_t g_name_scratch = 0;
+uint32_t g_widget_scratch = 0;
 int g_catalogue_wait = 0;
+bool g_category_shown[fcip::editor::kCategoryCount] = {};  // since the map opened
 int g_environment_row = -1;  // the row the last change was to
 
 void Queue(Command c) {
@@ -262,7 +281,7 @@ void CallWithFloat(PPCContext& ctx, uint32_t fn, double value, uint32_t arg) {
 
 // each row's first change since another row's pushes an undo, as the tool does
 void RunEnvironment(PPCContext& ctx, int row, float value) {
-    uint32_t settings = R32(kMapSettings);
+    uint32_t settings = R32(kManager);
     if (!settings || CurrentTool() != fcip::editor::kEnvironment) return;
     uint32_t changes = kEnvironmentTool + kEnvironmentChanges;
     if (row != g_environment_row) W32(changes, 0);
@@ -275,21 +294,21 @@ void RunEnvironment(PPCContext& ctx, int row, float value) {
         case fcip::editor::kSound1:
         case fcip::editor::kSound2:
         case fcip::editor::kSound3:
-            W32(settings + kSounds + uint32_t(row) * 4, uint32_t(step));
+            W32(settings + kMapSounds + uint32_t(row) * 4, uint32_t(step));
             CallGuest(ctx, kSoundApplied[row], {kEnvironmentTool});
             break;
         case fcip::editor::kFogDistance:
-            W32(settings + kFogDistance, uint32_t(step));
+            W32(settings + kMapFogDistance, uint32_t(step));
             CallWithFloat(ctx, kSetFogDistance, GF(kFogDistanceTable + uint32_t(step) * 4), engine);
             break;
         case fcip::editor::kFogThickness: {
-            WF(settings + kFogThickness, value);
+            WF(settings + kMapFogThickness, value);
             bool fog = R8(R32(kOptions) + kOptionBytes[fcip::editor::kOptionFog]) != 0;
             CallWithFloat(ctx, kSetFogThickness, fog ? value : 0.0, engine);
             break;
         }
         case fcip::editor::kTimeOfDay:
-            W32(settings + kTimeOfDay, uint32_t(step));
+            W32(settings + kMapTimeOfDay, uint32_t(step));
             CallGuest(ctx, kTimeOfDayApplied, {kEnvironmentTool});
             CallGuest(ctx, kTimeOfDayLight, {kEnvironmentTool});
             break;
@@ -307,9 +326,9 @@ void RunOption(PPCContext& ctx, int option, bool on) {
         uint32_t variable = uint32_t(CallGuest(ctx, kFindVariable, {R32(kConsole), kOceanVariable}));
         if (variable) CallGuest(ctx, kSetVariable, {variable, on ? 1u : 0u});
     }
-    uint32_t settings = R32(kMapSettings);
+    uint32_t settings = R32(kManager);
     if (option == fcip::editor::kOptionFog && settings) {
-        CallWithFloat(ctx, kSetFogThickness, on ? GF(settings + kFogThickness) : 0.0, R32(SYM_C3DEngine_pointer));
+        CallWithFloat(ctx, kSetFogThickness, on ? GF(settings + kMapFogThickness) : 0.0, R32(SYM_C3DEngine_pointer));
     }
 }
 
@@ -319,6 +338,21 @@ void RunPick(PPCContext& ctx, int category, int item) {
     CallGuest(ctx, kCategoryShown, {kAddTool});
     W32(kAddTool + kAddPicked + uint32_t(category) * 4, uint32_t(item));
     CallGuest(ctx, kItemShown, {kAddTool});
+}
+
+// a start menu button pressed as a player does: the menu shown, then its button
+void RunStartMenu(PPCContext& ctx, uint32_t button) {
+    constexpr uint32_t kWidgetName = 0x4;
+    if (!g_widget_scratch) g_widget_scratch = mem::AllocSystem(8);
+    if (!g_widget_scratch) return;
+    CallGuest(ctx, kShowHandler, {R32(kManager), kStartMenuName});
+    W32(g_widget_scratch + kWidgetName, button);
+    CallGuest(ctx, kStartMenuPress, {kStartMenuListener, g_widget_scratch});
+}
+
+void RunPlayTest(PPCContext& ctx) {
+    uint32_t mode = R32(kEditorHandler + kHandlerMode) == kModeEditing ? 2 : kModeEditing;
+    CallGuest(ctx, kSetEditorMode, {kEditorHandler, mode});
 }
 
 void Run(PPCContext& ctx, const Command& c) {
@@ -337,7 +371,7 @@ void Run(PPCContext& ctx, const Command& c) {
             Caption(ctx, kRadiusCaption);
             break;
         case Op::SetHeight:
-            WF(kSetHeight, c.amount);
+            WF(kHeightTarget, c.amount);
             Caption(ctx, kHeightCaption);
             break;
         case Op::Texture:
@@ -349,6 +383,8 @@ void Run(PPCContext& ctx, const Command& c) {
         case Op::Environment: RunEnvironment(ctx, c.value, c.amount); break;
         case Op::Option: RunOption(ctx, c.value, c.item != 0); break;
         case Op::Pick: RunPick(ctx, c.value, c.item); break;
+        case Op::StartMenu: RunStartMenu(ctx, uint32_t(c.value)); break;
+        case Op::PlayTest: RunPlayTest(ctx); break;
     }
 }
 
@@ -395,8 +431,11 @@ void ReadCatalogue(PPCContext& ctx) {
         uint32_t category = R32(first + c * 4);
         if (!category) continue;
         fcip::editor::Category& k = catalogue[c];
-        k.used = int(CallGuest(ctx, Method(category, kCategoryPlaced), {category}));
-        k.limit = int(CallGuest(ctx, Method(category, kCategoryLimit), {category}));
+        if (category == R32(kAddTool + kAddShown)) g_category_shown[c] = true;
+        if (g_category_shown[c]) {
+            k.used = int(CallGuest(ctx, Method(category, kCategoryPlaced), {category}));
+            k.limit = int(CallGuest(ctx, Method(category, kCategoryLimit), {category}));
+        }
         uint32_t count = uint32_t(CallGuest(ctx, Method(category, kCategoryItems), {category}));
         if (count == k.items.size()) continue;
         k.items.clear();
@@ -540,7 +579,26 @@ void PlaceCursor(PPCContext& ctx) {
 
 namespace fcip::editor {
 
+bool MapOpen() { return g_map_open; }
 bool ShellUp() { return g_map_open && R32(kEditorHandler + kHandlerMode) == kModeEditing; }
+bool ConsoleMenuUp() { return R8(kEditorHandler + kHandlerActive) == 0; }
+bool MapChanged() { return R8(kMapChanged) != 0; }
+
+std::string MapName() {
+    uint32_t manager = R32(kManager);
+    std::string name;
+    for (uint32_t i = 0; manager && i < kMapNameChars; i++) {
+        uint16_t c = R16(manager + kMapName + i * 2);
+        if (!c) break;
+        name += c < 0x80 ? char(c) : '?';
+    }
+    return name;
+}
+
+void Save() { Queue({Op::StartMenu, int(kButtonSave)}); }
+void ExitToMapManager() { Queue({Op::StartMenu, int(kButtonExit)}); }
+void ShowControllerLayout() { Queue({Op::StartMenu, int(kButtonControls)}); }
+void PlayTest() { Queue({Op::PlayTest}); }
 
 State Read() {
     State s;
@@ -549,7 +607,7 @@ State Read() {
     s.brush = BrushFor(mode);
     s.radius_step = std::clamp(int(R32(kTerrainTool + kTerrainRadiusStep)), 0, kRadiusSteps - 1);
     s.radius = GF(kRadius);
-    s.set_height = GF(kSetHeight);
+    s.set_height = GF(kHeightTarget);
     s.texture = std::clamp(int(R32(kTerrainTool + kTerrainTexture)), 0, kTextureCount - 1);
     s.square_cursor = R32(kSquareCursor) != 0;
     Vec c = ReadVec(kToolCursor);
@@ -558,12 +616,12 @@ State Read() {
     s.cursor[2] = c.z;
     s.undo_count = UndoCount();
     s.applying = g_apply;
-    if (uint32_t settings = R32(kMapSettings)) {
+    if (uint32_t settings = R32(kManager)) {
         s.has_environment = true;
-        for (int i = kSound1; i <= kSound3; i++) s.environment[i] = float(R32(settings + kSounds + uint32_t(i) * 4));
-        s.environment[kFogDistance] = float(R32(settings + kFogDistance));
-        s.environment[kFogThickness] = GF(settings + kFogThickness);
-        s.environment[kTimeOfDay] = float(R32(settings + kTimeOfDay));
+        for (int i = kSound1; i <= kSound3; i++) s.environment[i] = float(R32(settings + kMapSounds + uint32_t(i) * 4));
+        s.environment[kFogDistance] = float(R32(settings + kMapFogDistance));
+        s.environment[kFogThickness] = GF(settings + kMapFogThickness);
+        s.environment[kTimeOfDay] = float(R32(settings + kMapTimeOfDay));
     }
     if (uint32_t options = R32(kOptions)) {
         for (int i = 0; i < kOptionCount; i++) s.options[i] = R8(options + kOptionBytes[i]) != 0;
@@ -678,7 +736,10 @@ PPC_EXTERN_FUNC(__imp__sub_82313E70);
 
 // an editor interface handler (r3) becomes active: the main editor's once a map is open
 PPC_FUNC(sub_820C0340) {
-    if (uint32_t(ctx.r[3]) == kEditorHandler) g_map_open = true;
+    if (uint32_t(ctx.r[3]) == kEditorHandler && !g_map_open) {
+        g_map_open = true;
+        std::fill(std::begin(g_category_shown), std::end(g_category_shown), false);
+    }
     __imp__sub_820C0340(ctx, base);
 }
 
@@ -688,9 +749,9 @@ PPC_FUNC(sub_820CABB8) {
     __imp__sub_820CABB8(ctx, base);
 }
 
-// the main editor's input, each frame while editing: the UI's commands first
+// the main editor's input, each frame while a map is open: the UI's commands first
 PPC_FUNC(sub_820C6520) {
-    if (fcip::editor::ShellUp()) RunCommands(ctx);
+    if (g_map_open) RunCommands(ctx);
     __imp__sub_820C6520(ctx, base);
 }
 

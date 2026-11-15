@@ -42,7 +42,7 @@ using rows::Row;
 
 std::atomic<bool> g_open{false};
 std::atomic<uint32_t> g_revision{0};
-std::atomic<bool> g_editor_hovered{false};  // the pointer is on the editor's panels
+std::atomic<bool> g_editor_mouse{false};  // the editor's desktop UI takes the mouse
 
 constexpr uint32_t kHostApplyDisplay = WM_APP + 1;  // main.cpp's kApplyDisplay
 
@@ -939,14 +939,14 @@ void OpenMenuPage(int page) {
 
 void DrawUi(double fps) {
     ImGuiIO& io = ImGui::GetIO();
-    if (MenuOpen() || g_editor_hovered) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+    if (MenuOpen() || g_editor_mouse) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
     else io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     io.KeyRepeatRate = 0.1f;  // held arrows step ten times a second, ImGui's twenty is too fast for settings
     io.FontGlobalScale = std::max(1.0f, io.DisplaySize.y / 720.0f);
     // the key being captured must not also move the selection
     if (g_capture >= 0) io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     else io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    g_editor_hovered = g_editor_ui && g_editor_ui(fps);
+    g_editor_mouse = g_editor_ui && g_editor_ui(fps);
     if (!g_open) return;
     PollCapture();
     DrawPanel();
@@ -968,13 +968,18 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
     bool capturing = keys::Capturing();
     uint8_t key = keys::PositionKey(wp);
     bool panel_key = key && (key == keys::Key(keys::kSettings, 0) || key == keys::Key(keys::kSettings, 1));
+    bool editor_turn = !capturing && !(key_down && g_open);
+    if (editor_turn && g_editor_message && g_editor_message(hwnd, msg, wp)) {
+        *result = 0;
+        return true;
+    }
     if (key_down && !capturing && (panel_key || (wp == VK_ESCAPE && g_open))) {
         ToggleMenu();
         *result = 0;
         return true;
     }
     bool mouse = msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST;
-    if (mouse && g_editor_hovered) return false;
+    if (mouse && g_editor_mouse) return false;
     if (CursorMessage(hwnd, msg, lp, result)) return true;
     MenuMouseMessage(hwnd, msg, wp, lp);
     bool taken = keys::Message(hwnd, msg, wp, lp) || (capturing && key_down);

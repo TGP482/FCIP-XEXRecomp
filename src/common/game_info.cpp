@@ -1,9 +1,12 @@
+#include <string_view>
+
 #include "app/app.h"
 #include "common/input.h"
 #include "common/keys.h"
 #include "common/menu.h"
 #include "common/panel_colors.h"
 #include "common/settings.h"
+#include "image_symbols.h"
 
 namespace {
 
@@ -13,6 +16,11 @@ constexpr uint32_t Argb(const ImVec4& c) {
     return 0xFF000000u | byte(c.x) << 16 | byte(c.y) << 8 | byte(c.z);
 }
 
+// FCIPEditor.exe's windows and message boxes say they are the editor
+constexpr bool kEditor = std::string_view(IMAGE_XEX) == "ige.xex";
+constexpr const wchar_t* kTitle =
+    kEditor ? L"Far Cry Instincts: Predator - XEX Recomp Editor" : L"Far Cry Instincts: Predator - XEX Recomp";
+
 void Init() {
     fcip::EnsureDisplay();
     if (fcip::g_editor_launch) fcip::g_editor_launch();
@@ -21,8 +29,8 @@ void Init() {
 }  // namespace
 
 const app::GameInfo app::kGame = {
-    .title = L"Far Cry Instincts: Predator - XEX Recomp",
-    .short_title = L"Far Cry Instincts: Predator - XEX Recomp",
+    .title = kTitle,
+    .short_title = kTitle,
     .name = L"FCIP",
     .log = "fcip",
     .settings = "settings.toml",
