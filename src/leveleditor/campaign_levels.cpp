@@ -23,6 +23,7 @@
 #include "leveleditor/guest.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mission.h"
+#include "leveleditor/sequences.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
@@ -334,6 +335,7 @@ PPC_FUNC(sub_82112AD0) {
     if (fcip::editor::g_solo) {
         UpdateRequest(ctx, uint32_t(ctx.r[3]));
         UpdateMission(ctx);
+        UpdateSequences(ctx);
         ReloadOwnScript(ctx);
         if (ShellUp()) UpdateMarkers(ctx);
     }

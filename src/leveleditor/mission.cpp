@@ -350,20 +350,6 @@ void ApplyRemove(PPCContext& ctx, uint32_t object, std::vector<int> path) {
 
 // Undo
 
-// a node's children and attributes traded with another's, so the node keeps its identity
-void SwapContent(uint32_t a, uint32_t b) {
-    constexpr uint32_t kNodeParent = 0x44;
-    constexpr uint32_t kVectorWords[] = {0x4C, 0x50, 0x54, 0x5C, 0x60, 0x64};  // children, attributes: first last end
-    for (uint32_t at : kVectorWords) {
-        uint32_t word = R32(a + at);
-        W32(a + at, R32(b + at));
-        W32(b + at, word);
-    }
-    for (uint32_t node : {a, b}) {
-        for (uint32_t i = 0; i < ChildCount(node); i++) W32(ChildAt(node, i) + kNodeParent, node);
-    }
-}
-
 uint32_t Clone(PPCContext& ctx, uint32_t node) {
     W32(g_scratch + kScratchRef, 0);
     CallGuest(ctx, Method(node, kNodeClone), {g_scratch + kScratchRef, node});

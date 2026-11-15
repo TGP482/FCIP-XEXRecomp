@@ -37,6 +37,7 @@
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
 #include "leveleditor/picking.h"
+#include "leveleditor/sequence_panel.h"
 #include "leveleditor/volumes.h"
 
 using namespace fcip;
@@ -507,6 +508,10 @@ void DrawTabs(const State& s) {
         editor::DrawAiPanel();
         ImGui::EndTabItem();
     }
+    if (editor::g_solo && ImGui::BeginTabItem("Sequences")) {
+        editor::DrawSequencePanel();
+        ImGui::EndTabItem();
+    }
     if (ImGui::BeginTabItem("History")) {
         DrawHistory(s);
         ImGui::EndTabItem();
@@ -619,8 +624,8 @@ void DrawStatus(float top, float width, double fps, const State& s) {
 }
 
 // the mouse over the view: right drag looks, the wheel zooms, the left button uses the tool where it points
-// the solo editor's Edit Object tool: a link drag, its gizmo or volume handles have the mouse, else a click picks a
-// marker first
+// the solo editor's Edit Object tool: a link drag, its gizmo, volume handles or sequence keys have the mouse, else a
+// click picks a marker first
 bool SoloEditing(const State& s) { return editor::g_solo && s.tool == kEditObject; }
 bool PickedMarker(const State& s, ImVec2 m) { return SoloEditing(s) && PickMarker(m.x, m.y); }
 
@@ -634,7 +639,7 @@ void UpdateViewInput(const Box& view, const State& s) {
     bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
     bool press = clicked && over;
     bool held = SoloEditing(s) && (LinkMouse(m, press, down) || GizmoMouse(m, press, down) ||
-                                   VolumeMouse(m, press, down));
+                                   VolumeMouse(m, press, down) || SequenceMouse(m, press, down));
     if (clicked) g_applying = over && !held && !PickedMarker(s, m);
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_looking = false;
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_applying = false;

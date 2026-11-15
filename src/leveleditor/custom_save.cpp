@@ -3,9 +3,9 @@
 // for 255 files, which a campaign level's 550 files and 40 MB do not fit. Its writers make real files when no pack
 // takes them (File_Open 8234EF80), so the save runs them with the engine's level path on the custom level: terrain,
 // sectors, tools, ziplines and mounted weapons. The rest are written here: the campaign's level files the editor does
-// not write, its LevelData.xml naming the campaign level, the mission with the editor's entities and AI objects, the
-// AI navigation cut for its areas, the paint layers, and a first Mission.lua that runs after the campaign's mission
-// script.
+// not write, its sequences as edited, its LevelData.xml naming the campaign level, the mission with the editor's
+// entities and AI objects, the AI navigation cut for its areas, the paint layers, and a first Mission.lua that runs
+// after the campaign's mission script.
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -24,6 +24,7 @@
 #include "leveleditor/mission.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/nav_graph.h"
+#include "leveleditor/sequences.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -44,6 +45,7 @@ constexpr const char* kLevelData = "LevelData.xml";
 constexpr const char* kLevelInfo = "LevelInfo";
 constexpr const char* kCampaignLevelKey = "CampaignLevel";  // names the level a custom level's assets come from
 constexpr const char* kMissionFile = "Mission_Mission0.xml";
+constexpr const char* kMovieFile = "moviedata.xml";
 constexpr const char* kScriptName = "Mission.lua";
 constexpr const char* kPaintFile = "textureinfo.ige";
 constexpr const char* kCustomSuffix = "_Custom";  // a custom level never takes a campaign level's folder
@@ -174,6 +176,11 @@ void CopyCampaignFiles(PPCContext& ctx) {
     for (const char* list : kDependencyLists) CopyFile(ctx, level, level + list, MapName() + list);
 }
 
+// the sequences as edited, over the campaign's copy
+void WriteMovie(PPCContext& ctx) {
+    if (uint32_t movie = KeptMovie()) WriteXml(ctx, kMovieFile, movie);
+}
+
 // the graphs the level loaded, from where the AI system read them (8228CF00, "%s/%s")
 std::vector<NavFile> LoadedGraphs(PPCContext& ctx) {
     std::vector<NavFile> graphs;
@@ -284,6 +291,7 @@ void SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     uint8_t writing = R8(packs + kPacksWriting);
     W8(packs + kPacksWriting, 0);
     CopyCampaignFiles(ctx);
+    WriteMovie(ctx);
     WriteLevelData(ctx);
     WriteMission(ctx);
     WriteNavigation(ctx);

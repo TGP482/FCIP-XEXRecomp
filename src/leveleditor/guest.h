@@ -2,6 +2,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -62,6 +63,21 @@ inline uint32_t FindNode(uint32_t root, const std::vector<int>& path) {
         node = ChildAt(node, uint32_t(index));
     }
     return node;
+}
+
+// a node's children and attributes traded with another's, so the node keeps its identity (an undo puts a clone's
+// content back)
+inline void SwapContent(uint32_t a, uint32_t b) {
+    constexpr uint32_t kNodeParent = 0x44;
+    constexpr uint32_t kVectorWords[] = {0x4C, 0x50, 0x54, 0x5C, 0x60, 0x64};  // children, attributes: first last end
+    for (uint32_t at : kVectorWords) {
+        uint32_t word = kernel::R32(a + at);
+        kernel::W32(a + at, kernel::R32(b + at));
+        kernel::W32(b + at, word);
+    }
+    for (uint32_t node : {a, b}) {
+        for (uint32_t i = 0; i < ChildCount(node); i++) kernel::W32(ChildAt(node, i) + kNodeParent, node);
+    }
 }
 
 // std::string: inline text until the capacity reaches 16 bytes, else a pointer

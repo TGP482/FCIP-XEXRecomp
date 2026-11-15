@@ -195,6 +195,17 @@ bool MouseRay(const View& v, ImVec2 m, float origin[3], float dir[3]) {
     return true;
 }
 
+bool MouseOnLevel(const View& v, ImVec2 m, float z, float out[3]) {
+    float o[3];
+    float d[3];
+    if (!MouseRay(v, m, o, d) || std::fabs(d[2]) < 1e-4f) return false;
+    float t = (z - o[2]) / d[2];
+    if (t <= 0.0f) return false;
+    for (int i = 0; i < 3; i++) out[i] = o[i] + d[i] * t;
+    out[2] = z;
+    return true;
+}
+
 void AxesFromAngles(const float degrees[3], float axes[3][3]) {
     float sx = std::sin(degrees[0] * kRadians);
     float cx = std::cos(degrees[0] * kRadians);

@@ -38,6 +38,7 @@ bool NearCamera(const View& v, const float p[3]);  // close enough to be named
 float PixelDistance(const View& v, ImVec2 m, const float a[3], const float b[3]);
 // the ray from the camera through m, dir normalised
 bool MouseRay(const View& v, ImVec2 m, float origin[3], float dir[3]);
+bool MouseOnLevel(const View& v, ImVec2 m, float z, float out[3]);  // where that ray meets the level plane at z
 
 // the rotation the engine builds from an entity's angles in degrees (820BFE38): axes[i] is its local axis i
 void AxesFromAngles(const float degrees[3], float axes[3][3]);
