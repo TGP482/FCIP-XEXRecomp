@@ -313,7 +313,7 @@ void Fog(const FogSplit& f) {
 }
 
 // the clouds' coverage, clear and in rain, and the seconds rain takes to build or clear
-constexpr float kClearCoverage = 0.5f;
+constexpr float kClearCoverage = 0.38f;
 constexpr float kRainCoverage = 0.9f;
 constexpr float kRainFade = 12.0f;
 constexpr float kRadiansPerDegree = 3.14159265f / 180.0f;

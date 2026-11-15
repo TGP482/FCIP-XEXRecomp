@@ -1129,17 +1129,19 @@ float4 fog_medium(float4 pos : SV_Position) : SV_Target {
 const char* kCloudHlsl = R"(
 Texture2D<float4> march : register(t1);  // in scatter, transmittance in a
 static const float kBase = 700;           // the layer over the sea, world units
-static const float kTop = 2800;
+static const float kTop = 2000;
 static const float kEarth = 600000;       // the layer's curve, thinning it toward the horizon
 static const float kFar = 30000;          // the farthest a ray enters the layer
 static const float kSpan = 8000;          // the most of the layer one ray crosses
-static const float kCell = 2600;          // a cloud's size
+static const float kCell = 1100;          // a cloud's size
 static const float kLow = 0.15;           // rise a unit along the ray where clouds reach full strength
-static const float kBillow = 640;         // the billows eroding its edges
+static const float kBillow = 260;         // the billows eroding its edges
 static const float kSigma = 0.02;         // extinction a unit at full density
 static const float kFade = 14000;         // distance over which clouds sink into the sky's haze
 static const float kSunGain = 0.6;
 static const float2 kWind = float2(7, 3);  // units a second
+static const float kGrowth = 20;           // units a second the shapes form and fade by
+static const float kChurn = 45;            // the same for the billows on their edges
 static const int kSteps = 40;
 static const int kLightSteps = 4;
 float Hash(float3 p) {
@@ -1181,10 +1183,13 @@ float Rise(float h) { return (h - kBase) / (kTop - kBase); }
 float Density(float3 p, bool billows) {
     float r = Rise(p.z);
     if (r <= 0 || r >= 1) return 0;
-    float3 q = float3(p.xy + kWind * height.w, p.z);
-    float shape = Noise(q / kCell) * 0.65 + Noise(q / (kCell * 0.37) + 7.1) * 0.35;
-    float d = saturate((shape - (1 - terrain[0].x) - 0.3 * r * r) * 4) * saturate(r * 10);
+    float3 q = float3(p.xy + kWind * height.w, p.z + kGrowth * height.w);
+    // the finer octave grows against the coarse one, so shapes change rather than scroll
+    float3 against = float3(q.xy, q.z - 2.5 * kGrowth * height.w);
+    float shape = Noise(q / kCell) * 0.65 + Noise(against / (kCell * 0.37) + 7.1) * 0.35;
+    float d = saturate((shape - (1 - terrain[0].x) - 0.3 * r * r) * 6) * saturate(r * 10);
     if (!billows || d <= 0) return d;
+    q.z += kChurn * height.w;
     float billow = Noise(q / kBillow) * 0.6 + Noise(q / (kBillow * 0.4)) * 0.4;
     return saturate(d - billow * 0.45 * (1 - d));
 }
