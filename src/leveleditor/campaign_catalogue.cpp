@@ -1,7 +1,8 @@
 // ige.xex, the solo level editor: the campaign's types in the Add Object tool. Enemies take the multiplayer items'
-// place, objects (props, destroyables, doors) follow the vehicles, solo pickups and logic follow the weapons and
-// items. Each campaign mission defines the types it uses in its EntityLibrary and its pack holds their assets, so the
-// packs stay open and the types join the editor's archetype library.
+// place, objects (props, destroyables, doors) follow the vehicles, solo pickups and every level class
+// (level_objects.h) follow the weapons and items. Each campaign mission defines the types it uses in its
+// EntityLibrary and its pack holds their assets, so the packs stay open and the types join the editor's archetype
+// library.
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -11,6 +12,7 @@
 #include "kernel/memory.h"
 #include "leveleditor/campaign_levels.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/level_objects.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
@@ -22,36 +24,6 @@ namespace {
 // the AI section of Scripts\Default\EntityClassRegistry.lua
 constexpr const char* kEnemyClasses[] = {"Merc", "Worker", "Sapper", "Chucker", "Freak", "Crowe", "Dragon", "Valerie"};
 constexpr const char* kObjectClasses[] = {"DestroyableObject", "BasicEntity", "AutomaticDoor"};
-
-// a class the catalogue spawns with its script's defaults
-struct ClassEntry {
-    const char* cls;
-    const char* caption;
-};
-// the campaign's pickups the multiplayer list lacks; their scripts carry the model
-constexpr ClassEntry kSoloPickups[] = {
-    {"PickupAdrenaline", "Adrenaline"},
-    {"MRE", "Ration Pack"},
-    {"PickupGrenadeBox", "Grenade Box"},
-    {"PickupMolotovBox", "Molotov Box"},
-    {"PickupBerrettaNoSup", "9mm Pistol (No Silencer)"},
-    {"PickupBinoculars", "Binoculars"},
-    {"PickupExplo", "Explosives"},
-    {"PickupMortar", "Mortar"},
-    {"PickupBrowning", "Heavy Machine Gun"},
-    {"Secret", "Secret"},
-};
-// the logic the campaign scripts its levels with; none has a model, so the editor marks them
-constexpr ClassEntry kLogicObjects[] = {
-    {"Checkpoint", "Checkpoint"},
-    {"EndMapTrigger", "Level End"},
-    {"ProximityTrigger", "Proximity Trigger"},
-    {"AreaTrigger", "Area Trigger"},
-    {"DelayTrigger", "Delay Trigger"},
-    {"MultipleTrigger", "Multiple Trigger"},
-    {"UtilityTrigger", "Utility Trigger"},
-    {"Waypoint", "Waypoint"},
-};
 
 // the editor's strings the solo editor replaces, by section and key of its string table
 struct Caption {
@@ -264,9 +236,8 @@ void FillCatalogue(PPCContext& ctx) {
     for (const CampaignType& t : g_objects) {
         AddCatalogueEntry(ctx, List(kVehicleList), t.archetype, t.caption, t.archetype);
     }
-    for (const ClassEntry& p : kSoloPickups) AddCatalogueEntry(ctx, List(kWeaponList), p.cls, p.caption, "");
     // not the vehicle list: a class there makes its objects vehicles
-    for (const ClassEntry& p : kLogicObjects) AddCatalogueEntry(ctx, List(kWeaponList), p.cls, p.caption, "");
+    for (const LevelClass& c : kLevelClasses) AddCatalogueEntry(ctx, List(kWeaponList), c.cls, c.caption, "");
 }
 
 const char* CaptionFor(const std::string& section, const std::string& key) {

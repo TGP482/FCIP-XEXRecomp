@@ -168,6 +168,11 @@ constexpr const char* kTextureNames[] = {"Sand", "Grass", "Cliff"};
 constexpr const char* kTimeNames[] = {"Dawn", "Day", "Dusk", "Night"};
 constexpr const char* kCategoryNames[] = {"Vehicles",   "Weapons and Items", "Multiplayer",    "Respawn Points",
                                           "Special",    "Small Brushes",     "Large Brushes",  "Trees"};
+// as the solo catalogue fills them (campaign_catalogue.cpp)
+constexpr const char* kSoloCategoryNames[] = {"Vehicles and Objects", "Weapons and Pickups", "Enemies",
+                                              "Respawn Points",       "Special",             "Small Brushes",
+                                              "Large Brushes",        "Trees"};
+static_assert(std::size(kSoloCategoryNames) == std::size(kCategoryNames));
 constexpr const char* kOptionNames[] = {
     "Draw Ocean Water", "Show Fog", "Draw Object Icons", "Snap Brushes to Terrain", "Snap Fences and Bridges",
     "Prompt Before Deleting", "Keep Large Brushes and Ladders off Terrain Edits", "Snap Ladders to Sniper Towers",
@@ -664,7 +669,10 @@ std::vector<std::string> PaintTextures() {
 
 float RadiusMetres(int step) { return GF(kRadiusTable + uint32_t(std::clamp(step, 0, kRadiusSteps - 1)) * 4); }
 const char* OptionName(int option) { return kOptionNames[std::clamp(option, 0, kOptionCount - 1)]; }
-const char* CategoryName(int category) { return kCategoryNames[std::clamp(category, 0, kCategoryCount - 1)]; }
+const char* CategoryName(int category) {
+    const char* const* names = g_solo ? kSoloCategoryNames : kCategoryNames;
+    return names[std::clamp(category, 0, kCategoryCount - 1)];
+}
 const char* TimeOfDayName(int time) { return kTimeNames[std::clamp(time, 0, kTimesOfDay - 1)]; }
 float FogDistanceMetres(int step) {
     return GF(kFogDistanceTable + uint32_t(std::clamp(step, 0, kFogDistanceSteps - 1)) * 4);

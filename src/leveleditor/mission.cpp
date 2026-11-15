@@ -10,6 +10,7 @@
 #include <functional>
 #include <mutex>
 #include <set>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,17 +31,61 @@ constexpr const char* kEntity = "Entity";
 constexpr const char* kPoints = "Points";
 constexpr const char* kEntities = "Entities";
 
-// what a new object gets after Type, Name and Pos, as the campaign's missions write them
+// what a new object gets after Type, Name and Pos, the campaign's missions' most common values
 struct Default {
     const char* key;
     const char* value;
 };
 constexpr Default kTagPointDefaults[] = {{"Angles", "0,0,0"}, {"Action", ""}};
 constexpr Default kAnchorDefaults[] = {
-    {"Angles", "0,0,0"}, {"Action", "AIANCHOR_GENERIC_JOB"}, {"Enabled", "1"}, {"AutoDisable", "1"},
+    {"Angles", "0,0,0"}, {"Action", "AIANCHOR_GENERIC_JOB"}, {"Enabled", "1"}, {"AutoDisable", "0"},
     {"GroupID", "-1"},   {"Range", "-1"},                    {"MaxUsers", "1"}, {"NextAnchor", ""},
     {"AnchorId", "9"},   {"Area", "0"},
 };
+constexpr Default kAreaDefaults[] = {
+    {"Width", "0"},  {"AreaId", "0"},               {"GroupId", "0"},          {"Closed", "1"},
+    {"Indoor", "0"}, {"SoundOcclusionFactor", "0"}, {"AudibilityAreaID", "0"}, {"ActivateWithBino", "0"},
+};
+constexpr Default kVisAreaDefaults[] = {
+    {"AmbientColor", "0,0,0"}, {"AffectedBySun", "0"}, {"SkyOnly", "0"},       {"WaterVisible", "0"},
+    {"UseGlowParams", "0"},    {"GlowBrightness", "0"}, {"GlowIntensity", "0"}, {"GlowBias", "0"},
+    {"LoadingDepth", "4"},
+};
+constexpr Default kPathDefaults[] = {{"Height", "0"}, {"Closed", "0"}, {"AI_Drift", "0"}, {"Drift", "0"}};
+constexpr Default kAreaBoxDefaults[] = {
+    {"AreaId", "-1"}, {"FadeInZone", "0"}, {"Width", "4"},  {"Length", "4"},
+    {"Height", "8"},  {"GroupId", "0"},    {"Indoor", "0"}, {"SoundOcclusionFactor", "0"},
+    {"AudibilityAreaID", "0"}, {"ActivateWithBino", "0"},
+};
+constexpr Default kAreaSphereDefaults[] = {
+    {"AreaId", "-1"}, {"FadeInZone", "0"}, {"Radius", "10"}, {"GroupId", "0"},
+    {"Indoor", "0"},  {"SoundOcclusionFactor", "0"},         {"AudibilityAreaID", "0"}, {"ActivateWithBino", "0"},
+};
+
+// a new object's attributes in order, and whether it gets a square of points from its Pos
+struct NewObject {
+    const char* type;
+    std::span<const Default> first;
+    std::span<const Default> then;
+    const char* height;  // nullptr for none
+    bool points;
+};
+constexpr NewObject kNewObjects[] = {
+    {"Respawn", kTagPointDefaults, {}, nullptr, false},
+    {"TagPoint", kTagPointDefaults, {}, nullptr, false},
+    {"AIAnchor", kAnchorDefaults, {}, nullptr, false},
+    {"AreaBox", kAreaBoxDefaults, {}, nullptr, false},
+    {"AreaSphere", kAreaSphereDefaults, {}, nullptr, false},
+    {"Shape", kAreaDefaults, {}, "4", true},
+    {"VisArea", kAreaDefaults, kVisAreaDefaults, "8", true},
+    {"Portal", kAreaDefaults, kVisAreaDefaults, "5", true},
+    {"AIPath", kAreaDefaults, kPathDefaults, nullptr, false},
+    {"ForbiddenArea", kAreaDefaults, {}, "0", true},
+    {"EnclosingArea", kAreaDefaults, {}, "0", true},
+    {"FenceArea", kAreaDefaults, {}, "100", true},
+    {"AINavigationModifier", kAreaDefaults, {}, "0", true},
+};
+constexpr float kSquareMetres = 4.0f;  // a new area's side
 
 // guest scratch: a node ref, then the texts of a call
 constexpr uint32_t kScratchRef = 0x00;
@@ -171,6 +216,7 @@ void Publish(AiObjects next) {
 
 void Refresh() {
     AiObjects next;
+    next.kept = g_mission != 0;
     uint32_t parent = ObjectsNode();
     for (uint32_t i = 0; parent && i < ChildCount(parent); i++) {
         uint32_t node = ChildAt(parent, i);
@@ -239,20 +285,35 @@ std::string UniqueName(const std::string& type) {
     }
 }
 
-template <size_t N>
-void SetDefaults(PPCContext& ctx, uint32_t node, const Default (&defaults)[N]) {
+void SetDefaults(PPCContext& ctx, uint32_t node, std::span<const Default> defaults) {
     for (const Default& d : defaults) SetAttr(ctx, node, d.key, d.value);
 }
 
+// a closed square from pos, as the campaign's areas start their points at Pos
+void AddSquare(PPCContext& ctx, uint32_t node, const std::array<float, 3>& pos) {
+    constexpr float kCorners[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    uint32_t points = NewChild(ctx, node, kPoints);
+    for (const auto& c : kCorners) {
+        std::array<float, 3> p = {pos[0] + c[0] * kSquareMetres, pos[1] + c[1] * kSquareMetres, pos[2]};
+        if (uint32_t point = points ? NewChild(ctx, points, "Point") : 0) SetAttr(ctx, point, "Pos", FormatVec3(p));
+    }
+}
+
 void ApplyAddObject(PPCContext& ctx, const std::string& type, const std::array<float, 3>& pos) {
+    const NewObject* kind = nullptr;
+    for (const NewObject& k : kNewObjects) {
+        if (type == k.type) kind = &k;
+    }
     uint32_t objects = ObjectsNode();
-    uint32_t node = objects ? NewChild(ctx, objects, kObject) : 0;
+    uint32_t node = kind && objects ? NewChild(ctx, objects, kObject) : 0;
     if (!node) return;
     SetAttr(ctx, node, "Type", type);
     SetAttr(ctx, node, "Name", UniqueName(type));
     SetAttr(ctx, node, "Pos", FormatVec3(pos));
-    if (type == "AIAnchor") SetDefaults(ctx, node, kAnchorDefaults);
-    else SetDefaults(ctx, node, kTagPointDefaults);
+    SetDefaults(ctx, node, kind->first);
+    SetDefaults(ctx, node, kind->then);
+    if (kind->height) SetAttr(ctx, node, "Height", kind->height);
+    if (kind->points) AddSquare(ctx, node, pos);
 }
 
 // swaps the child at path with its sibling delta away

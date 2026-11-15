@@ -22,7 +22,8 @@ using namespace fcip::editor;
 namespace {
 
 constexpr const char* kCategoryNames[] = {"Player Start", "Triggers",           "Sequences", "Culling",
-                                          "Sounds",       "Lights and Effects", "Gameplay",  "AI Objects"};
+                                          "Sounds",       "Lights and Effects", "Gameplay",  "AI Objects",
+                                          "AI Navigation"};
 static_assert(std::size(kCategoryNames) == kViewCategoryCount);
 
 constexpr int kPropertyReadsPerFrame = 32;  // a level's first frames read them in turns
@@ -174,6 +175,7 @@ void DrawMarkers() {
     View view;
     if (!BeginView(view)) return;
     if (g_view_shown[kViewAi]) DrawAi(view);
+    if (g_view_shown[kViewNav]) DrawNav(view);
     if (g_view_shown[kViewTriggers]) DrawTriggers(view);
     if (g_view_shown[kViewSequences]) DrawSequences(view);
     if (g_view_shown[kViewCulling]) DrawCulling(view);

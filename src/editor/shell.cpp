@@ -30,6 +30,7 @@
 #include "editor/tools.h"
 #include "leveleditor/ai_panel.h"
 #include "leveleditor/campaign_levels.h"
+#include "leveleditor/level_objects.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
@@ -473,7 +474,8 @@ void DrawTabs(const State& s) {
     if (!ImGui::BeginTabBar("##dock_tabs")) return;
     std::vector<Category> catalogue = Catalogue();
     if (ImGui::BeginTabItem("Objects")) {
-        DrawObjectBrowser(s, catalogue);
+        if (editor::g_solo) editor::DrawLevelObjects();
+        else DrawObjectBrowser(s, catalogue);
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Settings")) {

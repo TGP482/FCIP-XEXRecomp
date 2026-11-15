@@ -44,6 +44,7 @@ inline std::string AttributeOf(const AiObject& o, const char* key) {
 }
 struct AiObjects {
     uint32_t generation = 0;
+    bool kept = false;  // a mission is kept, so objects can be added
     std::vector<AiObject> objects;
     std::unordered_map<uint32_t, std::string> layers;  // each mission entity's Layer, by EntityId
 };
@@ -68,7 +69,7 @@ void SetAiAttribute(uint32_t object, std::vector<int> path, std::string key, std
 void AddAiChild(uint32_t object, std::vector<int> path, std::string tag);
 void RemoveAiChild(uint32_t object, std::vector<int> path);
 void MoveAiChild(uint32_t object, std::vector<int> path, int delta);  // among its siblings
-void AddAiObject(std::string type, std::array<float, 3> pos);       // a TagPoint or an AIAnchor
+void AddAiObject(std::string type, std::array<float, 3> pos);  // any of kLevelObjects (level_objects.h)
 void RemoveAiObject(uint32_t object);
 
 }  // namespace fcip::editor
