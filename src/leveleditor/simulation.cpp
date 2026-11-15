@@ -27,9 +27,8 @@ constexpr uint64_t kPauseSimulation = 1;
 constexpr uint32_t kHandlerMode = 0x104;
 constexpr uint32_t kModeEditing = 1;
 constexpr uint32_t kModePlayTest = 2;
-// entity: SetPos by vtable, and the angles SetAngles (82127578) keeps
+// entity: SetPos by vtable
 constexpr uint32_t kEntitySetPos = 0x14;  // (entity, Vec3, 0)
-constexpr uint32_t kEntityAngles = 0x374;
 constexpr uint32_t kScriptEventReset = 4;
 // the entity system's RemoveEntity, as System.RemoveEntity (822374F0) calls it
 constexpr uint32_t kSystemRemoveEntity = 0x14;  // (system, id, 0, 0)

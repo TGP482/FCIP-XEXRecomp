@@ -37,9 +37,11 @@ constexpr uint32_t kNodeSetAttr = 0xB0;  // (key, text)
 // entity: methods, then fields
 constexpr uint32_t kEntityClassName = 0x04;
 constexpr uint32_t kEntityPosition = 0x10;  // (world) returns a Vec3
+constexpr uint32_t kEntityBBox = 0xA0;      // (min out, max out) the world box its trigger area and physics use
 constexpr uint32_t kEntityId = 0xB8;
 constexpr uint32_t kEntityName = 0xBC;  // std::string
 constexpr uint32_t kEntityScript = 0x134;
+constexpr uint32_t kEntityAngles = 0x374;  // degrees, as SetAngles (82127578) keeps them
 
 inline uint32_t Method(uint32_t object, uint32_t slot) { return kernel::R32(kernel::R32(object) + slot); }
 

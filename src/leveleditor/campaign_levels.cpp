@@ -21,6 +21,7 @@
 #include "leveleditor/archetypes.h"
 #include "leveleditor/event_links.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/markers.h"
 #include "leveleditor/mission.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
@@ -334,6 +335,7 @@ PPC_FUNC(sub_82112AD0) {
         UpdateRequest(ctx, uint32_t(ctx.r[3]));
         UpdateMission(ctx);
         ReloadOwnScript(ctx);
+        if (ShellUp()) UpdateMarkers(ctx);
     }
     __imp__sub_82112AD0(ctx, base);
 }

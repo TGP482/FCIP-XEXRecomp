@@ -87,7 +87,6 @@ float g_dock_width = 0.0f;  // pixels, 0 until the first frame
 bool g_show_toolbar = true;
 bool g_show_dock = true;
 bool g_show_status = true;
-bool g_show_markers = true;
 bool g_show_controls = false;
 char g_search[64] = "";
 bool g_looking = false;   // the right button went down on the view
@@ -161,7 +160,12 @@ void DrawMenuBar(const State& s) {
         for (int option : {kOptionObjectIcons, kOptionOcean, kOptionFog}) {
             if (ImGui::MenuItem(OptionName(option), nullptr, s.options[option])) SetOption(option, !s.options[option]);
         }
-        if (editor::g_solo) ImGui::MenuItem("Markers", nullptr, &g_show_markers);
+        if (editor::g_solo) {
+            ImGui::Separator();
+            for (int c = 0; c < kViewCategoryCount; c++) {
+                ImGui::MenuItem(ViewCategoryName(c), nullptr, &g_view_shown[c]);
+            }
+        }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Game")) {
@@ -423,7 +427,9 @@ void DrawEditorSettings(const State& s) {
         bool on = s.options[i];
         if (ImGui::Checkbox(OptionName(i), &on)) SetOption(i, on);
     }
-    if (editor::g_solo) ImGui::Checkbox("Markers", &g_show_markers);
+    if (!editor::g_solo) return;
+    ImGui::SeparatorText("Editor View");
+    for (int c = 0; c < kViewCategoryCount; c++) ImGui::Checkbox(ViewCategoryName(c), &g_view_shown[c]);
 }
 
 void DrawBudget(const std::vector<Category>& catalogue) {
@@ -629,7 +635,7 @@ bool DrawShell(double fps) {
     else UpdateViewInput(view);
     if (g_show_dock) DrawDock(size.x - dock, top, bottom, s);
     if (g_show_status) DrawStatus(bottom, size.x, fps, s);
-    if (editor::g_solo && g_show_markers) editor::DrawMarkers();
+    if (editor::g_solo) editor::DrawMarkers();
     DrawControls();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(int(std::size(kPanelColors) + std::size(kShellColors)));

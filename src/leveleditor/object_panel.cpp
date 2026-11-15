@@ -17,7 +17,6 @@
 #include "kernel/memory.h"
 #include "leveleditor/event_links.h"
 #include "leveleditor/guest.h"
-#include "leveleditor/markers.h"
 #include "leveleditor/mission.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
@@ -423,7 +422,6 @@ PPC_FUNC(sub_820DE570) {
     uint32_t tool = uint32_t(ctx.r[3]);
     __imp__sub_820DE570(ctx, base);
     Update(ctx, SelectedObject(tool));
-    UpdateMarkers(ctx);
 }
 
 // leaving the Edit Object tool: nothing is selected for the panel
