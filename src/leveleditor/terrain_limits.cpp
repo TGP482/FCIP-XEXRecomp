@@ -84,6 +84,18 @@ void PaintSurfaceTypes(PPCContext& ctx, uint32_t sector) {
 
 }  // namespace
 
+// the paint layers in sector order, as textureinfo.ige holds them
+std::vector<uint8_t> fcip::editor::PaintLayerBytes() {
+    uint32_t table = PaintLayers();
+    uint32_t count = SectorCount();
+    std::vector<uint8_t> bytes(size_t(count) * kLayerBytes, kUnpainted);
+    for (uint32_t i = 0; table && i < count; i++) {
+        uint32_t layer = R32(table + i * 4);
+        if (layer) std::memcpy(&bytes[size_t(i) * kLayerBytes], HostPtr(layer), kLayerBytes);
+    }
+    return bytes;
+}
+
 // the per sector tables' bytes, r6 of the allocation: height undo snapshot (820D2DB0), paint undo copies (820D22AC)
 void SectorTableBytes(PPCContext& ctx, uint8_t*) { ctx.r[6] = SectorCount() * 4; }
 

@@ -7,6 +7,7 @@
 #include "common/panel_colors.h"
 #include "common/settings.h"
 #include "image_symbols.h"
+#include "kernel/kernel.h"
 
 namespace {
 
@@ -20,6 +21,9 @@ constexpr uint32_t Argb(const ImVec4& c) {
 constexpr bool kEditor = std::string_view(IMAGE_XEX) == "ige.xex";
 constexpr const wchar_t* kTitle =
     kEditor ? L"Far Cry Instincts: Predator - XEX Recomp Editor" : L"Far Cry Instincts: Predator - XEX Recomp";
+
+// custom levels live in levels\ beside the exe, custom: to the game and the editor
+void Loaded() { kernel::MountHostFolder("custom:", (app::ExeDir() / "levels").string()); }
 
 void Init() {
     fcip::EnsureDisplay();
@@ -41,7 +45,7 @@ const app::GameInfo app::kGame = {
     .load = fcip::LoadSettings,
     .save = fcip::SaveSettings,
     .init = Init,
-    .loaded = nullptr,
+    .loaded = Loaded,
     .window = fcip::keys::WindowUp,
     .message = fcip::MenuMessage,
     .ui = fcip::DrawUi,

@@ -1,6 +1,7 @@
 // the map editor's own tools, camera and undo as the desktop UI drives them (tools.cpp); window thread unless noted
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,7 @@ bool ConsoleMenuUp();  // a console page (start menu, save, map info) has the ed
 bool MapChanged();     // since it was last saved
 float MaxSetHeight();  // the solo editor's terrain reaches the heightmap's limit
 int BudgetScale();     // the solo editor's object budgets follow the level's sectors (object_budgets.cpp)
+std::vector<uint8_t> PaintLayerBytes();  // editor thread, as textureinfo.ige holds them (terrain_limits.cpp)
 std::string MapName(); // empty before it is first saved
 
 // the tools as the editor has them now

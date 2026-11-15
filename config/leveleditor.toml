@@ -57,13 +57,19 @@ TerrainPaint_RebuildAll = 0x820D4FE8  # every sector's textures from the paint l
 Memory_Free = 0x8230F208              # (heap tag, line, pointer)
 Terrain_Cell = 0x8234F5E0             # (sector render data, row, column) a heightmap cell
 Terrain_SetSurfaceType = 0x82357FA8   # (cell, surface type)
-# a campaign level saved as a custom level (custom_save.cpp)
+# a campaign level saved as a custom level, its own folder (custom_save.cpp)
 Engine_LevelFilePath = 0x823365E8   # (3D engine, name, 0) the path of a file in the level's folder
 File_Open = 0x8234EF80              # (file, packs, path, mode, 0, 0); mode 2 writes
 File_Write = 0x8234ECC0             # (packs, data, size, file)
 File_Close = 0x8234ED48             # (packs, file)
 File_Destroy = 0x824FAF08           # (file)
-Pack_CopyFile = 0x82108E80          # (source pack, file, name in the target, target pack)
+File_IsOpen = 0x8234F598            # (file)
+File_Size = 0x8234EDB0              # (packs, file)
+File_Read = 0x8234F150              # (packs, data, size, file)
+Tools_Count = 0x820C2270            # the editor's tools
+Terrain_Save = 0x821099A0           # (manager) terrain.sdat and every sector's sd%d and ShortRange%d
+Zipline_Save = 0x820F6A10           # (path) zipline.dat
+MountedWeapon_Save = 0x820F6F10     # (path) MountedWeapon.dat
 Mission_WriteEntities = 0x82104C38  # (mission object, XmlNodeRef of the mission) adds Objects with the entities
 Library_Get = 0x821AA170            # the editor's archetype library
 Library_Find = 0x821AA900           # (XmlNodeRef out, library, std::string full name) an EntityPrototype
