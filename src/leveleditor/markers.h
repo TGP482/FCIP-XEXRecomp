@@ -1,4 +1,4 @@
-// the level editor's markers over the frame for the logic objects, which have no model
+// the level editor's markers over the frame for the logic and AI objects, which have no model
 #pragma once
 
 struct PPCContext;

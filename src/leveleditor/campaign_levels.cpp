@@ -13,6 +13,7 @@
 #include "kernel/memory.h"
 #include "leveleditor/event_links.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/mission.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
@@ -139,7 +140,7 @@ void SetTemplateFields(PPCContext& ctx, uint32_t manager, uint32_t name) {
     }
 }
 
-// 820F03A0 as an existing map runs it, up to the environment presets
+// 820F03A0 as an existing map runs it, up to the environment presets; no textureinfo.ige, so the paint stays clear
 void SetUpEditor(PPCContext& ctx, uint32_t manager) {
     CallGuest(ctx, SYM_Thumbnail_CreateCamera, {});
     CallGuest(ctx, SYM_TerrainPaint_SetUp, {});
@@ -153,7 +154,6 @@ void SetUpEditor(PPCContext& ctx, uint32_t manager) {
         CallGuest(ctx, SYM_Thumbnail_Render, {R32(SYM_Thumbnail_Camera)});
         W8(SYM_Thumbnail_Stale, 1);
     }
-    CallGuest(ctx, SYM_TerrainPaint_Load, {});
     if (!VectorEmpty(SYM_Ziplines)) CallGuest(ctx, SYM_Zipline_Load, {});
     if (!VectorEmpty(SYM_MountedWeapons)) CallGuest(ctx, SYM_MountedWeapon_Load, {});
     CallGuest(ctx, SYM_Editor_UpdateTexts, {0});
@@ -230,10 +230,14 @@ PPC_EXTERN_FUNC(__imp__sub_82138CD8);
 PPC_EXTERN_FUNC(__imp__sub_82109BF8);
 PPC_EXTERN_FUNC(__imp__sub_820E3C88);
 PPC_EXTERN_FUNC(__imp__sub_82449A08);
+PPC_EXTERN_FUNC(__imp__sub_8229CC08);
 
 // the editor's interface manager (r3) each frame
 PPC_FUNC(sub_82112AD0) {
-    if (fcip::editor::g_solo) UpdateRequest(ctx, uint32_t(ctx.r[3]));
+    if (fcip::editor::g_solo) {
+        UpdateRequest(ctx, uint32_t(ctx.r[3]));
+        UpdateMission(ctx);
+    }
     __imp__sub_82112AD0(ctx, base);
 }
 
@@ -241,6 +245,7 @@ PPC_FUNC(sub_82112AD0) {
 PPC_FUNC(sub_821124B0) {
     if (!fcip::editor::g_solo) return __imp__sub_821124B0(ctx, base);
     ForgetLinks();
+    ForgetMission(ctx);
     g_open = g_starting;
     g_starting = kNone;
     if (g_open == kNone) return __imp__sub_821124B0(ctx, base);
@@ -269,6 +274,12 @@ PPC_FUNC(sub_82138CD8) {
     W8(game + kEditorGame, editor);
 }
 
+// a level's mission objects into the AI system (r5 the mission's XmlNodeRef); a campaign level's mission is kept
+PPC_FUNC(sub_8229CC08) {
+    if (g_loading) KeepMission(ctx, R32(uint32_t(ctx.r[5])));
+    __imp__sub_8229CC08(ctx, base);
+}
+
 // a map template's time of day preset; a campaign level keeps its mission's environment
 PPC_FUNC(sub_820E0240) {
     if (fcip::editor::g_solo && g_open != kNone) return;
@@ -292,4 +303,3 @@ PPC_FUNC(sub_82109BF8) {
     LOGR("level editor: %s not saved, campaign levels save as custom levels", kCampaignLevels[int(g_open)]);
     ctx.r[3] = 0;
 }
-

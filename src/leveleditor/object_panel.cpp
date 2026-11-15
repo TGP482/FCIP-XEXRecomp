@@ -18,6 +18,7 @@
 #include "leveleditor/event_links.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/markers.h"
+#include "leveleditor/mission.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
 #include "xdk/hle.h"
@@ -189,17 +190,6 @@ void ReadNode(uint32_t node, const Node& at, std::vector<Node>& out) {
     }
 }
 
-uint32_t FindNode(uint32_t root, const std::vector<int>& path) {
-    uint32_t node = root;
-    for (int index : path) {
-        uint32_t first = R32(node + kNodeChildFirst);
-        uint32_t count = first ? (R32(node + kNodeChildLast) - first) / 4 : 0;
-        if (uint32_t(index) >= count) return 0;
-        node = R32(first + uint32_t(index) * 4);
-    }
-    return node;
-}
-
 Snapshot Read(PPCContext& ctx, uint32_t object) {
     Snapshot s;
     s.object = object;
@@ -280,6 +270,26 @@ void Queue(const Node& n, const Attribute& a, const char* value) {
     g_edits.push_back({g_view.object, n.table, n.path, a.key, value});
 }
 
+// an enemy's anchor fields (FirstAnchor, OnPlayerSeenAnchor1) name one of the level's anchors; AnchorGroupID does not
+bool IsAnchorField(const std::string& key) {
+    return key.find("Anchor") != std::string::npos && key.find("ID") == std::string::npos;
+}
+
+void Pick(const Node& n, const Attribute& a, char* text, const std::string& value) {
+    std::snprintf(text, kValueChars, "%s", value.c_str());
+    Queue(n, a, text);
+}
+
+void AnchorPicker(const Node& n, const Attribute& a, char* text) {
+    ImGui::SameLine(0, 0);
+    if (!ImGui::BeginCombo("##anchors", nullptr, ImGuiComboFlags_NoPreview)) return;
+    if (ImGui::Selectable("(none)")) Pick(n, a, text, "");
+    for (const std::string& name : AiObjectNames("AIAnchor")) {
+        if (ImGui::Selectable(name.c_str())) Pick(n, a, text, name);
+    }
+    ImGui::EndCombo();
+}
+
 void DrawFields() {
     float label_w = ImGui::GetFontSize() * 12;
     size_t field = 0;
@@ -294,10 +304,12 @@ void DrawFields() {
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted(a.key.c_str());
             ImGui::SameLine(label_w);
-            ImGui::SetNextItemWidth(-1);
             char* text = g_fields[field].data();
+            bool anchor = IsAnchorField(a.key);
+            ImGui::SetNextItemWidth(anchor ? -ImGui::GetFrameHeight() : -1);
             ImGui::InputText("##value", text, kValueChars);
             if (ImGui::IsItemDeactivatedAfterEdit()) Queue(n, a, text);
+            if (anchor) AnchorPicker(n, a, text);
             ImGui::PopID();
             field++;
         }

@@ -27,6 +27,7 @@
 #include "common/view_clip.h"
 #include "editor/icons.h"
 #include "editor/tools.h"
+#include "leveleditor/ai_panel.h"
 #include "leveleditor/campaign_levels.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mode.h"
@@ -146,7 +147,7 @@ void DrawMenuBar(const State& s) {
         for (int option : {kOptionObjectIcons, kOptionOcean, kOptionFog}) {
             if (ImGui::MenuItem(OptionName(option), nullptr, s.options[option])) SetOption(option, !s.options[option]);
         }
-        if (editor::g_solo) ImGui::MenuItem("Logic Markers", nullptr, &g_show_markers);
+        if (editor::g_solo) ImGui::MenuItem("Markers", nullptr, &g_show_markers);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Game")) {
@@ -398,7 +399,7 @@ void DrawEditorSettings(const State& s) {
         bool on = s.options[i];
         if (ImGui::Checkbox(OptionName(i), &on)) SetOption(i, on);
     }
-    if (editor::g_solo) ImGui::Checkbox("Logic Markers", &g_show_markers);
+    if (editor::g_solo) ImGui::Checkbox("Markers", &g_show_markers);
 }
 
 void DrawBudget(const std::vector<Category>& catalogue) {
@@ -431,6 +432,10 @@ void DrawTabs(const State& s) {
     }
     if (editor::g_solo && ImGui::BeginTabItem("Properties")) {
         editor::DrawObjectPanel();
+        ImGui::EndTabItem();
+    }
+    if (editor::g_solo && ImGui::BeginTabItem("AI")) {
+        editor::DrawAiPanel();
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("History")) {

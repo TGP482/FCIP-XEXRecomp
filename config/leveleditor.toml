@@ -44,7 +44,6 @@ Thumbnail_CreateCamera = 0x820F6420
 Thumbnail_CreateTexture = 0x820F63A0
 Thumbnail_Render = 0x82375FD8
 TerrainPaint_SetUp = 0x820D44C8
-TerrainPaint_Load = 0x820D4A90  # textureinfo.ige
 Catalogue_LoadTemplateObjects = 0x820F2F20
 Tripod_LoadBrushes = 0x820F0BC8
 Zipline_LoadBrushes = 0x820F06A8

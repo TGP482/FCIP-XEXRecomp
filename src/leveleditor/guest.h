@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "kernel/kernel.h"
 #include "xdk/hle.h"
@@ -24,7 +25,8 @@ constexpr uint32_t kNodeAddRef = 0x08;
 constexpr uint32_t kNodeRelease = 0x0C;
 constexpr uint32_t kNodeGetAttr = 0x4C;
 constexpr uint32_t kNodeAddChild = 0x58;  // takes an XmlNodeRef by value, which it releases
-constexpr uint32_t kNodeNewChild = 0x5C;  // (XmlNodeRef out, tag)
+constexpr uint32_t kNodeNewChild = 0x5C;     // (XmlNodeRef out, tag)
+constexpr uint32_t kNodeRemoveChild = 0x60;  // takes an XmlNodeRef by value, which it releases
 constexpr uint32_t kNodeChildCount = 0x68;
 constexpr uint32_t kNodeGetChild = 0x6C;
 constexpr uint32_t kNodeFindChild = 0x70;
@@ -38,6 +40,25 @@ constexpr uint32_t kEntityName = 0xBC;  // std::string
 constexpr uint32_t kEntityScript = 0x134;
 
 inline uint32_t Method(uint32_t object, uint32_t slot) { return kernel::R32(kernel::R32(object) + slot); }
+
+inline uint32_t ChildCount(uint32_t node) {
+    uint32_t first = kernel::R32(node + kNodeChildFirst);
+    return first ? (kernel::R32(node + kNodeChildLast) - first) / 4 : 0;
+}
+
+inline uint32_t ChildAt(uint32_t node, uint32_t index) {
+    return kernel::R32(kernel::R32(node + kNodeChildFirst) + index * 4);
+}
+
+// a node found again by child indices from root, 0 when the tree no longer has the path
+inline uint32_t FindNode(uint32_t root, const std::vector<int>& path) {
+    uint32_t node = root;
+    for (int index : path) {
+        if (index < 0 || uint32_t(index) >= ChildCount(node)) return 0;
+        node = ChildAt(node, uint32_t(index));
+    }
+    return node;
+}
 
 // std::string: inline text until the capacity reaches 16 bytes, else a pointer
 inline std::string GuestString(uint32_t str) {
