@@ -216,6 +216,19 @@ namespace fcip::editor {
 
 uint32_t SelectedAiObject() { return g_selected; }
 
+void SelectAiObject(uint32_t node) {
+    if (node == g_selected) return;
+    g_selected = node;
+    g_element = 0;
+}
+
+bool DeleteSelectedAiObject() {
+    if (!g_selected) return false;
+    RemoveAiObject(g_selected);
+    g_selected = 0;
+    return true;
+}
+
 void DrawAiPanel() {
     g_view = ReadAiObjects();
     ImGui::TextUnformatted("AI OBJECTS");

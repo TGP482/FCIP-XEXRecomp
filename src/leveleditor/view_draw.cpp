@@ -60,11 +60,16 @@ bool ScreenLine(const View& v, const float a[3], const float b[3], ImVec2& sa, I
 
 }  // namespace
 
-bool BeginView(View& v) {
+bool ReadView(View& v) {
     if (!ViewClip(v.clip)) return false;
     v.has_eye = ViewPosition(v.eye);
     ImVec2 size = ImGui::GetIO().DisplaySize;
     v.frame = FrameBox(size.x, size.y);
+    return true;
+}
+
+bool BeginView(View& v) {
+    if (!ReadView(v)) return false;
     v.draw = ImGui::GetBackgroundDrawList();
     v.draw->PushClipRect(ImVec2(v.frame.x, v.frame.y), ImVec2(v.frame.x + v.frame.w, v.frame.y + v.frame.h));
     return true;

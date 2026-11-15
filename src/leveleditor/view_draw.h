@@ -18,7 +18,8 @@ struct View {
     float eye[3] = {};  // the camera
 };
 
-bool BeginView(View& v);  // false before the camera drew a frame
+bool ReadView(View& v);   // the camera and frame alone, no drawing; false before the camera drew a frame
+bool BeginView(View& v);
 void EndView(const View& v);
 
 bool Project(const View& v, const float p[3], ImVec2& out);  // false behind the camera

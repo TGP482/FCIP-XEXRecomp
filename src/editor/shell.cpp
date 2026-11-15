@@ -34,6 +34,7 @@
 #include "leveleditor/markers.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
+#include "leveleditor/picking.h"
 
 using namespace fcip;
 using namespace fcip::editor;
@@ -154,6 +155,13 @@ bool DrawLevelList() {
     return true;
 }
 
+// the Edit Object tool's: a mission object picked in the solo editor, else its selection
+void DeleteObject() {
+    if (Read().tool != kEditObject) return;
+    if (editor::g_solo && DeleteSelectedAiObject()) return;
+    DeleteSelected();
+}
+
 void DrawMenuBar(const State& s) {
     if (!ImGui::BeginMainMenuBar()) return;
     // new and open are the map manager's, the editor asks to save before it goes there
@@ -168,7 +176,7 @@ void DrawMenuBar(const State& s) {
     }
     if (ImGui::BeginMenu("Edit")) {
         if (ImGui::MenuItem("Undo", "Ctrl+Z", false, s.undo_count > 0)) Undo(1);
-        if (ImGui::MenuItem("Delete", "Del", false, s.tool == kEditObject)) DeleteSelected();
+        if (ImGui::MenuItem("Delete", "Del", false, s.tool == kEditObject)) DeleteObject();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
@@ -472,6 +480,8 @@ void DrawBudget(const std::vector<Category>& catalogue) {
 
 void DrawTabs(const State& s) {
     if (!ImGui::BeginTabBar("##dock_tabs")) return;
+    DockTab picked = editor::g_solo ? TakeDockTab() : kNoTab;
+    auto shown = [&](DockTab tab) { return picked == tab ? ImGuiTabItemFlags_SetSelected : 0; };
     std::vector<Category> catalogue = Catalogue();
     if (ImGui::BeginTabItem("Objects")) {
         if (editor::g_solo) editor::DrawLevelObjects();
@@ -486,11 +496,11 @@ void DrawTabs(const State& s) {
         DrawBudget(catalogue);
         ImGui::EndTabItem();
     }
-    if (editor::g_solo && ImGui::BeginTabItem("Properties")) {
+    if (editor::g_solo && ImGui::BeginTabItem("Properties", nullptr, shown(kPropertiesTab))) {
         editor::DrawObjectPanel();
         ImGui::EndTabItem();
     }
-    if (editor::g_solo && ImGui::BeginTabItem("AI")) {
+    if (editor::g_solo && ImGui::BeginTabItem("AI", nullptr, shown(kAiTab))) {
         editor::DrawAiPanel();
         ImGui::EndTabItem();
     }
@@ -606,13 +616,18 @@ void DrawStatus(float top, float width, double fps, const State& s) {
 }
 
 // the mouse over the view: right drag looks, the wheel zooms, the left button uses the tool where it points
-void UpdateViewInput(const Box& view) {
+// the solo editor's Edit Object tool picks a marker under the click first
+bool PickedMarker(const State& s, ImVec2 m) {
+    return editor::g_solo && s.tool == kEditObject && PickMarker(m.x, m.y);
+}
+
+void UpdateViewInput(const Box& view, const State& s) {
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 m = io.MousePos;
     bool inside = m.x >= view.x && m.y >= view.y && m.x < view.x + view.w && m.y < view.y + view.h;
     bool over = inside && !io.WantCaptureMouse;
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) g_looking = over;
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) g_applying = over;
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) g_applying = over && !PickedMarker(s, m);
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_looking = false;
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_applying = false;
     if (g_looking) ImGui::SetMouseCursor(ImGuiMouseCursor_None);
@@ -658,7 +673,7 @@ bool DrawShell(double fps) {
     SetViewBox(view);
     bool console = ConsoleMenuUp();
     if (console) SetViewInput({});
-    else UpdateViewInput(view);
+    else UpdateViewInput(view, s);
     if (g_show_dock) DrawDock(size.x - dock, top, bottom, s);
     if (g_show_status) DrawStatus(bottom, size.x, fps, s);
     if (editor::g_solo) editor::DrawMarkers();
@@ -692,7 +707,7 @@ bool EditorKey(uintptr_t wp) {
         return true;
     }
     if (wp == VK_DELETE) {
-        DeleteSelected();
+        DeleteObject();
         return true;
     }
     if (!ctrl && wp >= '1' && wp < '1' + kToolCount) {

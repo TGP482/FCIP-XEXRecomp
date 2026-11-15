@@ -14,6 +14,7 @@
 #include "kernel/memory.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/object_panel.h"
+#include "leveleditor/picking.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -183,6 +184,7 @@ void DrawMarkers() {
     if (g_view_shown[kViewLights]) DrawLights(view);
     if (g_view_shown[kViewGameplay]) DrawGameplay(view);
     if (g_view_shown[kViewPlayerStart]) DrawPlayerStart(view);
+    DrawPicked(view);
     EndView(view);
 }
 

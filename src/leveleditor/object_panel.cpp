@@ -21,6 +21,7 @@
 #include "leveleditor/mission.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
+#include "leveleditor/picking.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -448,10 +449,11 @@ void fcip::editor::DrawObjectPanel() {
 PPC_EXTERN_FUNC(__imp__sub_820DE570);
 PPC_EXTERN_FUNC(__imp__sub_820DD258);
 
-// the Edit Object tool's update, each frame while it runs; r3 the tool
+// the Edit Object tool's update, each frame while it runs; r3 the tool. A marker picked in the view first
 PPC_FUNC(sub_820DE570) {
     if (!fcip::editor::g_solo) return __imp__sub_820DE570(ctx, base);
     uint32_t tool = uint32_t(ctx.r[3]);
+    ApplyPick(ctx, tool);
     __imp__sub_820DE570(ctx, base);
     Update(ctx, SelectedObject(tool));
 }
