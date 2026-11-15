@@ -909,7 +909,9 @@ void DrawPanel() {
 
 }  // namespace
 
-bool MenuOpen() { return g_open.load(std::memory_order_relaxed); }
+bool MenuOpen() {
+    return g_open.load(std::memory_order_relaxed) || g_editor_panel_open.load(std::memory_order_relaxed);
+}
 
 uint32_t SettingsRevision() { return g_revision; }
 
@@ -939,7 +941,8 @@ void DrawUi(double) {
     // the key being captured must not also move the selection
     if (g_capture >= 0) io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     else io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    if (!MenuOpen()) return;
+    if (g_editor_panel) g_editor_panel();
+    if (!g_open) return;
     PollCapture();
     DrawPanel();
 }
@@ -960,7 +963,11 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
     bool capturing = keys::Capturing();
     uint8_t key = keys::PositionKey(wp);
     bool panel_key = key && (key == keys::Key(keys::kSettings, 0) || key == keys::Key(keys::kSettings, 1));
-    if (key_down && !capturing && (panel_key || (wp == VK_ESCAPE && MenuOpen()))) {
+    if (key_down && !capturing && g_editor_panel_key && g_editor_panel_key(msg, wp)) {
+        *result = 0;
+        return true;
+    }
+    if (key_down && !capturing && (panel_key || (wp == VK_ESCAPE && g_open))) {
         ToggleMenu();
         *result = 0;
         return true;

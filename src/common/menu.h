@@ -1,5 +1,6 @@
 // the F10 panel and the rows the game's own menus show
 #pragma once
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -27,6 +28,11 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
 inline void (*g_menu_tick)(PPCContext& ctx, uint32_t mgr) = nullptr;
 // default.xex's debug page: queues a story level by folder name, false before START at the title screen
 inline bool (*g_load_level)(const char* folder) = nullptr;
+// the level editor's object panel: drawn in the ImGui frame, its keys handled before the settings panel's; while open
+// it takes the input like the settings panel
+inline void (*g_editor_panel)() = nullptr;
+inline bool (*g_editor_panel_key)(uint32_t msg, uintptr_t wp) = nullptr;
+inline std::atomic<bool> g_editor_panel_open{false};
 // window thread: the cursor and buttons for the game's menus, a left click skips a skippable movie
 void MenuMouseMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);
 bool SkippableMovie();

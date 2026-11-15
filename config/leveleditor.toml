@@ -20,6 +20,12 @@ WString_Assign = 0x820C76E0
 # the Add Object tool's catalogue
 Catalogue_EntryDestroy = 0x820F2E90
 Catalogue_PushBack = 0x820F7F50
+# memory, XML nodes and script tables: an entity's Properties as XML and back
+Memory_Alloc = 0x8230F418
+XmlNode_Construct = 0x82366CC8
+Script_NewTable = 0x820C4980
+Xml_FromTable = 0x82104070
+Xml_ToTable = 0x8229F750
 
 [data]
 Catalogue_Lists = 0x8296C760
