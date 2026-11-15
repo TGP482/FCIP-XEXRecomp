@@ -51,6 +51,9 @@ constexpr uint32_t kGameCheats = 0x410;
 constexpr uint32_t kCheatWeapons = 0x2;
 constexpr uint32_t kCheatGodMode = 0x4;
 constexpr uint32_t kGodModeVariable = 0x8206E344;  // "GodMode"
+// set once at start in ige (821175B4): levels then run the multiplayer game type scripts, which spawn no player
+// until the level is up
+constexpr uint32_t kEditorGame = 0x3D4;
 // user map info, a new one per level started: 0x164 bytes at +0x30, named for the signed in profile
 constexpr uint32_t kUserMapInfo = 0x30;
 constexpr uint32_t kUserMapInfoBytes = 0x164;
@@ -220,6 +223,7 @@ PPC_EXTERN_FUNC(__imp__sub_82112AD0);
 PPC_EXTERN_FUNC(__imp__sub_821124B0);
 PPC_EXTERN_FUNC(__imp__sub_8239D908);
 PPC_EXTERN_FUNC(__imp__sub_820E0240);
+PPC_EXTERN_FUNC(__imp__sub_82138CD8);
 PPC_EXTERN_FUNC(__imp__sub_82109BF8);
 
 // the editor's interface manager (r3) each frame
@@ -247,6 +251,17 @@ PPC_FUNC(sub_8239D908) {
     std::string level = kCampaignLevels[g_open];
     std::string path = "\\levels\\" + level + "\\" + level + "_DepLoad.xml";
     CallGuest(ctx, SYM_Dependencies_Load, {manager, WriteText(g_scratch + kScratchPath, path, kScratchPathBytes)});
+}
+
+// a level's game scripts (r3 the game): a campaign level gets default.xex's single player ones (scripts/main.lua),
+// whose player is up before the mission's entities need it (Waypoint objectives)
+PPC_FUNC(sub_82138CD8) {
+    if (!g_loading) return __imp__sub_82138CD8(ctx, base);
+    uint32_t game = uint32_t(ctx.r[3]);
+    uint8_t editor = R8(game + kEditorGame);
+    W8(game + kEditorGame, 0);
+    __imp__sub_82138CD8(ctx, base);
+    W8(game + kEditorGame, editor);
 }
 
 // a map template's time of day preset; a campaign level keeps its mission's environment
