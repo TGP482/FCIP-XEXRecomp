@@ -2,6 +2,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 struct PPCContext;
 
@@ -62,6 +63,12 @@ constexpr uint32_t kRayFirstSlot = 25;  // pixel shader views: casters, their re
 constexpr uint8_t kAlbedoFetch = 64;
 constexpr uint32_t kAlbedoOut = 31;
 constexpr uint32_t kAlbedoTarget = 5;  // past the motion target
+// GlobalVariables.fx registers: the colour the game's materials lay over their texture, and the ambient lighting them
+constexpr uint32_t kMaterialColour = 5;  // PixelGlobal.MaterialDiffuse
+constexpr uint32_t kPsAmbient = 4;       // PixelGlobal.AmbientColor
+constexpr uint32_t kVsAmbient = 128;     // VertexGlobal.AmbientColor
+// the translated shader reads constant reg
+bool ReadsConstant(const std::string& hlsl, uint32_t reg);
 
 // original Xbox ocean: on its reflection fetch and kOceanOut; g_ext.x ReflectAmount, g_ext.y GlowBoostLevel
 constexpr uint8_t kOceanReflection = 128;
@@ -84,6 +91,7 @@ struct FirstFetch {
     int8_t reg = -1;
     uint8_t x = 0;
     uint8_t y = 1;
+    bool colour = false;  // its blue is read: no normal map, which the game reads as wyx
 };
 FirstFetch FindFirstFetch(const uint32_t* code, size_t dwords);
 

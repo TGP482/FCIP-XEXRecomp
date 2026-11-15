@@ -70,6 +70,8 @@ struct Shader {
     ShaderOptions last_opt;  // the last variant asked for, found again without a hash
     Variant* last = nullptr;
     fcip::FirstFetch first_fetch;  // pixel: what an alpha tested shadow caster's test reads
+    bool material = false;         // pixel: tints its texture by fcip::kMaterialColour
+    bool ambient = false;          // reads the ambient its draw is lit by, fcip::kPsAmbient or fcip::kVsAmbient
 };
 
 namespace {
@@ -886,10 +888,12 @@ bool Seen(float3 p, out float3 seen) {
     seen = Linear(colour.Load(int3(px, 0)).rgb);
     return true;
 }
-// the light leaving a hit at p along dir as the game lights it: its texture's colour, grey without one, under the
-// ambient and the sun
+float3 Unpack(uint rgb) { return float3(rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255) / 255; }
+// the light leaving a hit at p along dir as the game lights it: its texture's colour, grey without one, under its
+// material's colour, its draw's ambient, else the camera's, and, where its draw takes it, the sun
 float3 Bounced(uint caster, uint prim, float2 bary, float3 p, float3 dir) {
-    uint4 c = t_ray_casters.Load4(caster * 16);
+    uint4 c = t_ray_casters.Load4(caster * 32);
+    uint3 lit = t_ray_casters.Load3(caster * 32 + 16);
     uint at = (c.x + prim * 3) * 32;
     float3 a = asfloat(t_ray_records.Load3(at));
     float3 e = cross(asfloat(t_ray_records.Load3(at + 32)) - a, asfloat(t_ray_records.Load3(at + 64)) - a);
@@ -904,8 +908,9 @@ float3 Bounced(uint caster, uint prim, float2 bary, float3 p, float3 dir) {
         float2 uv = float2(tex[c.w >> 4 & 3], tex[c.w >> 6 & 3]);
         albedo = t_heap[NonUniformResourceIndex(c.y)].SampleLevel(s_heap, uv, kHitLod).rgb;
     }
-    float3 incoming = amb.rgb;
-    if (amb.w > 0) {
+    albedo *= Unpack(lit.x);
+    float3 incoming = (lit.z >> 24) != 0 ? Unpack(lit.z) : amb.rgb;
+    if (amb.w > 0 && lit.y != 0) {
         float facing = saturate(dot(n, normalize(sun[2].xyz)));
         incoming += suncolour.rgb * facing * SunLit(sunmap, p + n * 0.05);
     }
@@ -1109,7 +1114,7 @@ constexpr uint32_t kRayTransformBytes = 12 * sizeof(float);
 constexpr uint32_t kCasterStride = 32;
 constexpr uint64_t kCasterRecords = 8ull << 20;  // 2.8M triangles a frame, 256 MB
 constexpr uint32_t kCasterDraws = 16384;
-constexpr uint32_t kCasterBytes = 16;     // a caster as kRayShadowPrelude reads it
+constexpr uint32_t kCasterBytes = 32;     // a caster as kRayShadowPrelude reads it, then its lighting
 constexpr uint32_t kCasterTextured = 8;   // compare bit: its fetch is a colour map global illumination reads
 constexpr uint32_t kDivideChunk = 65535 * 64;  // records one dispatch divides at most
 constexpr uint64_t kRayIdleFrames = 60;   // a map's scene is freed once unresolved this long
@@ -1193,7 +1198,8 @@ struct CasterDraw {
     uint32_t count = 0;  // records
     uint32_t stream = 0;  // PipelineKey::stream_out
     bool alpha = false;
-    uint32_t info[4] = {};  // kCasterBytes: first record, alpha view, alpha reference, compare and uv components
+    uint32_t info[8] = {};  // kCasterBytes: first record, alpha view, alpha reference, compare and uv components,
+                            // then its material colour 0xRRGGBB, 1 when the sun lights it and its ambient
     bool view = false;      // a camera pass draw for global illumination, divided into view space
     float ndc[4] = {};      // its ndc scale and offset over x and y
 };
@@ -1693,6 +1699,9 @@ private:
     void AlbedoFlags(const State& s, const ShaderInfo& ps, ShaderOptions& opt) const;
     bool SceneCaster(const PipelineKey& k, const Bound& b) const;
     bool FirstTextureAlbedo(const State& s) const;
+    uint32_t MaterialColour(const State& s) const;
+    uint32_t AmbientColour(const State& s) const;
+    bool SunReceiver(const State& s) const;
     void DivideView(const OcclusionArgs& a);
     void TargetView(ID3D12Resource* res, DXGI_FORMAT fmt, uint32_t samples, uint32_t slot);
     void CapIllumination(const State& s, const PipelineKey& k, const Bound& b, const CasterDraw& caster);
@@ -2699,8 +2708,12 @@ Shader* D3D12Backend::CreateShader(ShaderStage stage, const uint32_t* code, size
     s->stage = stage;
     s->code.assign(code, code + dwords);
     s->hash = Hash64(code, dwords * 4);
-    TranslateShader(stage, code, dwords, ShaderOptions{}, s->info);
-    if (stage == ShaderStage::Pixel) s->first_fetch = fcip::FindFirstFetch(code, dwords);
+    std::string hlsl = TranslateShader(stage, code, dwords, ShaderOptions{}, s->info);
+    if (stage == ShaderStage::Pixel) {
+        s->first_fetch = fcip::FindFirstFetch(code, dwords);
+        s->material = fcip::ReadsConstant(hlsl, fcip::kMaterialColour);
+    }
+    s->ambient = fcip::ReadsConstant(hlsl, stage == ShaderStage::Pixel ? fcip::kPsAmbient : fcip::kVsAmbient);
     if (s->info.unknown) LOGR("shader: %u instructions not understood", s->info.unknown);
     if (s->info.memexport) LOGR("shader: memory export left out");
     shaders_.push_back(std::move(s));
@@ -5226,17 +5239,58 @@ uint32_t D3D12Backend::CasterVertices(const State& s, const DrawArgs& a, const P
         caster.info[1] = binds_.stages[1].table;
         caster.info[3] |= kCasterTextured | uint32_t(f.x) << 4 | uint32_t(f.y) << 6;
     }
+    if (view) {
+        caster.info[4] = MaterialColour(s);
+        caster.info[5] = SunReceiver(s) ? 1 : 0;
+        caster.info[6] = AmbientColour(s);
+    }
     return vertices;
 }
 
 // the pixel shader's first texture, which its first fetch reads, is a colour map
 bool D3D12Backend::FirstTextureAlbedo(const State& s) const {
-    if (!s.ps || s.ps->info.textures.empty()) return false;
+    if (!s.ps || s.ps->info.textures.empty() || !s.ps->first_fetch.colour) return false;
     const auto& t = s.ps->info.textures[0];
     if (t.dimension != uint8_t(xenos::Dimension::D2)) return false;
     uint32_t fetch[6];
     ReadFetch(s, t.fetch, fetch);
     return AlbedoFormat(xenos::DecodeTextureFetch(fetch).format);
+}
+
+// a constant register's rgb from 0 to 1 as 0xRRGGBB
+uint32_t PackColour(const uint8_t* reg) {
+    uint32_t rgb = 0;
+    for (uint32_t i = 0; i < 3; i++) {
+        float c = std::clamp(std::bit_cast<float>(Be32(reg + i * 4)), 0.0f, 1.0f);
+        rgb = rgb << 8 | uint32_t(std::lround(c * 255));
+    }
+    return rgb;
+}
+
+// the draw's material colour as 0xRRGGBB, white when its shader takes none
+uint32_t D3D12Backend::MaterialColour(const State& s) const {
+    if (!s.ps || !s.ps->material) return 0xFFFFFF;
+    return PackColour(s.consts + kConstBytes + fcip::kMaterialColour * 16);
+}
+
+// the ambient the game lights the draw by as 0xRRGGBB with bit 24 set, 0 when its shaders take none
+uint32_t D3D12Backend::AmbientColour(const State& s) const {
+    if (s.vs && s.vs->ambient) return PackColour(s.consts + fcip::kVsAmbient * 16) | 1u << 24;
+    if (s.ps && s.ps->ambient) return PackColour(s.consts + kConstBytes + fcip::kPsAmbient * 16) | 1u << 24;
+    return 0;
+}
+
+// the draw's pixel shader reads the far sun map: the game's materials without it take no sun, indoors among them
+bool D3D12Backend::SunReceiver(const State& s) const {
+    uint32_t far_base = fcip::SunMapsDrawn().far_base;
+    if (!s.ps || !far_base) return false;
+    for (const TextureBinding& b : s.ps->info.textures) {
+        if (b.fetch != fcip::kSunFetch || b.dimension > 1) continue;
+        uint32_t fetch[6];
+        ReadFetch(s, b.fetch, fetch);
+        if (xenos::DecodeTextureFetch(fetch).base == far_base) return true;
+    }
+    return false;
 }
 
 // a camera pass draw of the world, opaque, alpha tested or depth only, while global illumination's scene is captured

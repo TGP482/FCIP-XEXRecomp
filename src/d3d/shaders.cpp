@@ -245,6 +245,13 @@ struct Fetch {
     uint32_t Dst() const { return Bits(w0, 12, 6); }
     bool DstRel() const { return Bits(w0, 18, 1); }
     uint32_t DstSwizzle() const { return Bits(w1, 0, 12); }  // 3 bits per component: 0 to 3, 4 zero, 5 one, 7 kept
+    // the game's normal maps are read as wyx, their blue unused; a colour map's blue always lands somewhere
+    bool ReadsBlue() const {
+        for (uint32_t i = 0; i < 4; i++) {
+            if (Bits(w1, i * 3, 3) == 2) return true;
+        }
+        return false;
+    }
     bool Predicated() const { return Bits(w1, 31, 1); }
     bool PredCondition() const { return Bits(w2, 31, 1); }
     // vertex: 3 two dword constants per fetch slot
@@ -936,7 +943,7 @@ void Translator::EmitTextureFetch(const Fetch& f) {
         } else {
             Line("float4 ft = " + fetch + ";");
             if (sun_op && (sun & fcip::kSunCascade)) EmitSunMaps(t, op == kGetWeights);
-            if (op == kTextureFetch && (sun & fcip::kAlbedoFetch) && Albedo()) {
+            if (op == kTextureFetch && (sun & fcip::kAlbedoFetch) && f.ReadsBlue() && Albedo()) {
                 Open("if (!g_albedo_set)");
                 Line("g_albedo = ft;");
                 Line("g_albedo_set = true;");
@@ -1389,7 +1396,12 @@ POut main(PIn i) {
         // behind the camera last frame or past two screens: off screen, finite for FSR and half floats
         s += "    o.motion = i.prev.w > 0 ? clamp(mv, -2, 2) : 2;\n";
     }
-    if (Albedo()) s += "    o.albedo = g_albedo_set ? float4(g_albedo.rgb, 1) : float4(0, 0, 0, 0);\n";
+    if (Albedo()) {
+        std::string material = F("c[%u].rgb", fcip::kMaterialColour);
+        bool tinted = fcip::ReadsConstant(body_, fcip::kMaterialColour);
+        std::string rgb = tinted ? "g_albedo.rgb * " + material : "g_albedo.rgb";
+        s += "    o.albedo = g_albedo_set ? float4(saturate(" + rgb + "), 1) : float4(0, 0, 0, 0);\n";
+    }
     s += "    return o;\n}\n";
     return s;
 }
@@ -1417,14 +1429,14 @@ std::string TranslateShader(ShaderStage stage, const uint32_t* code, size_t dwor
 
 // the camera's and the shadow maps' ray traced casters: records of their clip position and the interpolator an alpha
 // tested one reads. A caster is x its first record, y its alpha texture in the heap, z the alpha reference and w the
-// compare, then the interpolator's two components
+// compare, then the interpolator's two components; global illumination's lighting follows
 const char* const fcip::kCasterHitHlsl = R"(
 Texture2D<float4> t_heap[] : register(t0, space3);
 SamplerState s_heap : register(s0, space3);
 
 // an alpha tested caster's test where the ray crosses its triangle prim
 bool CasterHit(uint caster, uint prim, float2 bary) {
-    uint4 c = t_ray_casters.Load4(caster * 16);
+    uint4 c = t_ray_casters.Load4(caster * 32);
     uint at = (c.x + prim * 3) * 32 + 16;
     float4 a = asfloat(t_ray_records.Load4(at));
     float4 b = asfloat(t_ray_records.Load4(at + 32));
@@ -1446,6 +1458,10 @@ bool CasterHit(uint caster, uint prim, float2 bary) {
 }
 )";
 
+bool fcip::ReadsConstant(const std::string& hlsl, uint32_t reg) {
+    return hlsl.find(gpu::F("c[%u]", reg)) != std::string::npos;
+}
+
 // the fetch an alpha tested shadow caster's test reads, when the shader opens with it
 fcip::FirstFetch fcip::FindFirstFetch(const uint32_t* code, size_t dwords) {
     using namespace gpu;
@@ -1459,7 +1475,7 @@ fcip::FirstFetch fcip::FindFirstFetch(const uint32_t* code, size_t dwords) {
         bool interpolated = f.Src() < kInterpolators && !f.SrcRel();
         bool plain_2d = f.Dimension() == kDim2D && !f.Unnormalized() && !f.Predicated();
         if (f.Op() != kTextureFetch || !interpolated || !plain_2d) return {};
-        return {int8_t(f.Src()), uint8_t(f.CoordComponent(0)), uint8_t(f.CoordComponent(1))};
+        return {int8_t(f.Src()), uint8_t(f.CoordComponent(0)), uint8_t(f.CoordComponent(1)), f.ReadsBlue()};
     }
     return {};
 }
