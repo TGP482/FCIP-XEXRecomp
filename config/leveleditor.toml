@@ -63,6 +63,13 @@ File_Close = 0x8234ED48             # (packs, file)
 File_Destroy = 0x824FAF08           # (file)
 Pack_CopyFile = 0x82108E80          # (source pack, file, name in the target, target pack)
 Mission_WriteEntities = 0x82104C38  # (mission object, XmlNodeRef of the mission) adds Objects with the entities
+# a custom level opened (campaign_levels.cpp)
+UserMapInfo_Select = 0x8211FA28       # (user maps, map manager entry)
+UserMapInfo_Load = 0x8211F498         # (user maps, 0)
+Engine_UseUserMap = 0x8233B2F0        # (3D engine) the level folder becomes the user map's
+Streaming_OpenLevelPack = 0x8238E260  # (streaming, level folder, from user content)
+Script_ExecuteFile = 0x823243D8       # (script system, path, 0, 0)
+TerrainPaint_Load = 0x820D4A90        # textureinfo.ige
 
 [data]
 Catalogue_Lists = 0x8296C760

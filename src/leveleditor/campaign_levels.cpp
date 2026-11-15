@@ -1,7 +1,8 @@
 // ige.xex, the solo level editor: campaign levels open in the editor. The game's own StartLevel loads the level's pack
 // and Mission0 as default.xex does; the editor's setup then runs without what its map templates add (environment
 // presets, ambience, cleared sectors, forced water and border heights, rebuilt sector textures and shadows), so the
-// level stays as the game shows it.
+// level stays as the game shows it. A custom level saved from one (its LevelData.xml names the campaign level) opens
+// the same way from the user map's pack, its own Mission.lua run after the campaign's mission script.
 #include "leveleditor/campaign_levels.h"
 
 #include <atomic>
@@ -23,6 +24,13 @@ using namespace fcip::editor;
 namespace {
 
 constexpr const char* kMission = "Mission0";
+constexpr const char* kSavedMission = "Mission_Mission0";
+constexpr const char* kLevelData = "LevelData.xml";
+constexpr const char* kLevelInfo = "LevelInfo";
+constexpr const char* kCampaignLevelKey = "CampaignLevel";
+// the mission loader (8229CC08) runs this after the mission's script and before Mission:OnInit
+constexpr const char* kMissionTools = "\\SCRIPTS\\MissionTools.lua";
+constexpr const char* kOwnScript = "Mission.lua";
 // ige only knows the editor templates' dependencies; default.xex loads a level's own unless it is an editor map
 constexpr const char* kEditorDependencies = "\\Levels\\MET_Dependency\\MET_Dependency_DepLoad.xml";
 
@@ -33,6 +41,7 @@ constexpr uint32_t kPlayerPlaced = 0x2F;  // the player is put at the tool curso
 constexpr uint32_t kStartingLevel = 0x35;
 constexpr uint32_t kLevelRequest = 0x38;    // std::string
 constexpr uint32_t kLevelRequested = 0x54;  // the next update starts kLevelRequest
+constexpr uint32_t kSavedMapEntry = 0x60;   // the saved map picked in the map manager
 constexpr uint32_t kMapName = 0x68;         // UTF-16
 constexpr uint32_t kThumbnail = 0x194;      // texture
 constexpr uint32_t kEnvironment = 0x1F0;
@@ -59,6 +68,8 @@ constexpr uint32_t kUserMapInfo = 0x30;
 constexpr uint32_t kUserMapInfoBytes = 0x164;
 constexpr uint32_t kProfilesSignedIn = 0x08;
 constexpr uint32_t kProfileId = 0x270;
+// the 3D engine: the level folder's path
+constexpr uint32_t kEngineLevelPath = 0x3A8;
 // the editor's own sound banks: vehicles and the common ones
 constexpr uint32_t kCommonBanks = 9;
 // a vector's first and last
@@ -70,10 +81,16 @@ constexpr uint32_t kScratchLevel = 0x00;
 constexpr uint32_t kScratchMission = 0x40;
 constexpr uint32_t kScratchPath = 0x60;
 constexpr uint32_t kScratchProfile = 0xE0;
+constexpr uint32_t kScratchString = 0x100;  // std::string: text +0x04, size +0x14, capacity +0x18
+constexpr uint32_t kScratchRef = 0x120;
 constexpr uint32_t kScratchNameBytes = 0x40;
 constexpr uint32_t kScratchMissionBytes = 0x20;
 constexpr uint32_t kScratchPathBytes = 0x80;
-constexpr uint32_t kScratchBytes = 0x100;
+constexpr uint32_t kScratchBytes = 0x130;
+constexpr uint32_t kStringText = 0x04;
+constexpr uint32_t kStringSize = 0x14;
+constexpr uint32_t kStringCapacity = 0x18;
+constexpr uint32_t kStringInlineCapacity = 0x0F;
 
 // living entity cylinder phys_geometry (0x6E4) surface_idx (0x34); surface 0 is Materials.dat's first
 constexpr uint32_t kLivingCylinderSurface = 0x718;
@@ -86,6 +103,7 @@ std::atomic<int> g_requested{kNone};  // from the menu
 std::atomic<int> g_open{kNone};       // the campaign level open
 int g_starting = kNone;               // editor thread, requested of the editor's update
 std::atomic<bool> g_loading{false};
+bool g_custom = false;  // the level open was saved from a campaign level
 uint32_t g_scratch = 0;
 
 bool EnsureScratch() {
@@ -103,13 +121,19 @@ uint32_t VectorCount(uint32_t vector) {
     return first ? (R32(vector + kVectorLast) - first) / 4 : 0;
 }
 
-// as for a new map, named after the profile signed in
-void NewMapInfo(PPCContext& ctx, uint32_t manager) {
+// a level started gets a fresh user map info
+uint32_t ResetMapInfo(PPCContext& ctx) {
     uint32_t maps = R32(SYM_UserMaps_pointer);
     if (R32(maps + kUserMapInfo)) CallGuest(ctx, SYM_UserMapInfo_Free, {maps});
     uint32_t info = uint32_t(CallGuest(ctx, SYM_Memory_New, {kUserMapInfoBytes}));
     if (info) info = uint32_t(CallGuest(ctx, SYM_UserMapInfo_Construct, {info}));
     W32(maps + kUserMapInfo, info);
+    return maps;
+}
+
+// as for a new map, named after the profile signed in
+void NewMapInfo(PPCContext& ctx, uint32_t manager) {
+    uint32_t maps = ResetMapInfo(ctx);
     uint32_t profiles = R32(SYM_Profiles_pointer);
     W32(g_scratch + kScratchProfile, R32(R32(profiles + kProfilesSignedIn) + kProfileId));
     CallGuest(ctx, SYM_UserMapInfo_New, {maps, g_scratch + kScratchProfile, manager + kMapName, 1});
@@ -140,7 +164,8 @@ void SetTemplateFields(PPCContext& ctx, uint32_t manager, uint32_t name) {
     }
 }
 
-// 820F03A0 as an existing map runs it, up to the environment presets; no textureinfo.ige, so the paint stays clear
+// 820F03A0 as an existing map runs it, up to the environment presets; a campaign level has no textureinfo.ige, so its
+// paint stays clear, a custom level saved one
 void SetUpEditor(PPCContext& ctx, uint32_t manager) {
     CallGuest(ctx, SYM_Thumbnail_CreateCamera, {});
     CallGuest(ctx, SYM_TerrainPaint_SetUp, {});
@@ -154,6 +179,7 @@ void SetUpEditor(PPCContext& ctx, uint32_t manager) {
         CallGuest(ctx, SYM_Thumbnail_Render, {R32(SYM_Thumbnail_Camera)});
         W8(SYM_Thumbnail_Stale, 1);
     }
+    if (g_custom) CallGuest(ctx, SYM_TerrainPaint_Load, {});
     if (!VectorEmpty(SYM_Ziplines)) CallGuest(ctx, SYM_Zipline_Load, {});
     if (!VectorEmpty(SYM_MountedWeapons)) CallGuest(ctx, SYM_MountedWeapon_Load, {});
     CallGuest(ctx, SYM_Editor_UpdateTexts, {0});
@@ -170,18 +196,27 @@ void LogOpened(const char* level) {
          (unsigned long long)used, (unsigned long long)total);
 }
 
-void StartCampaignLevel(PPCContext& ctx, uint32_t manager, const char* level) {
+// a std::string's text
+uint32_t StringText(uint32_t str) {
+    return R32(str + kStringCapacity) > kStringInlineCapacity ? R32(str + kStringText) : str + kStringText;
+}
+
+// a campaign level from its pack, or a custom level (saved: its map info set) from the user map's
+void StartCampaignLevel(PPCContext& ctx, uint32_t manager, const char* level, bool saved) {
     uint32_t game = R32(SYM_Game_pointer);
     uint32_t name = WriteText(g_scratch + kScratchLevel, level, kScratchNameBytes);
-    uint32_t mission = WriteText(g_scratch + kScratchMission, kMission, kScratchMissionBytes);
+    uint32_t start = saved ? StringText(manager + kLevelRequest) : name;
+    uint32_t mission = WriteText(g_scratch + kScratchMission, saved ? kSavedMission : kMission, kScratchMissionBytes);
     CallGuest(ctx, SYM_Editor_ResetLevel, {manager});
     W8(manager + kStartingLevel, 1);
     CallGuest(ctx, SYM_Game_ShowLoading, {game, name, 0, 1});
-    W16(manager + kMapName, 0);
-    NewMapInfo(ctx, manager);
+    if (!saved) {
+        W16(manager + kMapName, 0);
+        NewMapInfo(ctx, manager);
+    }
     W8(manager + kFromTemplate, 0);
     g_loading = true;
-    CallGuest(ctx, SYM_Game_StartLevel, {game, 0, name, mission, 0, 1, 0, 0});
+    CallGuest(ctx, SYM_Game_StartLevel, {game, 0, start, mission, 0, 1, 0, saved ? 1u : 0u});
     g_loading = false;
     EnterEditor(ctx, manager, game);
     SetTemplateFields(ctx, manager, name);
@@ -189,6 +224,48 @@ void StartCampaignLevel(PPCContext& ctx, uint32_t manager, const char* level) {
     SetUpEditor(ctx, manager);
     W8(manager + kStartingLevel, 0);
     LogOpened(level);
+}
+
+// a saved map's user map info, as 821124B0 sets it before starting one
+void SelectSavedMap(PPCContext& ctx, uint32_t manager) {
+    uint32_t maps = ResetMapInfo(ctx);
+    CallGuest(ctx, SYM_UserMapInfo_Select, {maps, manager + kSavedMapEntry});
+    CallGuest(ctx, SYM_UserMapInfo_Load, {maps, 0});
+}
+
+std::string LevelInfoValue(uint32_t data, const char* key) {
+    for (uint32_t i = 0; i < ChildCount(data); i++) {
+        uint32_t info = ChildAt(data, i);
+        if (GuestString(info + kNodeTag) != kLevelInfo) continue;
+        for (uint32_t a = R32(info + kNodeAttrFirst); a && a < R32(info + kNodeAttrLast); a += kAttrBytes) {
+            if (GuestString(a + kAttrKey) == key) return GuestString(a + kAttrValue);
+        }
+    }
+    return {};
+}
+
+// the campaign level a saved map was made from, kNone for a map; its pack opened as StartLevel opens it
+int SavedCampaignLevel(PPCContext& ctx) {
+    uint32_t engine = R32(SYM_C3DEngine_pointer);
+    CallGuest(ctx, SYM_Engine_UseUserMap, {engine});
+    CallGuest(ctx, SYM_Streaming_OpenLevelPack, {R32(SYM_Streaming_pointer), engine + kEngineLevelPath, 1});
+    uint32_t name = WriteText(g_scratch + kScratchPath, kLevelData, kScratchPathBytes);
+    uint32_t path = uint32_t(CallGuest(ctx, SYM_Engine_LevelFilePath, {engine, name, 0}));
+    uint32_t str = g_scratch + kScratchString;
+    W32(str + kStringSize, 0);
+    W32(str + kStringCapacity, kStringInlineCapacity);
+    W8(str + kStringText, 0);
+    W32(g_scratch + kScratchRef, 0);
+    CallGuest(ctx, SYM_Xml_LoadFile, {g_scratch + kScratchRef, str, path, 0});
+    CallGuest(ctx, SYM_String_Destroy, {str});
+    uint32_t data = R32(g_scratch + kScratchRef);
+    if (!data) return kNone;
+    std::string level = LevelInfoValue(data, kCampaignLevelKey);
+    CallGuest(ctx, Method(data, kNodeRelease), {data});
+    for (int i = 0; i < int(std::size(kCampaignLevels)); i++) {
+        if (level == kCampaignLevels[i]) return i;
+    }
+    return kNone;
 }
 
 // the map manager is up: the editor's next update starts the level asked for
@@ -228,6 +305,7 @@ PPC_EXTERN_FUNC(__imp__sub_8239D908);
 PPC_EXTERN_FUNC(__imp__sub_820E0240);
 PPC_EXTERN_FUNC(__imp__sub_82138CD8);
 PPC_EXTERN_FUNC(__imp__sub_82138E18);
+PPC_EXTERN_FUNC(__imp__sub_823243D8);
 PPC_EXTERN_FUNC(__imp__sub_820E3C88);
 PPC_EXTERN_FUNC(__imp__sub_82449A08);
 PPC_EXTERN_FUNC(__imp__sub_8229CC08);
@@ -243,13 +321,20 @@ PPC_FUNC(sub_82112AD0) {
 
 // the editor starts a level (r3 the manager): ours or a map
 PPC_FUNC(sub_821124B0) {
-    if (!fcip::editor::g_solo) return __imp__sub_821124B0(ctx, base);
+    if (!fcip::editor::g_solo || !EnsureScratch()) return __imp__sub_821124B0(ctx, base);
+    uint32_t manager = uint32_t(ctx.r[3]);
     ForgetLinks();
     ForgetMission(ctx);
     g_open = g_starting;
     g_starting = kNone;
+    g_custom = false;
+    if (g_open == kNone && !R8(manager + kFromTemplate)) {
+        SelectSavedMap(ctx, manager);
+        g_open = SavedCampaignLevel(ctx);
+        g_custom = g_open != kNone;
+    }
     if (g_open == kNone) return __imp__sub_821124B0(ctx, base);
-    StartCampaignLevel(ctx, uint32_t(ctx.r[3]), kCampaignLevels[g_open]);
+    StartCampaignLevel(ctx, manager, kCampaignLevels[g_open], g_custom);
 }
 
 // a dependency list loads (r3 the manager, r4 its path); a campaign level gets its own on top of the editor's
@@ -295,6 +380,18 @@ PPC_FUNC(sub_820E3C88) {
 PPC_FUNC(sub_82449A08) {
     __imp__sub_82449A08(ctx, base);
     W32(uint32_t(ctx.r[3]) + kLivingCylinderSurface, kDefaultSurface);
+}
+
+// a script file runs (r3 the script system, r4 its path); a custom level's own script runs after MissionTools.lua
+PPC_FUNC(sub_823243D8) {
+    bool tools = g_loading && g_custom && ReadCString(uint32_t(ctx.r[4])) == kMissionTools;
+    uint32_t scripts = uint32_t(ctx.r[3]);
+    __imp__sub_823243D8(ctx, base);
+    if (!tools) return;
+    uint32_t engine = R32(SYM_C3DEngine_pointer);
+    uint32_t name = WriteText(g_scratch + kScratchPath, kOwnScript, kScratchPathBytes);
+    uint32_t path = uint32_t(CallGuest(ctx, SYM_Engine_LevelFilePath, {engine, name, 0}));
+    CallGuest(ctx, SYM_Script_ExecuteFile, {scripts, path, 0, 0});
 }
 
 // a level's LevelData.xml loads (r3 its XmlNodeRef out); a campaign level's is kept for the save
