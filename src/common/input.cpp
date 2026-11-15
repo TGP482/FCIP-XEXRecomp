@@ -401,7 +401,7 @@ namespace fcip {
 uint32_t LocalPlayer() { return g_local_player; }
 
 bool MouseLookActive() {
-    if (MenuOpen() || GetForegroundWindow() != static_cast<HWND>(app::Window())) return false;
+    if (MenuOpen() || g_editor_shell || GetForegroundWindow() != static_cast<HWND>(app::Window())) return false;
     uint64_t stamp = g_gameplay_ms;
     return stamp && NowMs() - stamp <= kGameplayTimeoutMs;
 }

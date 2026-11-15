@@ -122,6 +122,11 @@ void WriteSavedLinks(PPCContext& ctx) {
 
 namespace fcip::editor {
 
+void ForgetLinks() {
+    std::lock_guard lock(g_lock);
+    g_links.clear();
+}
+
 std::vector<Link> LinksOf(uint32_t entity_id) {
     std::lock_guard lock(g_lock);
     auto found = g_links.find(entity_id);
@@ -146,7 +151,6 @@ void SetLinks(PPCContext& ctx, uint32_t entity, const std::vector<Link>& links) 
 PPC_EXTERN_FUNC(__imp__sub_8229FC48);
 PPC_EXTERN_FUNC(__imp__sub_821043A0);
 PPC_EXTERN_FUNC(__imp__sub_82104C38);
-PPC_EXTERN_FUNC(__imp__sub_821124B0);
 
 // an entity's <EventTargets> into its script's Events table: r4 the entity, r5 the node's XmlNodeRef
 PPC_FUNC(sub_8229FC48) {
@@ -182,14 +186,4 @@ PPC_FUNC(sub_82104C38) {
     __imp__sub_82104C38(ctx, base);
     if (EnsureScratch()) WriteSavedLinks(ctx);
     g_saved.clear();
-}
-
-// the editor starts a level, new or saved: the links of the last one go
-PPC_FUNC(sub_821124B0) {
-    if (!fcip::editor::g_solo) return __imp__sub_821124B0(ctx, base);
-    {
-        std::lock_guard lock(g_lock);
-        g_links.clear();
-    }
-    __imp__sub_821124B0(ctx, base);
 }

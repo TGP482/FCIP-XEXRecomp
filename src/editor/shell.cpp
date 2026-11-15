@@ -27,6 +27,7 @@
 #include "common/view_clip.h"
 #include "editor/icons.h"
 #include "editor/tools.h"
+#include "leveleditor/campaign_levels.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
@@ -91,13 +92,43 @@ bool g_applying = false;  // the left button went down on the view
 
 // Menus and toolbar
 
+// the campaign's levels, opened as the game loads them
+void DrawOpenLevel() {
+    if (!ImGui::BeginMenu("Open Campaign Level")) return;
+    for (int i = 0; i < int(std::size(kCampaignLevels)); i++) {
+        if (ImGui::MenuItem(kCampaignLevels[i])) OpenCampaignLevel(i);
+    }
+    ImGui::EndMenu();
+}
+
+// OPEN A CAMPAIGN LEVEL's list over the level manager; true while it takes the mouse
+bool DrawLevelList() {
+    for (const auto& [col, color] : kPanelColors) ImGui::PushStyleColor(col, color);
+    float em = ImGui::GetFontSize();
+    ImVec2 size = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(size.x * 0.5f, size.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(em * 20.0f, 0.0f), ImGuiCond_Appearing);
+    bool open = true;
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse;
+    if (ImGui::Begin("Open a Campaign Level", &open, kFlags)) {
+        for (int i = 0; i < int(std::size(kCampaignLevels)); i++) {
+            if (ImGui::Selectable(kCampaignLevels[i])) OpenCampaignLevel(i);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleColor(int(std::size(kPanelColors)));
+    if (!open) CloseLevelList();
+    return true;
+}
+
 void DrawMenuBar(const State& s) {
     if (!ImGui::BeginMainMenuBar()) return;
     // new and open are the map manager's, the editor asks to save before it goes there
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("New Map...")) ExitToMapManager();
-        if (ImGui::MenuItem("Open Map...")) ExitToMapManager();
-        if (ImGui::MenuItem("Save", "Ctrl+S")) Save();
+        if (ImGui::MenuItem(editor::g_solo ? "New Level..." : "New Map...")) ExitToMapManager();
+        if (ImGui::MenuItem(editor::g_solo ? "Open Saved Level..." : "Open Map...")) ExitToMapManager();
+        if (editor::g_solo) DrawOpenLevel();
+        if (ImGui::MenuItem("Save", "Ctrl+S", false, CampaignLevel().empty())) Save();
         ImGui::Separator();
         if (ImGui::MenuItem("Exit to Map Manager")) ExitToMapManager();
         ImGui::EndMenu();
@@ -467,6 +498,7 @@ std::wstring g_title;
 std::wstring Title() {
     if (!MapOpen()) return app::kGame.title;
     std::string name = MapName();
+    if (name.empty()) name = CampaignLevel();
     std::wstring map(name.begin(), name.end());
     if (map.empty()) map = L"Untitled Map";
     if (MapChanged()) map += L"*";
@@ -544,7 +576,7 @@ bool DrawShell(double fps) {
         SetViewBox({});
         SetViewInput({});
         g_editor_typing = false;
-        return false;
+        return editor::g_solo && !MapOpen() && LevelListUp() && DrawLevelList();
     }
     State s = Read();
     float em = ImGui::GetFontSize();
@@ -575,8 +607,13 @@ bool DrawShell(double fps) {
     return !console || ImGui::GetIO().WantCaptureMouse;
 }
 
-// Ctrl+Z undoes, Ctrl+S saves, Del deletes, 1 to 4 pick the tools, F5 play tests
+// the level list takes the keys while up, Esc closes it; Ctrl+Z undoes, Ctrl+S saves a map, Del deletes, 1 to 4 pick
+// the tools, F5 play tests
 bool EditorKey(uintptr_t wp) {
+    if (editor::g_solo && !MapOpen() && LevelListUp()) {
+        if (wp == VK_ESCAPE) CloseLevelList();
+        return true;
+    }
     if (!MapOpen() || g_editor_typing) return false;
     if (wp == VK_F5) {
         PlayTest();
@@ -589,7 +626,7 @@ bool EditorKey(uintptr_t wp) {
         return true;
     }
     if (ctrl && wp == 'S') {
-        Save();
+        if (CampaignLevel().empty()) Save();
         return true;
     }
     if (wp == VK_DELETE) {

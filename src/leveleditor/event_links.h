@@ -17,6 +17,7 @@ struct Link {
 };
 
 std::vector<Link> LinksOf(uint32_t entity_id);
+void ForgetLinks();  // a level starts
 // editor thread: keeps the entity's links and rebuilds its script's Events table from them
 void SetLinks(PPCContext& ctx, uint32_t entity, const std::vector<Link>& links);
 

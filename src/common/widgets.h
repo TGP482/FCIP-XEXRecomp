@@ -36,6 +36,10 @@ uint32_t FindWidget(uint32_t container, uint32_t name_crc);
 uint32_t Text(const char* text);
 uint32_t View(const char* text);
 void SetCaption(PPCContext& ctx, uint32_t element, const char* text);
+// a row taken out of its list: not drawn, not focused, its neighbours linked past it
+void HideWidget(uint32_t widget);
+// widget moved to where place rests
+void MoveWidget(uint32_t widget, uint32_t place);
 
 // our entries: caption, help and the panel page they open, by widget name; nullptr / -1 when not ours
 const char* CaptionFor(uint32_t crc);

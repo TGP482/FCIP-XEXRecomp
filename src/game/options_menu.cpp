@@ -505,7 +505,8 @@ bool StepValue(PPCContext& ctx, int row, int step) {
     const rows::Row& r = NativeRow(row);
     int current = 0;
     std::vector<std::string> choices = step ? std::vector<std::string>() : rows::Choices(r, &current);
-    bool flip = choices.size() == 2 && choices[0] == "OFF" && choices[1] == "ON";
+    // either may read (DEFAULT)
+    bool flip = choices.size() == 2 && choices[0].starts_with("OFF") && choices[1].starts_with("ON");
     if (choices.size() > 1 && !flip) {
         OpenPopup(ctx, row, choices, current);
         return false;

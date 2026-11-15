@@ -9,6 +9,7 @@
 #include "common/widgets.h"
 #include "core/log.h"
 #include "kernel/memory.h"
+#include "leveleditor/campaign_levels.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
@@ -18,12 +19,6 @@ using namespace fcip::editor;
 
 namespace {
 
-// both campaigns, by level folder
-constexpr const char* kCampaignLevels[] = {
-    "00_training", "01_beach", "02_native", "03_river", "04_rain_forest", "05_mines", "06_cliffs",
-    "07_sub-aquatic_facility", "10_dead_marshes", "11_wasteland", "13_black_forest", "21_dunea", "22_duneb",
-    "23_dunec", "24_shantyday", "26_shantynight", "28_jungle", "29_forest", "30_mountain",
-};
 // the AI section of Scripts\Default\EntityClassRegistry.lua
 constexpr const char* kEnemyClasses[] = {"Merc", "Worker", "Sapper", "Chucker", "Freak", "Crowe", "Dragon", "Valerie"};
 constexpr const char* kObjectClasses[] = {"DestroyableObject", "BasicEntity", "AutomaticDoor"};
@@ -68,7 +63,10 @@ constexpr Caption kCaptions[] = {
     {"ObjectCategoryNames", "Vehicles", "{DPLR} VEHICLES AND OBJECTS (1/8)"},
     {"ObjectCategoryNames", "Weapons", "{DPLR} ITEMS AND LOGIC (2/8)"},
     {"ObjectCategoryNames", "MultiplayerItems", "{DPLR} ENEMIES (3/8)"},
-    {"P_MapManager", "B_TitleButton", "MAP MANAGER SOLO"},
+    {"P_MapManager", "CreateMapInfo", "OPEN A LEVEL OF EITHER CAMPAIGN"},
+    {"P_MapManager", "LoadMapInfo", "LOAD A PREVIOUSLY SAVED LEVEL"},
+    {"P_MapManager", "ShareMapInfo", "CREATE A NEW LEVEL FROM A TEMPLATE"},
+    {"P_MapManager", "DeleteMapInfo", "DELETE A SAVED LEVEL"},
 };
 // the multiplayer list's keys end in a two letter team suffix, which its tool strips before spawning
 constexpr const char* kTeamSuffix = "_E";

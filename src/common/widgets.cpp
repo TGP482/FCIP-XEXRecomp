@@ -228,6 +228,23 @@ void SetCaption(PPCContext& ctx, uint32_t element, const char* text) {
     if (uint32_t guest = Text(text)) kernel::CallGuest(ctx, SYM_UIElement_SetCaption, {element, guest});
 }
 
+void HideWidget(uint32_t widget) {
+    if (!WidgetOk(widget)) return;
+    Write8(widget + kWidgetVisible, uint8_t(Read8(widget + kWidgetVisible) & ~0x80u));
+    Write8(widget + kWidgetEnabled, uint8_t(Read8(widget + kWidgetEnabled) & ~0x40u));
+    uint32_t up = Read32(widget + kWidgetUp);
+    uint32_t down = Read32(widget + kWidgetDown);
+    if (AddrOk(up) && Read32(up + kWidgetDown) == widget) Write32(up + kWidgetDown, down);
+    if (AddrOk(down) && Read32(down + kWidgetUp) == widget) Write32(down + kWidgetUp, up);
+}
+
+void MoveWidget(uint32_t widget, uint32_t place) {
+    if (!WidgetOk(widget) || !WidgetOk(place)) return;
+    Pos from = RestPos(widget);
+    Pos to = RestPos(place);
+    ShiftWidget(widget, {to.x - from.x, to.y - from.y});
+}
+
 const char* CaptionFor(uint32_t crc) {
     if (crc == kCrcMultiplayerSetup || crc == kCrcRecompSettings) return kRecompCaption;
     if (crc == kCrcMouseKeyboard) return kInputCaption;

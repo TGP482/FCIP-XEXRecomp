@@ -18,6 +18,8 @@
 #include "core/input.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
+#include "leveleditor/campaign_levels.h"
+#include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -103,6 +105,7 @@ constexpr uint32_t kConsolePages[] = {
     0xCBD116F2u,  // P_EnvironmentTool
     0x166632B8u,  // P_RTriggerMenuButtons
 };
+constexpr uint32_t kMapManagerPage = 0x8811FEBDu;  // P_MapManager
 // editor input actions the camera reads
 constexpr uint32_t kActionLookX = 0x12;
 constexpr uint32_t kActionLookY = 0x13;
@@ -734,8 +737,10 @@ PPC_EXTERN_FUNC(__imp__sub_8210DCD8);
 PPC_EXTERN_FUNC(__imp__sub_8210DDD8);
 PPC_EXTERN_FUNC(__imp__sub_82313E70);
 
-// an editor interface handler (r3) becomes active: the main editor's once a map is open
+// an editor interface handler (r3) becomes active: the main editor's once a map is open, or again when the start
+// menu closes, which cancels an Open Level that asked to leave
 PPC_FUNC(sub_820C0340) {
+    if (uint32_t(ctx.r[3]) == kEditorHandler && g_map_open) fcip::editor::ForgetLevelRequest();
     if (uint32_t(ctx.r[3]) == kEditorHandler && !g_map_open) {
         g_map_open = true;
         std::fill(std::begin(g_category_shown), std::end(g_category_shown), false);
@@ -746,6 +751,7 @@ PPC_FUNC(sub_820C0340) {
 // the map manager becomes active: no map is open
 PPC_FUNC(sub_820CABB8) {
     g_map_open = false;
+    if (fcip::editor::g_solo) fcip::editor::LevelManagerShown();
     __imp__sub_820CABB8(ctx, base);
 }
 
@@ -813,9 +819,11 @@ PPC_FUNC(sub_8210DDD8) {
     if (ctx.r[3] && !g_history.empty()) g_history.pop_back();
 }
 
-// a page draws (r3); the console's editor pages stay hidden under the desktop UI
+// a page draws (r3); the console's editor pages stay hidden under the desktop UI, the solo map manager gets its rows
 PPC_FUNC(sub_82313E70) {
-    uint32_t name = R32(uint32_t(ctx.r[3]) + kPageName);
+    uint32_t page = uint32_t(ctx.r[3]);
+    uint32_t name = R32(page + kPageName);
+    if (name == kMapManagerPage && fcip::editor::g_solo) fcip::editor::UpdateLevelManager(ctx, page);
     bool console = std::find(std::begin(kConsolePages), std::end(kConsolePages), name) != std::end(kConsolePages);
     if (console && fcip::editor::ShellUp()) return;
     __imp__sub_82313E70(ctx, base);
