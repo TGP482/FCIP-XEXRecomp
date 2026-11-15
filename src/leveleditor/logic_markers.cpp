@@ -1,8 +1,7 @@
 // ige.xex, the solo level editor: the editor view shows what the game uses to run a level, which has no model of its
 // own. Each editing frame the entities are read on the editor's thread (class, name, place, the box the engine tests
 // them with, the Properties of the classes a category needs); the window thread draws each shown category over the
-// frame. Waypoints get a square and their name. A campaign level's AI objects get a circle, shapes and paths their
-// lines, named when near or picked in the AI tab.
+// frame. Waypoints get a square and their name.
 #include "leveleditor/markers.h"
 
 #include <algorithm>
@@ -16,7 +15,6 @@
 
 #include "common/panel_colors.h"
 #include "kernel/memory.h"
-#include "leveleditor/ai_panel.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/object_panel.h"
 #include "xdk/hle.h"
@@ -34,8 +32,6 @@ static_assert(std::size(kCategoryNames) == kViewCategoryCount);
 constexpr const char* kLogicClasses[] = {"Waypoint"};
 constexpr int kPropertyReadsPerFrame = 32;  // a level's first frames read them in turns
 
-constexpr float kCircleRadius = 6.0f;  // pixels
-constexpr float kLineWidth = 2.0f;
 constexpr float kMaxBoxSide = 10000.0f;  // the engine drops an area this big (1e8 squared)
 
 // guest scratch: GetBBox's two Vec3
@@ -83,7 +79,7 @@ bool IsOneOf(const std::string& cls, const char* const (&classes)[N]) {
 }
 
 // the classes whose Properties a category shows
-bool WantsProperties(const std::string& cls) { return IsTrigger(cls) || cls == "ViewDist"; }
+bool WantsProperties(const std::string& cls) { return IsTrigger(cls) || IsAiEntity(cls) || cls == "ViewDist"; }
 
 // read once per entity, a few each frame
 void LatchProperties(PPCContext& ctx, uint32_t entity, ViewEntity& e, int& reads) {
@@ -102,26 +98,6 @@ void DrawLogicMarkers(const View& v) {
         if (!IsOneOf(e.cls, kLogicClasses)) continue;
         Square(v, e.pos, colour);
         Label(v, e.pos, e.name.c_str(), colour);
-    }
-}
-
-void DrawPoints(const View& v, const AiObject& o, ImU32 colour) {
-    for (size_t i = 1; i < o.points.size(); i++) Line(v, o.points[i - 1].data(), o.points[i].data(), colour);
-}
-
-void DrawAiMarkers(const View& v) {
-    std::shared_ptr<const AiObjects> ai = ReadAiObjects();
-    uint32_t picked = SelectedAiObject();
-    for (const AiObject& o : ai->objects) {
-        // the player start's, the entity areas' and the culling's
-        if (o.type == "Respawn" || o.type == "VisArea" || o.type == "Portal" || !o.entities.empty()) continue;
-        ImU32 colour = ImGui::GetColorU32(o.node == picked ? fcip::kText : fcip::kDim);
-        DrawPoints(v, o, colour);
-        ImVec2 at;
-        if (!o.placed || !Project(v, o.pos, at)) continue;
-        v.draw->AddCircle(at, kCircleRadius, colour, 0, kLineWidth);
-        if (o.node != picked && !NearCamera(v, o.pos)) continue;
-        Label(v, o.pos, o.name.c_str(), colour);
     }
 }
 
@@ -170,7 +146,7 @@ void ForgetMarkers() {
 void DrawMarkers() {
     View view;
     if (!BeginView(view)) return;
-    if (g_view_shown[kViewAi]) DrawAiMarkers(view);
+    if (g_view_shown[kViewAi]) DrawAi(view);
     if (g_view_shown[kViewLogic]) DrawLogicMarkers(view);
     if (g_view_shown[kViewTriggers]) DrawTriggers(view);
     if (g_view_shown[kViewSequences]) DrawSequences(view);

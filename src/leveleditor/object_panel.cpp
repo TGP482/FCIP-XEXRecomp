@@ -412,14 +412,16 @@ std::vector<XmlAttribute> fcip::editor::ReadProperties(PPCContext& ctx, uint32_t
     std::vector<XmlAttribute> out;
     uint32_t script = R32(entity + kEntityScript);
     if (!script || !EnsureScratch()) return out;
-    Converted c = ToXml(ctx, script, kTables[0]);
-    if (c.node) {
-        uint32_t last = R32(c.node + kNodeAttrLast);
-        for (uint32_t a = R32(c.node + kNodeAttrFirst); a && a < last; a += kAttrBytes) {
-            out.push_back({GuestString(a + kAttrKey), GuestString(a + kAttrValue)});
+    for (const char* table : kTables) {
+        Converted c = ToXml(ctx, script, table);
+        if (c.node) {
+            uint32_t last = R32(c.node + kNodeAttrLast);
+            for (uint32_t a = R32(c.node + kNodeAttrFirst); a && a < last; a += kAttrBytes) {
+                out.push_back({GuestString(a + kAttrKey), GuestString(a + kAttrValue)});
+            }
         }
+        Release(ctx, c);
     }
-    Release(ctx, c);
     return out;
 }
 

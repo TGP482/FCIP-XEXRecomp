@@ -59,16 +59,7 @@ void DrawVisArea(const View& v, const AiObject& o) {
     if (o.points.size() < 2) return;
     ImU32 colour = IsPortal(o) ? kPortalColour : kVisAreaColour;
     float height = std::strtof(AttributeOf(o, "Height").c_str(), nullptr);
-    size_t n = o.points.size();
-    for (size_t i = 0; i < n; i++) {
-        const auto& a = o.points[i];
-        const auto& b = o.points[(i + 1) % n];
-        float a1[3] = {a[0], a[1], a[2] + height};
-        float b1[3] = {b[0], b[1], b[2] + height};
-        Line(v, a.data(), b.data(), colour);
-        Line(v, a1, b1, colour);
-        Line(v, a.data(), a1, colour);
-    }
+    Prism(v, o.points, height, true, colour);
     if (!NearCamera(v, o.points.front().data())) return;
     std::string text = o.name + (IsPortal(o) ? " (portal)" : " (vis area)");
     for (const char* key : {"AmbientColor", "AffectedBySun", "SkyOnly", "TerrainVisible", "WaterVisible"}) {

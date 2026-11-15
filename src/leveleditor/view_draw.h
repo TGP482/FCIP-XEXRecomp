@@ -1,5 +1,8 @@
 // the level editor's view: world space lines, boxes and labels over the frame (view_draw.cpp)
 #pragma once
+#include <array>
+#include <vector>
+
 #include <imgui.h>
 
 #include "common/aspect.h"
@@ -24,6 +27,9 @@ void AxisBox(const View& v, const float min[3], const float max[3], ImU32 colour
 void BoxEdges(const View& v, const float corner[8][3], ImU32 colour);  // corner bits 1, 2, 4 are its x, y, z sides
 void Arrow(const View& v, const float from[3], const float to[3], ImU32 colour);
 void Square(const View& v, const float p[3], ImU32 colour);
+void Circle(const View& v, const float centre[3], float radius, ImU32 colour);  // level, radius in metres
+// each point from its own height up height, joined in order, the last to the first when closed
+void Prism(const View& v, const std::vector<std::array<float, 3>>& points, float height, bool closed, ImU32 colour);
 void Label(const View& v, const float p[3], const char* text, ImU32 colour);
 bool NearCamera(const View& v, const float p[3]);  // close enough to be named
 

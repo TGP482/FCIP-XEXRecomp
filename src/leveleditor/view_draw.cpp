@@ -2,6 +2,7 @@
 // Lines are cut where they pass behind the camera, so a box the camera stands in keeps its far side.
 #include "leveleditor/view_draw.h"
 
+#include <algorithm>
 #include <cmath>
 #include <initializer_list>
 
@@ -18,6 +19,8 @@ constexpr float kHeadPixels = 10.0f;
 constexpr float kHeadSpread = 0.45f;  // radians either side of the shaft
 constexpr float kRadians = 3.14159265f / 180.0f;
 constexpr float kNamedWithin = 120.0f;  // metres
+constexpr int kCircleSegments = 24;
+constexpr float kTau = 6.28318531f;
 
 struct Clip {
     float x;
@@ -123,6 +126,30 @@ void Square(const View& v, const float p[3], ImU32 colour) {
     ImVec2 min(at.x - kSquareHalf, at.y - kSquareHalf);
     ImVec2 max(at.x + kSquareHalf, at.y + kSquareHalf);
     v.draw->AddRect(min, max, colour, 0.0f, 0, kLineWidth);
+}
+
+void Circle(const View& v, const float centre[3], float radius, ImU32 colour) {
+    float last[3] = {centre[0] + radius, centre[1], centre[2]};
+    for (int s = 1; s <= kCircleSegments; s++) {
+        float angle = kTau * float(s) / float(kCircleSegments);
+        float next[3] = {centre[0] + std::cos(angle) * radius, centre[1] + std::sin(angle) * radius, centre[2]};
+        Line(v, last, next, colour);
+        std::copy(next, next + 3, last);
+    }
+}
+
+void Prism(const View& v, const std::vector<std::array<float, 3>>& points, float height, bool closed, ImU32 colour) {
+    size_t n = points.size();
+    for (size_t i = 0; i < n; i++) {
+        const float* a = points[i].data();
+        float a_top[3] = {a[0], a[1], a[2] + height};
+        if (height > 0.0f) Line(v, a, a_top, colour);
+        if (i + 1 == n && !closed) break;
+        const float* b = points[(i + 1) % n].data();
+        float b_top[3] = {b[0], b[1], b[2] + height};
+        Line(v, a, b, colour);
+        if (height > 0.0f) Line(v, a_top, b_top, colour);
+    }
 }
 
 // shadowed, so it reads over sky and sand alike

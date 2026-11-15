@@ -35,7 +35,7 @@ struct ViewEntity {
     bool has_box = false;   // the world box the engine tests it with, as its triggers and physics see it
     float box_min[3] = {};
     float box_max[3] = {};
-    std::vector<XmlAttribute> properties;  // the classes a category reads them for, else none
+    std::vector<XmlAttribute> properties;  // Properties then PropertiesInstance, for the classes a category reads
 };
 std::shared_ptr<const std::vector<ViewEntity>> ViewEntities();  // any thread
 std::string PropertyOf(const ViewEntity& e, const char* key);
@@ -56,6 +56,8 @@ bool IsTrigger(const std::string& cls);  // any thread
 void DrawSequences(const View& v);    // movie_markers.cpp
 bool SequenceStart(const std::string& name, float out[3]);  // any thread, false for none such
 void DrawCulling(const View& v);      // culling_markers.cpp
+void DrawAi(const View& v);           // ai_markers.cpp
+bool IsAiEntity(const std::string& cls);  // any thread
 void DrawArea(const View& v, const AiObject& area, ImU32 colour);  // a Shape, AreaBox or AreaSphere (area_markers.cpp)
 
 }  // namespace fcip::editor
