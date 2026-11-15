@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <iterator>
@@ -42,7 +43,8 @@ constexpr float kDockEms = 30.0f;  // the dock's first width
 constexpr float kMinDockEms = 16.0f;
 constexpr float kMinViewEms = 20.0f;
 constexpr float kSplitterEms = 0.4f;
-constexpr float kIconEms = 1.6f;
+constexpr float kIconEms = 2.4f;
+constexpr float kLabelPadEms = 0.5f;  // beside each toolbar label
 constexpr float kParametersShare = 0.45f;  // of the dock's height, above the tabs
 
 constexpr uint32_t kSetTitle = WM_APP + 3;  // the window thread sets g_title
@@ -172,10 +174,13 @@ void DrawMenuBar(const State& s) {
     ImGui::EndMainMenuBar();
 }
 
-bool IconButton(const char* id, Icon icon, const char* tip, bool active, bool enabled) {
+// the icon with its label beneath
+bool IconButton(const char* id, Icon icon, const char* label, const char* tip, bool active, bool enabled) {
     float size = ImGui::GetFontSize() * kIconEms;
+    ImVec2 text = ImGui::CalcTextSize(label);
+    float width = std::fmax(size, text.x + ImGui::GetFontSize() * kLabelPadEms);
     ImGui::BeginDisabled(!enabled);
-    bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size));
+    bool pressed = ImGui::InvisibleButton(id, ImVec2(width, size + text.y));
     ImVec2 min = ImGui::GetItemRectMin();
     ImVec2 max = ImGui::GetItemRectMax();
     ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -183,7 +188,9 @@ bool IconButton(const char* id, Icon icon, const char* tip, bool active, bool en
     else if (ImGui::IsItemHovered()) draw->AddRectFilled(min, max, ImGui::GetColorU32(kTabHovered));
     float pad = size * 0.15f;
     ImU32 colour = ImGui::GetColorU32(enabled ? kText : kDim);
-    DrawIcon(draw, icon, ImVec2(min.x + pad, min.y + pad), size - pad * 2.0f, colour);
+    float left = std::floor(min.x + (width - size) * 0.5f);
+    DrawIcon(draw, icon, ImVec2(left + pad, min.y + pad), size - pad * 2.0f, colour);
+    draw->AddText(ImVec2(std::floor(min.x + (width - text.x) * 0.5f), min.y + size), colour, label);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tip);
     ImGui::EndDisabled();
     ImGui::SameLine();
@@ -193,7 +200,7 @@ bool IconButton(const char* id, Icon icon, const char* tip, bool active, bool en
 void Gap() {
     float em = ImGui::GetFontSize();
     ImVec2 at = ImGui::GetCursorScreenPos();
-    float height = em * kIconEms;
+    float height = em * kIconEms + ImGui::GetTextLineHeight();
     ImGui::GetWindowDrawList()->AddLine(ImVec2(at.x, at.y), ImVec2(at.x, at.y + height), ImGui::GetColorU32(kLine));
     ImGui::Dummy(ImVec2(em * 0.3f, height));
     ImGui::SameLine();
@@ -202,26 +209,26 @@ void Gap() {
 // the toolbar's height
 float DrawToolbar(float top, float width, const State& s) {
     float em = ImGui::GetFontSize();
-    float height = em * kIconEms + em * 0.5f;
+    float height = em * kIconEms + ImGui::GetTextLineHeight() + em * 0.5f;
     ImGui::SetNextWindowPos(ImVec2(0.0f, top));
     ImGui::SetNextWindowSize(ImVec2(width, height));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.25f, em * 0.25f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.15f, 0.0f));
     if (ImGui::Begin("##toolbar", nullptr, kFixed)) {
-        if (IconButton("##undo", Icon::Undo, "Undo (Ctrl+Z)", false, s.undo_count > 0)) Undo(1);
+        if (IconButton("##undo", Icon::Undo, "Undo", "Undo (Ctrl+Z)", false, s.undo_count > 0)) Undo(1);
         Gap();
         for (const ToolEntry& t : kToolEntries) {
             std::string tip = std::string(ToolName(t.tool)) + " (" + t.key + ")";
             ImGui::PushID(t.tool);
-            if (IconButton("##tool", t.icon, tip.c_str(), s.tool == t.tool, true)) SelectTool(t.tool);
+            if (IconButton("##tool", t.icon, ToolName(t.tool), tip.c_str(), s.tool == t.tool, true)) SelectTool(t.tool);
             ImGui::PopID();
         }
         Gap();
         for (int b = 0; b < kBrushCount; b++) {
             std::string tip = std::string("Terrain: ") + BrushName(b);
             ImGui::PushID(b);
-            if (IconButton("##brush", kBrushIcons[b], tip.c_str(), s.tool == kTerrain && s.brush == b, true))
-                SelectBrush(b);
+            bool on = s.tool == kTerrain && s.brush == b;
+            if (IconButton("##brush", kBrushIcons[b], BrushName(b), tip.c_str(), on, true)) SelectBrush(b);
             ImGui::PopID();
         }
     }

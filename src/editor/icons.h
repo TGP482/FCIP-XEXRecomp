@@ -1,4 +1,4 @@
-// the map editor's toolbar icons, drawn from lines and shapes
+// the map editor's toolbar icons, 16x16 pixel art
 #pragma once
 
 #include <imgui.h>
