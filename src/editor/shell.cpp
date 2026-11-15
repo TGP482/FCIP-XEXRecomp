@@ -143,9 +143,9 @@ void DrawMenuBar(const State& s) {
         if (ImGui::MenuItem(editor::g_solo ? "New Level..." : "New Map...")) ExitToMapManager();
         if (ImGui::MenuItem(editor::g_solo ? "Open Saved Level..." : "Open Map...")) ExitToMapManager();
         if (editor::g_solo) DrawOpenLevel();
-        if (ImGui::MenuItem("Save", "Ctrl+S", false, CampaignLevel().empty())) Save();
+        if (ImGui::MenuItem("Save", "Ctrl+S")) Save();
         ImGui::Separator();
-        if (ImGui::MenuItem("Exit to Map Manager")) ExitToMapManager();
+        if (ImGui::MenuItem(editor::g_solo ? "Exit to Level Manager" : "Exit to Map Manager")) ExitToMapManager();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
@@ -529,9 +529,9 @@ std::wstring Title() {
     std::string name = MapName();
     if (name.empty()) name = CampaignLevel();
     std::wstring map(name.begin(), name.end());
-    if (map.empty()) map = L"Untitled Map";
+    if (map.empty()) map = editor::g_solo ? L"Untitled Level" : L"Untitled Map";
     if (MapChanged()) map += L"*";
-    const wchar_t* editor = editor::g_solo ? L"MAP EDITOR SOLO" : L"MAP EDITOR";
+    const wchar_t* editor = editor::g_solo ? L"LEVEL EDITOR" : L"MAP EDITOR";
     return std::wstring(kGameName) + L" - " + editor + L" - " + map + L" - XEX Recomp Editor";
 }
 
@@ -656,7 +656,7 @@ bool EditorKey(uintptr_t wp) {
         return true;
     }
     if (ctrl && wp == 'S') {
-        if (CampaignLevel().empty()) Save();
+        Save();
         return true;
     }
     if (wp == VK_DELETE) {
