@@ -14,6 +14,7 @@ constexpr uint32_t Argb(const ImVec4& c) {
 }
 
 void Init() {
+    fcip::EnsureDisplay();
     if (fcip::g_editor_launch) fcip::g_editor_launch();
 }
 

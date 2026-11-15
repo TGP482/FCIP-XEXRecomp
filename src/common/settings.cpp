@@ -1,14 +1,96 @@
 #include "common/settings.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 #include <algorithm>
 #include <iterator>
+#include <optional>
+#include <string_view>
 #include <utility>
 
 #include <toml++/toml.hpp>
 
+#include "app/app.h"
 #include "common/keys.h"
+#include "image_symbols.h"
 
 namespace fcip {
+
+namespace {
+
+// FCIPEditor.exe keeps its own display mode and size beside the game's
+constexpr bool kEditor = std::string_view(IMAGE_XEX) == "ige.xex";
+constexpr const char* kModeNames[] = {"fullscreen", "borderless", "windowed"};
+
+struct DisplayKeys {
+    const char* mode;
+    const char* width;
+    const char* height;
+};
+constexpr DisplayKeys kGameKeys{"display_mode", "width", "height"};
+constexpr DisplayKeys kEditorKeys{"editor_display_mode", "editor_width", "editor_height"};
+constexpr DisplayKeys kOtherKeys = kEditor ? kGameKeys : kEditorKeys;
+
+// the other executable's display keys, written back as they were
+struct OtherDisplay {
+    std::optional<std::string> mode;
+    std::optional<int64_t> width;
+    std::optional<int64_t> height;
+};
+OtherDisplay g_other;
+bool g_display_loaded = false;
+
+// the largest mode of the primary display within three quarters of its desktop
+app::Mode EditorWindowSize() {
+    app::Mode desktop = app::Desktop();
+    app::Mode best{1280, 720};
+    DEVMODEW dm{};
+    dm.dmSize = sizeof(dm);
+    for (DWORD i = 0; EnumDisplaySettingsW(nullptr, i, &dm); i++) {
+        bool fits = dm.dmPelsWidth * 4 <= desktop.width * 3 && dm.dmPelsHeight * 4 <= desktop.height * 3;
+        bool larger = dm.dmPelsWidth * dm.dmPelsHeight > best.width * best.height;
+        if (dm.dmBitsPerPel >= 32 && fits && larger) best = {dm.dmPelsWidth, dm.dmPelsHeight};
+    }
+    return best;
+}
+
+void LoadDisplay(const toml::table& t) {
+    g_display_loaded = true;
+    g_other.mode = t[kOtherKeys.mode].value<std::string>();
+    g_other.width = t[kOtherKeys.width].value<int64_t>();
+    g_other.height = t[kOtherKeys.height].value<int64_t>();
+    if (!kEditor) return;
+    app::Settings& s = app::Get();
+    DefaultDisplay(s);
+    std::string mode = t[kEditorKeys.mode].value_or(std::string(kModeNames[uint32_t(s.display_mode)]));
+    for (uint32_t i = 0; i < std::size(kModeNames); i++) {
+        if (mode == kModeNames[i]) s.display_mode = app::DisplayMode(i);
+    }
+    s.width = t[kEditorKeys.width].value_or(s.width);
+    s.height = t[kEditorKeys.height].value_or(s.height);
+}
+
+// the runtime wrote this executable's display under the game's keys
+void SaveDisplay(toml::table& t) {
+    if (kEditor) {
+        const app::Settings& s = app::Get();
+        t.insert_or_assign(kEditorKeys.mode, kModeNames[uint32_t(s.display_mode)]);
+        t.insert_or_assign(kEditorKeys.width, int64_t(s.width));
+        t.insert_or_assign(kEditorKeys.height, int64_t(s.height));
+        for (const char* key : {kGameKeys.mode, kGameKeys.width, kGameKeys.height}) t.erase(key);
+    }
+    if (g_other.mode) t.insert_or_assign(kOtherKeys.mode, *g_other.mode);
+    if (g_other.width) t.insert_or_assign(kOtherKeys.width, *g_other.width);
+    if (g_other.height) t.insert_or_assign(kOtherKeys.height, *g_other.height);
+}
+
+}  // namespace
 
 Settings& Get() {
     static Settings s;
@@ -16,6 +98,18 @@ Settings& Get() {
 }
 
 uint32_t WorldDistance() { return std::min(Get().draw_distance, kMaxWorldDistance); }
+
+void DefaultDisplay(app::Settings& s) {
+    const app::Settings def;
+    s.display_mode = kEditor ? app::DisplayMode::Windowed : def.display_mode;
+    app::Mode size = kEditor ? EditorWindowSize() : app::Mode{def.width, def.height};
+    s.width = size.width;
+    s.height = size.height;
+}
+
+void EnsureDisplay() {
+    if (!g_display_loaded) LoadDisplay(toml::table{});
+}
 
 void LoadSettings(const void* table) {
     auto& t = *static_cast<const toml::table*>(table);
@@ -55,6 +149,7 @@ void LoadSettings(const void* table) {
     s.gyro.button_mode = std::min(t["gyro_button_mode"].value_or(s.gyro.button_mode), uint32_t(gyro::kToggle));
     s.invincible = t["invincibility"].value_or(s.invincible);
     s.noclip = t["noclip"].value_or(s.noclip);
+    LoadDisplay(t);
     keys::Load(table);
 }
 
@@ -101,6 +196,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("gyro_button_mode", int64_t(s.gyro.button_mode));
     t.insert_or_assign("invincibility", s.invincible);
     t.insert_or_assign("noclip", s.noclip);
+    SaveDisplay(t);
     keys::Save(table);
 }
 

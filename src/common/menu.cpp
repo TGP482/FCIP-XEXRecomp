@@ -587,9 +587,7 @@ void RestoreDefaults(int page) {
     }
     const app::Settings def;
     app::Settings& s = app::Get();
-    s.display_mode = def.display_mode;
-    s.width = def.width;
-    s.height = def.height;
+    DefaultDisplay(s);
     s.render_percent = def.render_percent;
     s.vsync = def.vsync;
     s.fps_cap = def.fps_cap;

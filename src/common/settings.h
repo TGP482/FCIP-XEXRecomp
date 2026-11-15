@@ -5,6 +5,10 @@
 
 #include "common/gyro.h"
 
+namespace app {
+struct Settings;
+}
+
 namespace fcip {
 
 struct Settings {
@@ -49,6 +53,11 @@ constexpr uint32_t kMaxWorldDistance = 8;  // past it only the shadow distance g
 
 // the draw distance for objects, detail, grass, sprite switch and mesh LOD
 uint32_t WorldDistance();
+
+// the display mode and size of a fresh settings file: the game's as the runtime has them, FCIPEditor.exe in a window
+void DefaultDisplay(app::Settings& s);
+// GameInfo init: a missing settings file never reached LoadSettings
+void EnsureDisplay();
 
 // GameInfo load and save: these settings and the binds
 void LoadSettings(const void* table);
