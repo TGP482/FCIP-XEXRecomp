@@ -34,8 +34,7 @@ constexpr ImU32 kLinkColour = IM_COL32(250, 220, 120, 200);
 struct Lookup {
     std::unordered_map<uint32_t, const ViewEntity*> by_id;
     std::unordered_map<std::string, const ViewEntity*> by_name;
-    std::unordered_map<std::string, const AiObject*> objects;     // by name
-    std::unordered_multimap<std::string, const AiObject*> areas;  // by the entity they tell
+    std::unordered_map<std::string, const AiObject*> objects;  // by name
 };
 
 bool PlaceOf(const Lookup& look, const std::string& name, float out[3]) {
@@ -82,16 +81,6 @@ std::string DrawLinks(const View& v, const ViewEntity& e, const Lookup& look) {
     return calls;
 }
 
-void DrawAreas(const View& v, const ViewEntity& e, const Lookup& look, ImU32 colour) {
-    auto [first, last] = look.areas.equal_range(e.name);
-    for (auto it = first; it != last; ++it) {
-        const AiObject& o = *it->second;
-        DrawArea(v, o, colour);
-        const float* at = o.placed ? o.pos : (o.points.empty() ? nullptr : o.points.front().data());
-        if (at) Line(v, at, e.pos, colour);
-    }
-}
-
 std::string Details(const ViewEntity& e) {
     std::string text = e.name + " (" + e.cls + ")";
     for (const char* key : kShownProperties) {
@@ -103,7 +92,7 @@ std::string Details(const ViewEntity& e) {
 
 void DrawTrigger(const View& v, const ViewEntity& e, const Lookup& look) {
     ImU32 colour = PropertyOf(e, "bEnabled") == "0" ? kDisabledColour : kTriggerColour;
-    if (e.cls == "AreaTrigger") DrawAreas(v, e, look, colour);
+    if (e.cls == "AreaTrigger") DrawEntityAreas(v, e.name, e.pos, colour);
     else if (e.has_box) AxisBox(v, e.box_min, e.box_max, colour);
     Square(v, e.pos, colour);
     std::string calls = DrawLinks(v, e, look);
@@ -127,10 +116,7 @@ void fcip::editor::DrawTriggers(const View& v) {
         look.by_id[e.id] = &e;
         look.by_name[e.name] = &e;
     }
-    for (const AiObject& o : ai->objects) {
-        look.objects[o.name] = &o;
-        for (const std::string& name : o.entities) look.areas.emplace(name, &o);
-    }
+    for (const AiObject& o : ai->objects) look.objects[o.name] = &o;
     for (const ViewEntity& e : *entities) {
         if (IsTrigger(e.cls)) DrawTrigger(v, e, look);
     }

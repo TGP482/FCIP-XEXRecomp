@@ -414,13 +414,18 @@ std::vector<XmlAttribute> fcip::editor::ReadProperties(PPCContext& ctx, uint32_t
     if (!script || !EnsureScratch()) return out;
     for (const char* table : kTables) {
         Converted c = ToXml(ctx, script, table);
-        if (c.node) {
-            uint32_t last = R32(c.node + kNodeAttrLast);
-            for (uint32_t a = R32(c.node + kNodeAttrFirst); a && a < last; a += kAttrBytes) {
-                out.push_back({GuestString(a + kAttrKey), GuestString(a + kAttrValue)});
-            }
-        }
+        std::vector<Node> nodes;
+        if (c.node) ReadNode(c.node, Node{}, nodes);
         Release(ctx, c);
+        for (const Node& n : nodes) {
+            // a sub table's title is " / Sub / Deeper", its keys become "Sub/Deeper/key"
+            std::string prefix;
+            for (size_t at = 0; (at = n.title.find(" / ", at)) != std::string::npos; at += 3) {
+                size_t end = n.title.find(" / ", at + 3);
+                prefix += n.title.substr(at + 3, end == std::string::npos ? std::string::npos : end - at - 3) + "/";
+            }
+            for (const Attribute& a : n.attributes) out.push_back({prefix + a.key, a.value});
+        }
     }
     return out;
 }

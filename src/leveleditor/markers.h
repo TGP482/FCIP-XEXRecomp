@@ -17,13 +17,15 @@ enum ViewCategory : int {
     kViewTriggers,
     kViewSequences,
     kViewCulling,
+    kViewSounds,
+    kViewLights,
     kViewLogic,
     kViewAi,
     kViewCategoryCount
 };
 const char* ViewCategoryName(int category);
 // window thread, the View menu's toggles
-inline bool g_view_shown[kViewCategoryCount] = {true, true, true, true, true, true};
+inline bool g_view_shown[kViewCategoryCount] = {true, true, true, true, true, true, true, true};
 
 // an entity as the last editing frame left it
 struct ViewEntity {
@@ -58,6 +60,11 @@ bool SequenceStart(const std::string& name, float out[3]);  // any thread, false
 void DrawCulling(const View& v);      // culling_markers.cpp
 void DrawAi(const View& v);           // ai_markers.cpp
 bool IsAiEntity(const std::string& cls);  // any thread
+void DrawSounds(const View& v);       // sound_markers.cpp
+void DrawLights(const View& v);
+bool IsSoundOrLight(const std::string& cls);  // any thread
 void DrawArea(const View& v, const AiObject& area, ImU32 colour);  // a Shape, AreaBox or AreaSphere (area_markers.cpp)
+// the areas naming the entity, each with a line to it
+void DrawEntityAreas(const View& v, const std::string& name, const float pos[3], ImU32 colour);
 
 }  // namespace fcip::editor

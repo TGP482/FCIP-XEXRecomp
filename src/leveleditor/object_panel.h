@@ -10,7 +10,8 @@ struct PPCContext;
 namespace fcip::editor {
 
 void DrawObjectPanel();  // window thread, in the ImGui frame
-// editor thread: an entity's Properties then PropertiesInstance as the editor saves them, the top levels only
+// editor thread: an entity's Properties then PropertiesInstance as the editor saves them, a sub table's keys as
+// "Sub/key"
 std::vector<XmlAttribute> ReadProperties(PPCContext& ctx, uint32_t entity);
 
 }  // namespace fcip::editor

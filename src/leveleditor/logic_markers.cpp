@@ -24,8 +24,8 @@ using namespace fcip::editor;
 
 namespace {
 
-constexpr const char* kCategoryNames[] = {"Player Start", "Triggers",      "Sequences",
-                                          "Culling",      "Logic Objects", "AI Objects"};
+constexpr const char* kCategoryNames[] = {"Player Start", "Triggers",           "Sequences",     "Culling",
+                                          "Sounds",       "Lights and Effects", "Logic Objects", "AI Objects"};
 static_assert(std::size(kCategoryNames) == kViewCategoryCount);
 
 // the catalogue's logic classes the later categories do not draw yet
@@ -79,7 +79,9 @@ bool IsOneOf(const std::string& cls, const char* const (&classes)[N]) {
 }
 
 // the classes whose Properties a category shows
-bool WantsProperties(const std::string& cls) { return IsTrigger(cls) || IsAiEntity(cls) || cls == "ViewDist"; }
+bool WantsProperties(const std::string& cls) {
+    return IsTrigger(cls) || IsAiEntity(cls) || IsSoundOrLight(cls) || cls == "ViewDist";
+}
 
 // read once per entity, a few each frame
 void LatchProperties(PPCContext& ctx, uint32_t entity, ViewEntity& e, int& reads) {
@@ -151,6 +153,8 @@ void DrawMarkers() {
     if (g_view_shown[kViewTriggers]) DrawTriggers(view);
     if (g_view_shown[kViewSequences]) DrawSequences(view);
     if (g_view_shown[kViewCulling]) DrawCulling(view);
+    if (g_view_shown[kViewSounds]) DrawSounds(view);
+    if (g_view_shown[kViewLights]) DrawLights(view);
     if (g_view_shown[kViewPlayerStart]) DrawPlayerStart(view);
     EndView(view);
 }

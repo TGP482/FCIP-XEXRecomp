@@ -105,13 +105,8 @@ void DrawGrid(const View& v) {
     }
 }
 
-void DrawViewDist(const View& v, const ViewEntity& e, const AiObjects& ai) {
-    for (const AiObject& o : ai.objects) {
-        if (std::find(o.entities.begin(), o.entities.end(), e.name) == o.entities.end()) continue;
-        DrawArea(v, o, kViewDistColour);
-        const float* at = o.placed ? o.pos : (o.points.empty() ? nullptr : o.points.front().data());
-        if (at) Line(v, at, e.pos, kViewDistColour);
-    }
+void DrawViewDist(const View& v, const ViewEntity& e) {
+    DrawEntityAreas(v, e.name, e.pos, kViewDistColour);
     Square(v, e.pos, kViewDistColour);
     if (!NearCamera(v, e.pos)) return;
     std::string text = e.name + " (ViewDist)\nMaxViewDist " + PropertyOf(e, "MaxViewDist");
@@ -160,7 +155,7 @@ void DrawCulling(const View& v) {
         if (o.type == "VisArea" || o.type == "Portal") DrawVisArea(v, o);
     }
     for (const ViewEntity& e : *ViewEntities()) {
-        if (e.cls == "ViewDist") DrawViewDist(v, e, *ai);
+        if (e.cls == "ViewDist") DrawViewDist(v, e);
     }
     DrawGrid(v);
 }

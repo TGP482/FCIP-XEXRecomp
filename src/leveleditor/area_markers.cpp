@@ -1,11 +1,14 @@
 // ige.xex, the solo level editor: a mission area drawn as the engine tests a point against it (default.xex 821538B0).
 // A Shape is its points' outline, from the lowest point up Height, or at any height when Height is 0; an AreaBox is
-// Width by Length centred on Pos and Height up from it, turned by Angles; an AreaSphere is Radius around Pos.
+// Width by Length centred on Pos and Height up from it, turned by Angles; an AreaSphere is Radius around Pos. An area
+// naming entities in its Entities tells them of the player entering (OnEnterArea).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "leveleditor/markers.h"
 
@@ -78,7 +81,35 @@ void DrawAreaSphere(const View& v, const AiObject& o, ImU32 colour) {
     }
 }
 
+// window thread: the areas by the entity they name, made again when the AI objects change
+struct AreaIndex {
+    std::shared_ptr<const AiObjects> source;
+    std::unordered_multimap<std::string, const AiObject*> by_entity;
+};
+AreaIndex g_index;
+
+const AreaIndex& Index() {
+    std::shared_ptr<const AiObjects> ai = ReadAiObjects();
+    if (ai == g_index.source) return g_index;
+    g_index.source = ai;
+    g_index.by_entity.clear();
+    for (const AiObject& o : ai->objects) {
+        for (const std::string& name : o.entities) g_index.by_entity.emplace(name, &o);
+    }
+    return g_index;
+}
+
 }  // namespace
+
+void fcip::editor::DrawEntityAreas(const View& v, const std::string& name, const float pos[3], ImU32 colour) {
+    auto [first, last] = Index().by_entity.equal_range(name);
+    for (auto it = first; it != last; ++it) {
+        const AiObject& o = *it->second;
+        DrawArea(v, o, colour);
+        const float* at = o.placed ? o.pos : (o.points.empty() ? nullptr : o.points.front().data());
+        if (at) Line(v, at, pos, colour);
+    }
+}
 
 void fcip::editor::DrawArea(const View& v, const AiObject& area, ImU32 colour) {
     if (area.type == "Shape") DrawShape(v, area, colour);
