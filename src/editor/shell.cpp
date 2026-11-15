@@ -584,6 +584,7 @@ void UpdateViewInput(const Box& view) {
 // true while it takes the mouse: always but over the view while a console page has the editor's input
 bool DrawShell(double fps) {
     UpdateTitle();
+    g_editor_shell = ShellUp();  // no mouse look while editing, play tests keep it
     if (!ShellUp()) {
         SetViewBox({});
         SetViewInput({});
@@ -653,6 +654,12 @@ bool EditorKey(uintptr_t wp) {
 }
 
 bool EditorMessage(void* hwnd, uint32_t msg, uintptr_t wp) {
+    static bool maximised = false;  // the first show only, a window the user sizes stays so
+    if (msg == WM_SHOWWINDOW && wp && !maximised && app::Get().display_mode == app::DisplayMode::Windowed) {
+        maximised = true;
+        PostMessageW(static_cast<HWND>(hwnd), WM_SYSCOMMAND, SC_MAXIMIZE, 0);
+        return false;
+    }
     if (msg == kSetTitle) {
         std::lock_guard lock(g_title_lock);
         SetWindowTextW(static_cast<HWND>(hwnd), g_title.c_str());
