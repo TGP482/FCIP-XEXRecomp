@@ -65,12 +65,15 @@ File_Close = 0x8234ED48             # (packs, file)
 File_Destroy = 0x824FAF08           # (file)
 Pack_CopyFile = 0x82108E80          # (source pack, file, name in the target, target pack)
 Mission_WriteEntities = 0x82104C38  # (mission object, XmlNodeRef of the mission) adds Objects with the entities
+Library_Get = 0x821AA170            # the editor's archetype library
+Library_Find = 0x821AA900           # (XmlNodeRef out, library, std::string full name) an EntityPrototype
 # a custom level opened (campaign_levels.cpp)
 UserMapInfo_Select = 0x8211FA28       # (user maps, map manager entry)
 UserMapInfo_Load = 0x8211F498         # (user maps, 0)
 Engine_UseUserMap = 0x8233B2F0        # (3D engine) the level folder becomes the user map's
 Streaming_OpenLevelPack = 0x8238E260  # (streaming, level folder, from user content)
 Script_ExecuteFile = 0x823243D8       # (script system, path, 0, 0)
+Script_ExecuteBuffer = 0x82322788     # (script system, text, size)
 TerrainPaint_Load = 0x820D4A90        # textureinfo.ige
 # the terrain tool's paint texture caption (terrain_limits.cpp)
 Page_SetText = 0x820C0EB0  # (page, widget name, std::wstring)
@@ -317,3 +320,15 @@ after = true
 at = 0x820D7394
 call = "ShownBudgetR3"
 after = true
+
+# the local player as an actor's update reads it, defined in src/leveleditor/player_hud.cpp
+
+[[hook]]  # addi r11, r3, 1400: a player's action 7 (8215F7D0) clears a local player flag
+at = 0x8215FC28
+call = "LocalPlayerMissing"
+on_true = 0x8215FC4C
+
+[[hook]]  # addi r3, r3, 96: 821AFE20 updates a local player field
+at = 0x821B0130
+call = "LocalPlayerMissing"
+on_true = 0x821B0138

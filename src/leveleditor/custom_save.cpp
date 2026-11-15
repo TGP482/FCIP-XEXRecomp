@@ -121,20 +121,21 @@ std::string MapName() {
     return name.empty() ? CampaignLevel() : name;
 }
 
-// a new level's script: the campaign's functions are kept and called, so it starts by changing nothing
+// a new level's script: the campaign's functions are kept and called, so it starts by changing nothing; Campaign is
+// taken once, so the editor running the script again on a change keeps the campaign's own
 std::string ScriptTemplate(const std::string& name) {
     return "-- " + name + ": runs after the campaign level's mission script, whose table is Mission.\n"
-           "-- A function set here replaces the campaign's; call the one kept to keep its behaviour.\n"
+           "-- A function set here replaces the campaign's; call the one kept in Campaign to keep its behaviour.\n"
            "\n"
-           "local CampaignOnInit = Mission.OnInit\n"
+           "Campaign = Campaign or { OnInit = Mission.OnInit }\n"
            "\n"
            "function Mission:OnInit()\n"
-           "\tif CampaignOnInit then CampaignOnInit(self) end\n"
+           "\tif Campaign.OnInit then Campaign.OnInit(self) end\n"
            "end\n";
 }
 
 std::string LoadScript(const std::string& name) {
-    fs::path path = app::ExeDir() / "levels" / (name + ".lua");
+    fs::path path = fcip::editor::OwnScriptPath();
     std::ifstream in(path, std::ios::binary);
     if (in) return std::string(std::istreambuf_iterator<char>(in), {});
     std::string text = ScriptTemplate(name);
@@ -158,6 +159,8 @@ void WriteScript(PPCContext& ctx) {
 }
 
 }  // namespace
+
+std::filesystem::path fcip::editor::OwnScriptPath() { return app::ExeDir() / "levels" / (MapName() + ".lua"); }
 
 PPC_EXTERN_FUNC(__imp__sub_82109AF8);
 PPC_EXTERN_FUNC(__imp__sub_82109798);

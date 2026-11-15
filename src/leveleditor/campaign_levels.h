@@ -1,6 +1,7 @@
 // the campaign's levels, which the solo editor opens as the game loads them (campaign_levels.cpp)
 #pragma once
 #include <cstdint>
+#include <filesystem>
 #include <string>
 
 struct PPCContext;
@@ -17,6 +18,7 @@ inline constexpr const char* kCampaignLevels[] = {
 void OpenCampaignLevel(int index);  // window thread; an open map is left first, through the editor's exit
 void ForgetLevelRequest();          // the exit was cancelled
 std::string CampaignLevel();        // the campaign level open, empty for a map
+std::filesystem::path OwnScriptPath();  // a custom level's script, levels\<name>.lua beside the executable
 
 // the LEVEL MANAGER (level_manager.cpp): OPEN A CAMPAIGN LEVEL's list over the page, window thread
 bool LevelListUp();

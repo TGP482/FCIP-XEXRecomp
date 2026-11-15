@@ -1,7 +1,8 @@
 // ige.xex, the solo level editor: ige makes the local player only in first person (820C5548), while a campaign
 // level's entities run their logic from the moment it loads. The game's script methods that draw on the local
 // player's HUD then return nothing (a Waypoint's OnInit sets its objective), and an entity's event goes unheard by
-// a local player that is not there. In default.xex the local player is always there.
+// a local player that is not there, and two actor updates read the local player's fields after asking for it
+// ([[hook]]s in config/leveleditor.toml). In default.xex the local player is always there.
 #include "kernel/kernel.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
@@ -44,3 +45,6 @@ PPC_FUNC(sub_82131FB8) {
     if (NoLocalPlayer(ctx)) return;
     __imp__sub_82131FB8(ctx, base);
 }
+
+// the local player (r3) a caller just asked for; without one the caller's use of it is skipped
+bool LocalPlayerMissing(PPCContext& ctx, uint8_t*) { return uint32_t(ctx.r[3]) == 0; }

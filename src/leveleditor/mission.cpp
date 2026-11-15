@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "kernel/memory.h"
+#include "leveleditor/archetypes.h"
 #include "leveleditor/guest.h"
 #include "xdk/hle.h"
 
@@ -311,6 +312,7 @@ uint32_t MissionToSave(PPCContext& ctx, uint32_t mission_object) {
         if (objects) CallGuest(ctx, Method(objects, kNodeAddChild), {objects, g_scratch + kScratchRef});
         else Release(ctx, node);
     }
+    AddSavedPrototypes(ctx, copy);
     return copy;
 }
 

@@ -9,6 +9,7 @@
 #include <string>
 
 #include "kernel/memory.h"
+#include "leveleditor/archetypes.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
@@ -177,6 +178,7 @@ PPC_FUNC(sub_821043A0) {
     uint32_t last = objects ? R32(objects + kNodeChildLast) : 0;
     if (number == before || !first || last <= first) return;
     g_saved[R32(entity + kEntityId)] = {number, R32(last - 4)};
+    SaveArchetype(ctx, entity, R32(last - 4));
 }
 
 // a mission's Objects, entity by entity; then their links, now that every target has its number

@@ -2,16 +2,20 @@
 // and Mission0 as default.xex does; the editor's setup then runs without what its map templates add (environment
 // presets, ambience, cleared sectors, forced water and border heights, rebuilt sector textures and shadows), so the
 // level stays as the game shows it. A custom level saved from one (its LevelData.xml names the campaign level) opens
-// the same way from the user map's pack, its own Mission.lua run after the campaign's mission script.
+// the same way from the user map's pack, its own Mission.lua run after the campaign's mission script and again from
+// levels\<name>.lua beside the executable whenever that file changes.
 #include "leveleditor/campaign_levels.h"
 
 #include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <string>
 
 #include "core/log.h"
 #include "editor/tools.h"
 #include "kernel/memory.h"
+#include "leveleditor/archetypes.h"
 #include "leveleditor/event_links.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/mission.h"
@@ -105,6 +109,11 @@ int g_starting = kNone;               // editor thread, requested of the editor'
 std::atomic<bool> g_loading{false};
 bool g_custom = false;  // the level open was saved from a campaign level
 uint32_t g_scratch = 0;
+// the custom level's own script: the script system it ran in, and its file's time when it last ran
+uint32_t g_scripts = 0;
+std::filesystem::file_time_type g_script_time;
+uint32_t g_script_buffer = 0;
+uint32_t g_script_buffer_bytes = 0;
 
 bool EnsureScratch() {
     if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
@@ -268,6 +277,27 @@ int SavedCampaignLevel(PPCContext& ctx) {
     return kNone;
 }
 
+// the custom level's script runs again once its file changes, so its functions take the new text
+void ReloadOwnScript(PPCContext& ctx) {
+    if (!g_custom || !g_scripts) return;
+    std::filesystem::path path = OwnScriptPath();
+    std::error_code ec;
+    std::filesystem::file_time_type time = std::filesystem::last_write_time(path, ec);
+    if (ec || time == g_script_time) return;
+    g_script_time = time;
+    std::ifstream in(path, std::ios::binary);
+    std::string text(std::istreambuf_iterator<char>(in), {});
+    uint32_t bytes = uint32_t(text.size());
+    if (bytes > g_script_buffer_bytes) {
+        g_script_buffer = mem::AllocSystem(bytes);
+        g_script_buffer_bytes = g_script_buffer ? bytes : 0;
+    }
+    if (!g_script_buffer || !bytes) return;
+    for (uint32_t i = 0; i < bytes; i++) W8(g_script_buffer + i, uint8_t(text[i]));
+    CallGuest(ctx, SYM_Script_ExecuteBuffer, {g_scripts, g_script_buffer, bytes});
+    LOGR("level editor: %s run again", path.string().c_str());
+}
+
 // the map manager is up: the editor's next update starts the level asked for
 void UpdateRequest(PPCContext& ctx, uint32_t manager) {
     if (R32(manager + kActiveHandler) != kMapManagerHandler) return;
@@ -315,6 +345,7 @@ PPC_FUNC(sub_82112AD0) {
     if (fcip::editor::g_solo) {
         UpdateRequest(ctx, uint32_t(ctx.r[3]));
         UpdateMission(ctx);
+        ReloadOwnScript(ctx);
     }
     __imp__sub_82112AD0(ctx, base);
 }
@@ -324,10 +355,12 @@ PPC_FUNC(sub_821124B0) {
     if (!fcip::editor::g_solo || !EnsureScratch()) return __imp__sub_821124B0(ctx, base);
     uint32_t manager = uint32_t(ctx.r[3]);
     ForgetLinks();
+    ForgetArchetypes();
     ForgetMission(ctx);
     g_open = g_starting;
     g_starting = kNone;
     g_custom = false;
+    g_scripts = 0;
     if (g_open == kNone && !R8(manager + kFromTemplate)) {
         SelectSavedMap(ctx, manager);
         g_open = SavedCampaignLevel(ctx);
@@ -392,6 +425,9 @@ PPC_FUNC(sub_823243D8) {
     uint32_t name = WriteText(g_scratch + kScratchPath, kOwnScript, kScratchPathBytes);
     uint32_t path = uint32_t(CallGuest(ctx, SYM_Engine_LevelFilePath, {engine, name, 0}));
     CallGuest(ctx, SYM_Script_ExecuteFile, {scripts, path, 0, 0});
+    g_scripts = scripts;
+    std::error_code ec;
+    g_script_time = std::filesystem::last_write_time(OwnScriptPath(), ec);
 }
 
 // a level's LevelData.xml loads (r3 its XmlNodeRef out); a campaign level's is kept for the save
