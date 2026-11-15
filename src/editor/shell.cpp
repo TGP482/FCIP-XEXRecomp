@@ -36,6 +36,7 @@
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
 #include "leveleditor/picking.h"
+#include "leveleditor/volumes.h"
 
 using namespace fcip;
 using namespace fcip::editor;
@@ -617,7 +618,7 @@ void DrawStatus(float top, float width, double fps, const State& s) {
 }
 
 // the mouse over the view: right drag looks, the wheel zooms, the left button uses the tool where it points
-// the solo editor's Edit Object tool: its gizmo has the mouse, else a click picks a marker under it first
+// the solo editor's Edit Object tool: its gizmo or volume handles have the mouse, else a click picks a marker first
 bool SoloEditing(const State& s) { return editor::g_solo && s.tool == kEditObject; }
 bool PickedMarker(const State& s, ImVec2 m) { return SoloEditing(s) && PickMarker(m.x, m.y); }
 
@@ -629,8 +630,8 @@ void UpdateViewInput(const Box& view, const State& s) {
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) g_looking = over;
     bool clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-    bool gizmo = SoloEditing(s) && GizmoMouse(m, clicked && over, down);
-    if (clicked) g_applying = over && !gizmo && !PickedMarker(s, m);
+    bool held = SoloEditing(s) && (GizmoMouse(m, clicked && over, down) || VolumeMouse(m, clicked && over, down));
+    if (clicked) g_applying = over && !held && !PickedMarker(s, m);
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_looking = false;
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_applying = false;
     if (g_looking) ImGui::SetMouseCursor(ImGuiMouseCursor_None);

@@ -74,5 +74,7 @@ void AddAiObject(std::string type, std::array<float, 3> pos);  // any of kLevelO
 void RemoveAiObject(uint32_t object);
 // moved, its Angles turned by degrees, its points with it (turned about its Pos by the z turn)
 void PlaceAiObject(uint32_t object, std::array<float, 3> move, std::array<float, 3> turn);
+void SetAiPoints(uint32_t object, std::vector<std::array<float, 3>> points);  // a shape's or area's, in order
+void SetAiEntities(uint32_t object, std::vector<std::string> names);          // the entities an area tells
 
 }  // namespace fcip::editor

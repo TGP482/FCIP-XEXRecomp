@@ -16,6 +16,7 @@
 #include "leveleditor/gizmo.h"
 #include "leveleditor/object_panel.h"
 #include "leveleditor/picking.h"
+#include "leveleditor/volumes.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -186,6 +187,7 @@ void DrawMarkers() {
     if (g_view_shown[kViewGameplay]) DrawGameplay(view);
     if (g_view_shown[kViewPlayerStart]) DrawPlayerStart(view);
     DrawPicked(view);
+    DrawVolumeHandles(view);
     DrawGizmo(view);
     EndView(view);
 }

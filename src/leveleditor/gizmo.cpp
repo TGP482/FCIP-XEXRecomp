@@ -145,23 +145,10 @@ std::vector<Vec> Ring(const Vec& p, int axis, float radius) {
     return ring;
 }
 
-float SegmentDistance(ImVec2 m, ImVec2 a, ImVec2 b) {
-    float dx = b.x - a.x;
-    float dy = b.y - a.y;
-    float length = dx * dx + dy * dy;
-    float t = length > 0.0f ? ((m.x - a.x) * dx + (m.y - a.y) * dy) / length : 0.0f;
-    t = std::fmax(0.0f, std::fmin(1.0f, t));
-    return std::hypot(m.x - (a.x + dx * t), m.y - (a.y + dy * t));
-}
-
 float PolylineDistance(const View& v, ImVec2 m, const std::vector<Vec>& points) {
     float best = 1e9f;
     for (size_t i = 1; i < points.size(); i++) {
-        ImVec2 a;
-        ImVec2 b;
-        if (Project(v, points[i - 1].data(), a) && Project(v, points[i].data(), b)) {
-            best = std::fmin(best, SegmentDistance(m, a, b));
-        }
+        best = std::fmin(best, PixelDistance(v, m, points[i - 1].data(), points[i].data()));
     }
     return best;
 }

@@ -14,6 +14,7 @@
 #include <imgui.h>
 
 #include "common/panel_colors.h"
+#include "editor/tools.h"
 #include "kernel/memory.h"
 #include "leveleditor/event_links.h"
 #include "leveleditor/gizmo.h"
@@ -23,6 +24,7 @@
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
 #include "leveleditor/picking.h"
+#include "leveleditor/undo.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -87,12 +89,15 @@ struct LinkEdit {
     uint32_t object = 0;
     std::vector<fcip::editor::Link> links;
 };
+// one value of an entity's table: its node by child indices from the table, then by sub table names
 struct Edit {
-    uint32_t object = 0;
+    uint32_t entity_id = 0;
     int table = 0;
     std::vector<int> path;
+    std::vector<std::string> names;
     std::string key;
     std::string value;
+    bool undoable = true;
 };
 // the entity's table and its XML, both referenced from the scratch
 struct Converted {
@@ -210,21 +215,44 @@ Snapshot Read(PPCContext& ctx, uint32_t object) {
     return s;
 }
 
-// its script's OnReset then takes the new values (a trigger's box), as it does when play test ends
+uint32_t ChildNamed(uint32_t node, const std::string& tag) {
+    for (uint32_t i = 0; i < ChildCount(node); i++) {
+        if (GuestString(ChildAt(node, i) + kNodeTag) == tag) return ChildAt(node, i);
+    }
+    return 0;
+}
+
+uint32_t FindEdited(uint32_t table, const Edit& e) {
+    uint32_t node = FindNode(table, e.path);
+    for (size_t i = 0; node && i < e.names.size(); i++) node = ChildNamed(node, e.names[i]);
+    return node;
+}
+
+// its script's OnReset then takes the new values (a trigger's box), as it does when play test ends; one step of undo
 void Apply(PPCContext& ctx, const Edit& e) {
-    uint32_t script = ScriptOf(e.object);
+    uint32_t entity = EntityOfId(e.entity_id);
+    uint32_t script = entity ? R32(entity + kEntityScript) : 0;
     if (!script) return;
     Converted c = ToXml(ctx, script, kTables[e.table]);
-    uint32_t node = c.node ? FindNode(c.node, e.path) : 0;
+    uint32_t node = c.node ? FindEdited(c.node, e) : 0;
+    std::string old;
     if (node) {
+        uint32_t text = uint32_t(CallGuest(ctx, Method(node, kNodeGetAttr), {node, KeyText(e.key)}));
+        if (text) old = ReadCString(text);
         CallGuest(ctx, Method(node, kNodeSetAttr), {node, KeyText(e.key), ValueText(e.value)});
         CallGuest(ctx, SYM_Xml_ToTable, {0, g_scratch + kScratchTableRef, g_scratch + kScratchNodeRef});
     }
     Release(ctx, c);
     if (!node) return;
-    uint32_t entity = R32(e.object + kObjectEntity);
     CallGuest(ctx, SYM_Entity_Reset, {entity});
-    ForgetProperties(R32(entity + kEntityId));
+    ForgetProperties(e.entity_id);
+    NoteMapChanged();
+    if (!e.undoable || old == e.value) return;
+    Edit back = e;
+    back.value = old;
+    back.undoable = false;
+    std::string label = "Set " + e.key + " of " + GuestString(entity + kEntityName);
+    PushUndo(ctx, label, [back](PPCContext& ctx) { Apply(ctx, back); });
 }
 
 bool EnsureScratch() {
@@ -242,7 +270,6 @@ void Update(PPCContext& ctx, uint32_t object) {
         link_edits.swap(g_link_edits);
     }
     for (const Edit& e : edits) {
-        if (e.object != object) continue;
         Apply(ctx, e);
         g_stale = true;
     }
@@ -278,7 +305,7 @@ void TakeSnapshot() {
 
 void Queue(const Node& n, const Attribute& a, const char* value) {
     std::lock_guard lock(g_lock);
-    g_edits.push_back({g_view.object, n.table, n.path, a.key, value});
+    g_edits.push_back({g_view.entity_id, n.table, n.path, {}, a.key, value});
 }
 
 // an enemy's anchor fields (FirstAnchor, OnPlayerSeenAnchor1) name one of the level's anchors; AnchorGroupID does not
@@ -430,6 +457,16 @@ std::vector<XmlAttribute> fcip::editor::ReadProperties(PPCContext& ctx, uint32_t
         }
     }
     return out;
+}
+
+void fcip::editor::SetEntityProperty(uint32_t entity_id, const std::string& key, const std::string& value) {
+    Edit e{entity_id, 0, {}, {}, key, value};
+    for (size_t slash; (slash = e.key.find('/')) != std::string::npos;) {
+        e.names.push_back(e.key.substr(0, slash));
+        e.key.erase(0, slash + 1);
+    }
+    std::lock_guard lock(g_lock);
+    g_edits.push_back(std::move(e));
 }
 
 uint32_t fcip::editor::SelectedEntityId() {

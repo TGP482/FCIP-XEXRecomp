@@ -173,6 +173,28 @@ bool NearCamera(const View& v, const float p[3]) {
     return v.has_eye && dx * dx + dy * dy + dz * dz < kNamedWithin * kNamedWithin;
 }
 
+float PixelDistance(const View& v, ImVec2 m, const float a[3], const float b[3]) {
+    constexpr float kFar = 1e9f;
+    ImVec2 sa;
+    ImVec2 sb;
+    if (!ScreenLine(v, a, b, sa, sb)) return kFar;
+    float dx = sb.x - sa.x;
+    float dy = sb.y - sa.y;
+    float length = dx * dx + dy * dy;
+    float t = length > 0.0f ? ((m.x - sa.x) * dx + (m.y - sa.y) * dy) / length : 0.0f;
+    t = std::clamp(t, 0.0f, 1.0f);
+    return std::hypot(m.x - (sa.x + dx * t), m.y - (sa.y + dy * t));
+}
+
+bool MouseRay(const View& v, ImVec2 m, float origin[3], float dir[3]) {
+    if (v.frame.w <= 0.0f || v.frame.h <= 0.0f) return false;
+    if (!ViewRay((m.x - v.frame.x) / v.frame.w, (m.y - v.frame.y) / v.frame.h, origin, dir)) return false;
+    float length = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (length <= 0.0f) return false;
+    for (int i = 0; i < 3; i++) dir[i] /= length;
+    return true;
+}
+
 void AxesFromAngles(const float degrees[3], float axes[3][3]) {
     float sx = std::sin(degrees[0] * kRadians);
     float cx = std::cos(degrees[0] * kRadians);

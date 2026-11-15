@@ -15,6 +15,7 @@
 
 #include "common/panel_colors.h"
 #include "editor/tools.h"
+#include "leveleditor/markers.h"
 #include "leveleditor/mission.h"
 
 using namespace fcip::editor;
@@ -72,12 +73,6 @@ void SyncFields(const AiObject* o) {
 std::array<float, 3> Cursor() {
     State s = Read();
     return {s.cursor[0], s.cursor[1], s.cursor[2]};
-}
-
-std::string FormatVec3(const std::array<float, 3>& v) {
-    char text[64];
-    std::snprintf(text, sizeof(text), "%g,%g,%g", v[0], v[1], v[2]);
-    return text;
 }
 
 bool Matches(const AiObject& o) {
@@ -195,14 +190,53 @@ void DrawAddRows(const AiObject& o) {
     ImGui::EndDisabled();
 }
 
+bool IsArea(const AiObject& o) { return o.type == "Shape" || o.type == "AreaBox" || o.type == "AreaSphere"; }
+
+// the entities an area tells when something enters it (OnEnterArea), picked from the level's
+void DrawAreaEntities(const AiObject& o) {
+    ImGui::Separator();
+    ImGui::TextUnformatted("Tells:");
+    for (size_t i = 0; i < o.entities.size(); i++) {
+        ImGui::PushID(int(i));
+        if (ImGui::SmallButton("Remove")) {
+            std::vector<std::string> names = o.entities;
+            names.erase(names.begin() + std::ptrdiff_t(i));
+            SetAiEntities(o.node, names);
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(o.entities[i].c_str());
+        ImGui::PopID();
+    }
+    ImGui::SetNextItemWidth(-1);
+    if (!ImGui::BeginCombo("##tell", "Add an entity")) return;
+    std::set<std::string> names;
+    for (const ViewEntity& e : *ViewEntities()) {
+        if (!e.name.empty()) names.insert(e.name);
+    }
+    for (const std::string& name : names) {
+        if (!ImGui::Selectable(name.c_str())) continue;
+        std::vector<std::string> told = o.entities;
+        told.push_back(name);
+        SetAiEntities(o.node, told);
+    }
+    ImGui::EndCombo();
+}
+
+// the object and its points to the cursor
+void MoveToCursor(const AiObject& o) {
+    std::array<float, 3> to = Cursor();
+    PlaceAiObject(o.node, {to[0] - o.pos[0], to[1] - o.pos[1], to[2] - o.pos[2]}, {});
+}
+
 void DrawPicked(const AiObject& o) {
     ImGui::Separator();
     ImGui::Text("%s (%s)", o.name.c_str(), o.type.c_str());
     if (o.placed) {
-        if (ImGui::Button("Move to Cursor")) SetAiAttribute(o.node, {}, "Pos", FormatVec3(Cursor()));
+        if (ImGui::Button("Move to Cursor")) MoveToCursor(o);
         ImGui::SameLine();
     }
     if (ImGui::Button("Delete")) RemoveAiObject(o.node);
+    if (IsArea(o)) DrawAreaEntities(o);
     DrawAddRows(o);
     ImGui::Separator();
     ImGui::BeginChild("##ai_elements");

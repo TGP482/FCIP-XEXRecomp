@@ -34,6 +34,11 @@ void Prism(const View& v, const std::vector<std::array<float, 3>>& points, float
 void Label(const View& v, const float p[3], const char* text, ImU32 colour);
 bool NearCamera(const View& v, const float p[3]);  // close enough to be named
 
+// pixels from m to the line a to b on screen, a large number when it is behind the camera
+float PixelDistance(const View& v, ImVec2 m, const float a[3], const float b[3]);
+// the ray from the camera through m, dir normalised
+bool MouseRay(const View& v, ImVec2 m, float origin[3], float dir[3]);
+
 // the rotation the engine builds from an entity's angles in degrees (820BFE38): axes[i] is its local axis i
 void AxesFromAngles(const float degrees[3], float axes[3][3]);
 

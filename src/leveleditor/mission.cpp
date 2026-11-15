@@ -589,6 +589,31 @@ void RemoveAiObject(uint32_t object) {
     });
 }
 
+void SetAiPoints(uint32_t object, std::vector<std::array<float, 3>> points) {
+    QueueOn(object, "Reshape", [=](PPCContext& ctx) {
+        uint32_t list = ChildTagged(object, kPoints);
+        if (list) RemoveChild(ctx, object, list);
+        list = NewChild(ctx, object, kPoints);
+        for (const auto& p : points) {
+            if (uint32_t point = list ? NewChild(ctx, list, "Point") : 0) SetAttr(ctx, point, "Pos", FormatVec3(p));
+        }
+        // the campaign's areas start their points at Pos
+        if (!points.empty()) SetAttr(ctx, object, "Pos", FormatVec3(points.front()));
+    });
+}
+
+void SetAiEntities(uint32_t object, std::vector<std::string> names) {
+    QueueOn(object, "Set the entities of", [=](PPCContext& ctx) {
+        uint32_t list = ChildTagged(object, kEntities);
+        if (list) RemoveChild(ctx, object, list);
+        if (names.empty()) return;
+        list = NewChild(ctx, object, kEntities);
+        for (const std::string& name : names) {
+            if (uint32_t entity = list ? NewChild(ctx, list, kEntity) : 0) SetAttr(ctx, entity, "Name", name);
+        }
+    });
+}
+
 void PlaceAiObject(uint32_t object, std::array<float, 3> move, std::array<float, 3> turn) {
     QueueOn(object, "Move", [=](PPCContext& ctx) { ApplyPlacement(ctx, object, move, turn); });
 }

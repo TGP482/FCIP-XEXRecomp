@@ -97,7 +97,7 @@ Hit Nearest(const View& v, ImVec2 mouse) {
     return best;
 }
 
-uint32_t EntityById(uint32_t id) {
+uint32_t FindEntity(uint32_t id) {
     uint32_t found = 0;
     ForEachEntity([&](uint32_t entity) {
         if (R32(entity + kEntityId) == id) found = entity;
@@ -142,9 +142,11 @@ void DrawPicked(const View& v) {
     }
 }
 
+uint32_t EntityOfId(uint32_t entity_id) { return FindEntity(entity_id); }
+
 uint32_t EditorObjectOfEntity(PPCContext& ctx, uint32_t entity_id) {
     if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
-    uint32_t entity = g_scratch ? EntityById(entity_id) : 0;
+    uint32_t entity = g_scratch ? FindEntity(entity_id) : 0;
     return entity ? EditorObjectOf(ctx, entity) : 0;
 }
 

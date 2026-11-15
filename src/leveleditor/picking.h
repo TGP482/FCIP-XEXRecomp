@@ -19,5 +19,6 @@ void DrawPicked(const View& v);     // the picked mission object
 // editor thread
 void ApplyPick(PPCContext& ctx, uint32_t tool);  // the Edit Object tool's update (r3 the tool)
 uint32_t EditorObjectOfEntity(PPCContext& ctx, uint32_t entity_id);  // 0 for none
+uint32_t EntityOfId(uint32_t entity_id);  // 0 for none
 
 }  // namespace fcip::editor
