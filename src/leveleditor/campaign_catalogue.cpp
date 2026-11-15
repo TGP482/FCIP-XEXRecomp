@@ -58,15 +58,17 @@ constexpr ClassEntry kLogicObjects[] = {
     {"Waypoint", "Waypoint"},
 };
 
-// category captions by the editor's ObjectCategoryNames key
-struct CategoryCaption {
+// the editor's strings the solo editor replaces, by section and key of its string table
+struct Caption {
+    const char* section;
     const char* key;
     const char* caption;
 };
-constexpr CategoryCaption kCategoryCaptions[] = {
-    {"Vehicles", "{DPLR} VEHICLES AND OBJECTS (1/8)"},
-    {"Weapons", "{DPLR} ITEMS AND LOGIC (2/8)"},
-    {"MultiplayerItems", "{DPLR} ENEMIES (3/8)"},
+constexpr Caption kCaptions[] = {
+    {"ObjectCategoryNames", "Vehicles", "{DPLR} VEHICLES AND OBJECTS (1/8)"},
+    {"ObjectCategoryNames", "Weapons", "{DPLR} ITEMS AND LOGIC (2/8)"},
+    {"ObjectCategoryNames", "MultiplayerItems", "{DPLR} ENEMIES (3/8)"},
+    {"P_MapManager", "B_TitleButton", "MAP MANAGER SOLO"},
 };
 // the multiplayer list's keys end in a two letter team suffix, which its tool strips before spawning
 constexpr const char* kTeamSuffix = "_E";
@@ -269,9 +271,9 @@ void FillCatalogue(PPCContext& ctx) {
     for (const ClassEntry& p : kLogicObjects) AddCatalogueEntry(ctx, List(kWeaponList), p.cls, p.caption, "");
 }
 
-const char* CategoryCaptionFor(const std::string& key) {
-    for (const CategoryCaption& c : kCategoryCaptions) {
-        if (key == c.key) return c.caption;
+const char* CaptionFor(const std::string& section, const std::string& key) {
+    for (const Caption& c : kCaptions) {
+        if (section == c.section && key == c.key) return c.caption;
     }
     return nullptr;
 }
@@ -307,10 +309,7 @@ PPC_FUNC(sub_820F1200) {
 PPC_FUNC(sub_8211B9A8) {
     if (!fcip::editor::g_solo) return __imp__sub_8211B9A8(ctx, base);
     uint32_t out = uint32_t(ctx.r[3]);
-    const char* caption = nullptr;
-    if (GuestString(uint32_t(ctx.r[5])) == "ObjectCategoryNames") {
-        caption = CategoryCaptionFor(GuestString(uint32_t(ctx.r[6])));
-    }
+    const char* caption = CaptionFor(GuestString(uint32_t(ctx.r[5])), GuestString(uint32_t(ctx.r[6])));
     __imp__sub_8211B9A8(ctx, base);
     if (caption) CallGuest(ctx, SYM_WString_Assign, {out, fcip::ui::Text(caption)});
 }

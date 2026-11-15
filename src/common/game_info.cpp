@@ -2,9 +2,16 @@
 #include "common/input.h"
 #include "common/keys.h"
 #include "common/menu.h"
+#include "common/panel_colors.h"
 #include "common/settings.h"
 
 namespace {
+
+// an F10 panel colour as the compiler window's 0xFFRRGGBB
+constexpr uint32_t Argb(const ImVec4& c) {
+    auto byte = [](float v) { return uint32_t(v * 255.0f + 0.5f); };
+    return 0xFF000000u | byte(c.x) << 16 | byte(c.y) << 8 | byte(c.z);
+}
 
 void Init() {
     if (fcip::g_editor_launch) fcip::g_editor_launch();
@@ -31,5 +38,12 @@ const app::GameInfo app::kGame = {
     .ui = fcip::DrawUi,
     .pad = fcip::GamePad,
     .rumble = fcip::GameRumble,
-    .compiler_colours = {},
+    .compiler_colours = {
+        .background = Argb(fcip::kPanelBg),
+        .text = Argb(fcip::kText),
+        .dim = Argb(fcip::kDim),
+        .bar_empty = Argb(fcip::kButton),
+        .bar_full = Argb(fcip::kButtonHovered),
+        .lit_text = Argb(fcip::kText),
+    },
 };
