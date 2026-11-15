@@ -15,6 +15,7 @@
 
 #include "common/panel_colors.h"
 #include "editor/tools.h"
+#include "leveleditor/fields.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mission.h"
 
@@ -190,6 +191,52 @@ void DrawAddRows(const AiObject& o) {
     ImGui::EndDisabled();
 }
 
+// what the 3D engine reads of a vis area or portal as a level starts (default.xex 825FBBC8, ige 823CF010), with the
+// value shown when the file has none; Name and Height must be there or it makes nothing
+struct VisKey {
+    const char* key;
+    FieldKind kind;
+    const char* absent;
+};
+constexpr VisKey kVisKeys[] = {
+    {"Height", FieldKind::Float, "0"},          {"AmbientColor", FieldKind::Colour, "0,0,0"},
+    {"AffectedBySun", FieldKind::Bool, "0"},    {"SkyOnly", FieldKind::Bool, "0"},
+    {"TerrainVisible", FieldKind::Bool, "0"},   {"WaterVisible", FieldKind::Bool, "0"},
+    {"UseGlowParams", FieldKind::Bool, "0"},    {"GlowBrightness", FieldKind::Int, "0"},
+    {"GlowIntensity", FieldKind::Float, "0"},   {"GlowBias", FieldKind::Float, "0"},
+    {"LoadingDepth", FieldKind::Int, "4"},
+};
+
+bool IsVisArea(const AiObject& o) { return o.type == "VisArea" || o.type == "Portal"; }
+
+std::string Lowered(std::string text) {
+    for (char& c : text) c = char(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    return text;
+}
+
+// the engine makes a portal of any of them whose name holds "portal", whatever its Type
+void DrawVisAreaFlags(const AiObject& o) {
+    ImGui::Separator();
+    bool portal = Lowered(o.name).find("portal") != std::string::npos;
+    if (portal != (o.type == "Portal")) {
+        ImGui::PushStyleColor(ImGuiCol_Text, fcip::kHeading);
+        ImGui::TextWrapped("The game makes this a %s: it reads a portal from \"portal\" in the name, not the Type.",
+                           portal ? "portal" : "vis area");
+        ImGui::PopStyleColor();
+    }
+    float label_w = ImGui::GetFontSize() * 9;
+    for (const VisKey& k : kVisKeys) {
+        std::string value = AttributeOf(o, k.key);
+        if (value.empty()) value = k.absent;
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(k.key);
+        ImGui::SameLine(label_w);
+        ImGui::SetNextItemWidth(-1);
+        std::string edited;
+        if (DrawField(k.key, k.kind, value, edited)) SetAiAttribute(o.node, {}, k.key, edited);
+    }
+}
+
 bool IsArea(const AiObject& o) { return o.type == "Shape" || o.type == "AreaBox" || o.type == "AreaSphere"; }
 
 // the entities an area tells when something enters it (OnEnterArea), picked from the level's
@@ -237,6 +284,7 @@ void DrawPicked(const AiObject& o) {
     }
     if (ImGui::Button("Delete")) RemoveAiObject(o.node);
     if (IsArea(o)) DrawAreaEntities(o);
+    if (IsVisArea(o)) DrawVisAreaFlags(o);
     DrawAddRows(o);
     ImGui::Separator();
     ImGui::BeginChild("##ai_elements");
