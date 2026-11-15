@@ -2,13 +2,16 @@
 // 4x4 sectors, so it sizes its height undo snapshot, its paint layer table at 0x8295B010 and its paint undo copies for
 // 16 and indexes them by sector number; a campaign level has 16x16. Each count of 16 becomes the level's, the layer
 // table moves to one sized for it ([[hook]] in config/leveleditor.toml), and the solo editor leaves a level with its
-// undo stack, whose records were sized for that level.
+// undo stack, whose records were sized for that level. A campaign level's sectors keep their own colour maps and
+// surface types: a terrain edit rebuilds a sector from the editor's three map textures by height (820D5A08, 820D5EF8),
+// which a campaign level has none of, so only its painted texels change their surface type.
 #include <cstdint>
 #include <cstring>
 
 #include "editor/tools.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
+#include "leveleditor/campaign_levels.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
@@ -18,6 +21,11 @@ using namespace kernel;
 namespace {
 
 constexpr uint32_t kLayerBytes = 0x441;  // 33x33 texture numbers a sector, 0xFF unpainted
+constexpr uint32_t kLayerSide = 33;
+constexpr uint8_t kUnpainted = 0xFF;
+// a terrain sector: its number and its render data
+constexpr uint32_t kSectorNumber = 0x78;  // int16
+constexpr uint32_t kSectorRender = 0x7C;
 // the paint undo record: vtable, then its copy of every layer
 constexpr uint32_t kRecordCopies = 0x04;
 // the guest allocator's tags as the paint undo frees (82111AD4)
@@ -47,6 +55,23 @@ uint32_t PaintLayers() {
 
 uint32_t LayersEnd(uint64_t table) { return uint32_t(table) + SectorCount() * 4; }
 
+bool CampaignTerrain() { return fcip::editor::g_solo && !fcip::editor::CampaignLevel().empty(); }
+
+// 820D5EF8 for a campaign level: each painted texel's number becomes its surface type, the rest keep theirs
+void PaintSurfaceTypes(PPCContext& ctx, uint32_t sector) {
+    int16_t number = int16_t(R16(sector + kSectorNumber));
+    uint32_t render = R32(sector + kSectorRender);
+    uint32_t layer = R32(PaintLayers() + uint32_t(number) * 4);
+    for (uint32_t row = 0; row < kLayerSide; row++) {
+        for (uint32_t column = 0; column < kLayerSide; column++) {
+            uint8_t type = R8(layer + row * kLayerSide + column);
+            if (type == kUnpainted) continue;
+            uint32_t cell = uint32_t(CallGuest(ctx, SYM_Terrain_Cell, {render, row, column}));
+            CallGuest(ctx, SYM_Terrain_SetSurfaceType, {cell, type});
+        }
+    }
+}
+
 }  // namespace
 
 // the per sector tables' bytes, r6 of the allocation: height undo snapshot (820D2DB0), paint undo copies (820D22AC)
@@ -74,6 +99,19 @@ void PaintLayersEndR11(PPCContext& ctx, uint8_t*) { ctx.r[11] = LayersEnd(ctx.r[
 void TerrainCeiling(PPCContext& ctx, uint8_t*) { ctx.f[13] = fcip::editor::MaxSetHeight(); }
 
 PPC_EXTERN_FUNC(__imp__sub_82112FD8);
+PPC_EXTERN_FUNC(__imp__sub_820D5EF8);
+PPC_EXTERN_FUNC(__imp__sub_820D5A08);
+
+// a sector's surface types from its paint layer (r3 the sector), unpainted texels by height
+PPC_FUNC(sub_820D5EF8) {
+    if (!CampaignTerrain()) return __imp__sub_820D5EF8(ctx, base);
+    PaintSurfaceTypes(ctx, uint32_t(ctx.r[3]));
+}
+
+// a sector's colour map from the editor's three map textures (r3 the sector); a campaign level keeps its own
+PPC_FUNC(sub_820D5A08) {
+    if (!CampaignTerrain()) __imp__sub_820D5A08(ctx, base);
+}
 
 // the paint undo (r3 the record) as 82111A48 does it, for the level's count of layers: copied back, every sector's
 // textures rebuilt, the copies freed; the guest's loop copies four layers a turn, which fits only 16

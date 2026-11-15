@@ -55,6 +55,8 @@ Game_LocalPlayer = 0x8213A068  # (game)
 Undo_Pop = 0x8210DDD8                 # the newest record, 0 when empty
 TerrainPaint_RebuildAll = 0x820D4FE8  # every sector's textures from the paint layers
 Memory_Free = 0x8230F208              # (heap tag, line, pointer)
+Terrain_Cell = 0x8234F5E0             # (sector render data, row, column) a heightmap cell
+Terrain_SetSurfaceType = 0x82357FA8   # (cell, surface type)
 # a campaign level saved as a custom level (custom_save.cpp)
 Engine_LevelFilePath = 0x823365E8   # (3D engine, name, 0) the path of a file in the level's folder
 File_Open = 0x8234EF80              # (file, packs, path, mode, 0, 0); mode 2 writes
