@@ -1,9 +1,11 @@
-// a campaign level's mission XML and LevelData.xml, kept after it loads for its AI objects and the save (mission.cpp)
+// a campaign level's mission XML and LevelData.xml, kept after it loads for its AI objects, entity layers and the save
+// (mission.cpp)
 #pragma once
 #include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 struct PPCContext;
@@ -43,6 +45,7 @@ inline std::string AttributeOf(const AiObject& o, const char* key) {
 struct AiObjects {
     uint32_t generation = 0;
     std::vector<AiObject> objects;
+    std::unordered_map<uint32_t, std::string> layers;  // each mission entity's Layer, by EntityId
 };
 
 // editor thread
@@ -58,6 +61,7 @@ void UpdateMission(PPCContext& ctx);                  // each frame: queued edit
 // any thread
 std::shared_ptr<const AiObjects> ReadAiObjects();
 std::vector<std::string> AiObjectNames(const std::string& type);  // sorted
+std::string LayerOf(uint32_t entity_id);  // empty for an entity the mission does not place
 
 // window thread: edits the editor thread applies at its next update
 void SetAiAttribute(uint32_t object, std::vector<int> path, std::string key, std::string value);

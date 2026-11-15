@@ -11,6 +11,7 @@
 #include "kernel/memory.h"
 #include "leveleditor/archetypes.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/mission.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
@@ -177,8 +178,12 @@ PPC_FUNC(sub_821043A0) {
     uint32_t first = objects ? R32(objects + kNodeChildFirst) : 0;
     uint32_t last = objects ? R32(objects + kNodeChildLast) : 0;
     if (number == before || !first || last <= first) return;
-    g_saved[R32(entity + kEntityId)] = {number, R32(last - 4)};
-    SaveArchetype(ctx, entity, R32(last - 4));
+    uint32_t node = R32(last - 4);
+    g_saved[R32(entity + kEntityId)] = {number, node};
+    SaveArchetype(ctx, entity, node);
+    // the editor's writer drops the mission's Layer
+    std::string layer = LayerOf(R32(entity + kEntityId));
+    if (!layer.empty() && EnsureScratch()) SetAttr(ctx, node, "Layer", layer);
 }
 
 // a mission's Objects, entity by entity; then their links, now that every target has its number

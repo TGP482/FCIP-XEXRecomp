@@ -110,6 +110,24 @@ void DrawOpenLevel() {
     ImGui::EndMenu();
 }
 
+// the mission's entity layers, shown or hidden in the editor view: as menu items or as the dock's checkboxes
+void DrawLayerToggles(bool menu) {
+    std::vector<std::string> layers = ViewLayers();
+    if (layers.empty()) {
+        ImGui::TextDisabled("No layers in this level");
+        return;
+    }
+    if (menu ? ImGui::MenuItem("Show All") : ImGui::Button("Show All")) ShowAllLayers(true);
+    if (!menu) ImGui::SameLine();
+    if (menu ? ImGui::MenuItem("Hide All") : ImGui::Button("Hide All")) ShowAllLayers(false);
+    if (menu) ImGui::Separator();
+    for (const std::string& layer : layers) {
+        bool shown = LayerShown(layer);
+        bool clicked = menu ? ImGui::MenuItem(layer.c_str(), nullptr, &shown) : ImGui::Checkbox(layer.c_str(), &shown);
+        if (clicked) ShowLayer(layer, shown);
+    }
+}
+
 // OPEN A LEVEL's list over the level manager; true while it takes the mouse
 bool DrawLevelList() {
     for (const auto& [col, color] : kPanelColors) ImGui::PushStyleColor(col, color);
@@ -164,6 +182,10 @@ void DrawMenuBar(const State& s) {
             ImGui::Separator();
             for (int c = 0; c < kViewCategoryCount; c++) {
                 ImGui::MenuItem(ViewCategoryName(c), nullptr, &g_view_shown[c]);
+            }
+            if (ImGui::BeginMenu("Layers")) {
+                DrawLayerToggles(true);
+                ImGui::EndMenu();
             }
         }
         ImGui::EndMenu();
@@ -430,6 +452,8 @@ void DrawEditorSettings(const State& s) {
     if (!editor::g_solo) return;
     ImGui::SeparatorText("Editor View");
     for (int c = 0; c < kViewCategoryCount; c++) ImGui::Checkbox(ViewCategoryName(c), &g_view_shown[c]);
+    ImGui::SeparatorText("Layers");
+    DrawLayerToggles(false);
 }
 
 void DrawBudget(const std::vector<Category>& catalogue) {

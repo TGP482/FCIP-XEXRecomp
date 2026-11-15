@@ -37,6 +37,7 @@ struct ViewEntity {
     bool has_box = false;   // the world box the engine tests it with, as its triggers and physics see it
     float box_min[3] = {};
     float box_max[3] = {};
+    std::string layer;  // the mission's Layer, empty for none
     std::vector<XmlAttribute> properties;  // Properties then PropertiesInstance, for the classes a category reads
 };
 std::shared_ptr<const std::vector<ViewEntity>> ViewEntities();  // any thread
@@ -50,6 +51,13 @@ void UpdateSectorGrid(PPCContext& ctx);  // culling_markers.cpp
 void ForgetSectorGrid();
 
 void DrawMarkers();  // window thread, in the ImGui frame
+
+// the mission's entity layers; an entity in a hidden one is left out of every category from the next frame
+std::vector<std::string> ViewLayers();  // sorted, kNoLayer last when some entity has none
+bool LayerShown(const std::string& layer);
+void ShowLayer(const std::string& layer, bool shown);
+void ShowAllLayers(bool shown);
+inline constexpr const char* kNoLayer = "(no layer)";
 
 // each category's drawing, window thread
 void DrawPlayerStart(const View& v);  // player_markers.cpp

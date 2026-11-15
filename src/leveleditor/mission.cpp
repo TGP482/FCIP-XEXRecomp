@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <mutex>
 #include <set>
@@ -25,6 +26,7 @@ namespace {
 
 constexpr const char* kObjects = "Objects";
 constexpr const char* kObject = "Object";
+constexpr const char* kEntity = "Entity";
 constexpr const char* kPoints = "Points";
 constexpr const char* kEntities = "Entities";
 
@@ -161,22 +163,26 @@ AiObject ReadObject(uint32_t node) {
     return o;
 }
 
-void Publish(std::vector<AiObject> objects) {
+void Publish(AiObjects next) {
     std::lock_guard lock(g_lock);
-    auto next = std::make_shared<AiObjects>();
-    next->generation = g_snapshot->generation + 1;
-    next->objects = std::move(objects);
-    g_snapshot = std::move(next);
+    next.generation = g_snapshot->generation + 1;
+    g_snapshot = std::make_shared<AiObjects>(std::move(next));
 }
 
 void Refresh() {
-    std::vector<AiObject> objects;
+    AiObjects next;
     uint32_t parent = ObjectsNode();
     for (uint32_t i = 0; parent && i < ChildCount(parent); i++) {
         uint32_t node = ChildAt(parent, i);
-        if (Tag(node) == kObject) objects.push_back(ReadObject(node));
+        std::string tag = Tag(node);
+        if (tag == kObject) next.objects.push_back(ReadObject(node));
+        if (tag != kEntity) continue;
+        std::vector<XmlAttribute> attributes = Attributes(node);
+        std::string layer = Find(attributes, "Layer");
+        uint32_t id = uint32_t(std::strtoul(Find(attributes, "EntityId").c_str(), nullptr, 10));
+        if (!layer.empty()) next.layers[id] = layer;
     }
-    Publish(std::move(objects));
+    Publish(std::move(next));
 }
 
 void SetAttr(PPCContext& ctx, uint32_t node, const std::string& key, const std::string& value) {
@@ -299,7 +305,7 @@ void ForgetMission(PPCContext& ctx) {
     Release(ctx, g_level_data);
     if (!g_mission) return;
     Release(ctx, g_mission);
-    Publish({});
+    Publish(AiObjects{});
 }
 
 uint32_t MissionToSave(PPCContext& ctx, uint32_t mission_object) {
@@ -338,6 +344,12 @@ void UpdateMission(PPCContext& ctx) {
 std::shared_ptr<const AiObjects> ReadAiObjects() {
     std::lock_guard lock(g_lock);
     return g_snapshot;
+}
+
+std::string LayerOf(uint32_t entity_id) {
+    std::shared_ptr<const AiObjects> ai = ReadAiObjects();
+    auto found = ai->layers.find(entity_id);
+    return found == ai->layers.end() ? std::string() : found->second;
 }
 
 std::vector<std::string> AiObjectNames(const std::string& type) {
