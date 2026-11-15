@@ -19,7 +19,7 @@ enum ViewCategory : int {
     kViewCulling,
     kViewSounds,
     kViewLights,
-    kViewLogic,
+    kViewGameplay,
     kViewAi,
     kViewCategoryCount
 };
@@ -63,6 +63,8 @@ bool IsAiEntity(const std::string& cls);  // any thread
 void DrawSounds(const View& v);       // sound_markers.cpp
 void DrawLights(const View& v);
 bool IsSoundOrLight(const std::string& cls);  // any thread
+void DrawGameplay(const View& v);     // gameplay_markers.cpp
+bool IsGameplay(const std::string& cls);  // any thread
 void DrawArea(const View& v, const AiObject& area, ImU32 colour);  // a Shape, AreaBox or AreaSphere (area_markers.cpp)
 // the areas naming the entity, each with a line to it
 void DrawEntityAreas(const View& v, const std::string& name, const float pos[3], ImU32 colour);

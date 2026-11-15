@@ -1,19 +1,15 @@
 // ige.xex, the solo level editor: the editor view shows what the game uses to run a level, which has no model of its
 // own. Each editing frame the entities are read on the editor's thread (class, name, place, the box the engine tests
 // them with, the Properties of the classes a category needs); the window thread draws each shown category over the
-// frame. Waypoints get a square and their name.
+// frame.
 #include "leveleditor/markers.h"
 
-#include <algorithm>
 #include <iterator>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-#include <imgui.h>
-
-#include "common/panel_colors.h"
 #include "kernel/memory.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/object_panel.h"
@@ -24,12 +20,10 @@ using namespace fcip::editor;
 
 namespace {
 
-constexpr const char* kCategoryNames[] = {"Player Start", "Triggers",           "Sequences",     "Culling",
-                                          "Sounds",       "Lights and Effects", "Logic Objects", "AI Objects"};
+constexpr const char* kCategoryNames[] = {"Player Start", "Triggers",           "Sequences", "Culling",
+                                          "Sounds",       "Lights and Effects", "Gameplay",  "AI Objects"};
 static_assert(std::size(kCategoryNames) == kViewCategoryCount);
 
-// the catalogue's logic classes the later categories do not draw yet
-constexpr const char* kLogicClasses[] = {"Waypoint"};
 constexpr int kPropertyReadsPerFrame = 32;  // a level's first frames read them in turns
 
 constexpr float kMaxBoxSide = 10000.0f;  // the engine drops an area this big (1e8 squared)
@@ -73,14 +67,9 @@ ViewEntity ReadEntity(PPCContext& ctx, uint32_t entity) {
     return e;
 }
 
-template <size_t N>
-bool IsOneOf(const std::string& cls, const char* const (&classes)[N]) {
-    return std::find(std::begin(classes), std::end(classes), cls) != std::end(classes);
-}
-
 // the classes whose Properties a category shows
 bool WantsProperties(const std::string& cls) {
-    return IsTrigger(cls) || IsAiEntity(cls) || IsSoundOrLight(cls) || cls == "ViewDist";
+    return IsTrigger(cls) || IsAiEntity(cls) || IsSoundOrLight(cls) || IsGameplay(cls) || cls == "ViewDist";
 }
 
 // read once per entity, a few each frame
@@ -92,15 +81,6 @@ void LatchProperties(PPCContext& ctx, uint32_t entity, ViewEntity& e, int& reads
         found = g_properties.emplace(e.id, ReadProperties(ctx, entity)).first;
     }
     e.properties = found->second;
-}
-
-void DrawLogicMarkers(const View& v) {
-    ImU32 colour = ImGui::GetColorU32(fcip::kHeading);
-    for (const ViewEntity& e : *ViewEntities()) {
-        if (!IsOneOf(e.cls, kLogicClasses)) continue;
-        Square(v, e.pos, colour);
-        Label(v, e.pos, e.name.c_str(), colour);
-    }
 }
 
 }  // namespace
@@ -149,12 +129,12 @@ void DrawMarkers() {
     View view;
     if (!BeginView(view)) return;
     if (g_view_shown[kViewAi]) DrawAi(view);
-    if (g_view_shown[kViewLogic]) DrawLogicMarkers(view);
     if (g_view_shown[kViewTriggers]) DrawTriggers(view);
     if (g_view_shown[kViewSequences]) DrawSequences(view);
     if (g_view_shown[kViewCulling]) DrawCulling(view);
     if (g_view_shown[kViewSounds]) DrawSounds(view);
     if (g_view_shown[kViewLights]) DrawLights(view);
+    if (g_view_shown[kViewGameplay]) DrawGameplay(view);
     if (g_view_shown[kViewPlayerStart]) DrawPlayerStart(view);
     EndView(view);
 }

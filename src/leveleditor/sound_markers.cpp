@@ -2,8 +2,9 @@
 // SoundSpot's emitter plays from where it stands; its InnerRadius and OuterRadius are not read by its script, the
 // fRollOff distances are, when not -1 (the sound event's own otherwise). A ProximitySoundSpot plays while the player is
 // in the box SetLocalBBox gives it from OuterRadius. AreaSound and AreaSoundTriggerKit play from the areas naming
-// them. SoundSupressor and SonicAlarm reach fRadius and DamageRadius. A DynamicLight lights AttenuationRadius around
-// it (SetRadius) in clrDiffuse; a ParticleEffect spawns its ParticlesSystem effect where it stands.
+// them, VSAreaModifier changes a volumetric emitter from them. SoundSupressor and SonicAlarm reach fRadius and
+// DamageRadius. A DynamicLight lights AttenuationRadius around it (SetRadius) in clrDiffuse; a ParticleEffect spawns
+// its ParticlesSystem effect where it stands.
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -20,7 +21,8 @@ namespace {
 
 constexpr const char* kSoundClasses[] = {"SoundSpot",      "ProximitySoundSpot", "AreaSound",
                                          "AreaSoundTriggerKit", "CrazyFollowerSound", "SoundSupressor",
-                                         "BeaconEmitter",  "SonicAlarm",         "SonicAlarmEmitter"};
+                                         "BeaconEmitter",  "SonicAlarm",         "SonicAlarmEmitter",
+                                         "VSAreaModifier"};
 constexpr const char* kLightClasses[] = {"DynamicLight", "ParticleEffect"};
 // SoundSpot's distances, in its script's order
 constexpr const char* kRollOffs[] = {"fRollOff1_Saturation", "fRollOff2_Background", "fRollOff3_Transition",
@@ -62,7 +64,8 @@ void DrawSound(const View& v, const ViewEntity& e, const std::unordered_map<std:
         }
     }
     if (e.cls == "ProximitySoundSpot" && e.has_box) AxisBox(v, e.box_min, e.box_max, kSoundRangeColour);
-    if (e.cls == "AreaSound" || e.cls == "AreaSoundTriggerKit") DrawEntityAreas(v, e.name, e.pos, kSoundRangeColour);
+    bool area = e.cls == "AreaSound" || e.cls == "AreaSoundTriggerKit" || e.cls == "VSAreaModifier";
+    if (area) DrawEntityAreas(v, e.name, e.pos, kSoundRangeColour);
     if (e.cls == "SoundSupressor") Circle(v, e.pos, FloatOf(e, "fRadius", 0.0f), kSoundRangeColour);
     if (e.cls == "SonicAlarm") {
         Circle(v, e.pos, FloatOf(e, "DamageRadius", 0.0f), kSoundRangeColour);
