@@ -1,7 +1,8 @@
 // ige.xex: the Add Object tool's budgets follow the level's sectors. Each category caps its objects at a constant sized
 // for the map editor's 4x4 sector templates (vehicles 12, weapons and items 50, brushes 300, trees 800 ...), both when
 // an object is placed and when a level's entities become editor objects (820F70F0). A campaign level has 16x16
-// sectors, so every cap grows by the level's sectors over a template's ([[hook]]s in config/leveleditor.toml).
+// sectors, so every cap grows by the level's sectors over a template's ([[hook]]s in config/leveleditor.toml). A new
+// level from a template keeps its 4x4 sectors but gets a campaign level's caps.
 #include <algorithm>
 #include <cstdint>
 
@@ -15,6 +16,7 @@ using namespace kernel;
 namespace {
 
 constexpr uint32_t kTemplateSectors = 16;
+constexpr uint32_t kCampaignSectors = 16 * 16;
 constexpr uint32_t kRetrievalStations = 6;
 
 uint32_t Scale() { return uint32_t(fcip::editor::BudgetScale()); }
@@ -24,7 +26,7 @@ uint32_t Scale() { return uint32_t(fcip::editor::BudgetScale()); }
 int fcip::editor::BudgetScale() {
     if (!g_solo) return 1;
     uint32_t side = R32(SYM_Terrain_SectorsPerSide);
-    return int(std::max(side * side / kTemplateSectors, 1u));
+    return int(std::max(side * side, kCampaignSectors) / kTemplateSectors);
 }
 
 // a count where its budget is compared, r11: in a template's units, so count < cap * scale stays exact
