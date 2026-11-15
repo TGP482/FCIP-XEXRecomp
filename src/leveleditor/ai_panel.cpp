@@ -283,6 +283,11 @@ void DrawPicked(const AiObject& o) {
         ImGui::SameLine();
     }
     if (ImGui::Button("Delete")) RemoveAiObject(o.node);
+    // the game starts the player at the first Respawn
+    if (o.type == "Respawn") {
+        ImGui::SameLine();
+        if (ImGui::Button("Make Player Start")) MakeFirstOfType(o.node);
+    }
     if (IsArea(o)) DrawAreaEntities(o);
     if (IsVisArea(o)) DrawVisAreaFlags(o);
     DrawAddRows(o);

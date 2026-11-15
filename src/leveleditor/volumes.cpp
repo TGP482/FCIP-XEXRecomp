@@ -1,7 +1,8 @@
 // ige.xex, the solo level editor: what the picked object's volume is made of, dragged in the view. A box entity's
-// Dim values (SetLocalBBox(-Dim/2, Dim/2) in its script), an AreaBox's Width, Length and Height, an AreaSphere's
-// Radius and an area's points and Height (area_markers.cpp has how the engine reads them). A point drags on its own
-// height, a mid point handle adds a point there, Alt and a click removes one. Each drag is one step of undo.
+// Dim values (SetLocalBBox(-Dim/2, Dim/2) in its script), a radius entity's radius, an AreaBox's Width, Length and
+// Height, an AreaSphere's Radius and an area's points and Height (area_markers.cpp has how the engine reads them). A
+// point drags on its own height, a mid point handle adds a point there, Alt and a click removes one. Each drag is
+// one step of undo.
 #include "leveleditor/volumes.h"
 
 #include <algorithm>
@@ -52,13 +53,23 @@ constexpr BoxKeys kBoxKeys[] = {
     {"AutomaticDoor1Piece", {"BBOX_Size/X", "BBOX_Size/Y", "BBOX_Size/Z"}, nullptr},
 };
 
-enum class Shape { None, EntityBox, AreaBox, Sphere, Points };
+// an entity class whose script reaches as far as one of its Properties
+struct RadiusKey {
+    const char* cls;
+    const char* key;
+};
+constexpr RadiusKey kRadiusKeys[] = {
+    {"CreatureGeneratorSpawnSpot", "fSpawnRadius"},
+};
+
+enum class Shape { None, EntityBox, EntityRadius, AreaBox, Sphere, Points };
 
 // the picked object's volume as the snapshots have it
 struct Volume {
     Shape shape = Shape::None;
     uint32_t entity_id = 0;
     const BoxKeys* keys = nullptr;
+    const char* radius_key = nullptr;
     uint32_t object = 0;
     Vec centre{};
     float axes[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
@@ -113,12 +124,27 @@ const BoxKeys* KeysOf(const std::string& cls) {
     return nullptr;
 }
 
+bool RadiusVolume(const ViewEntity& e, Volume& out) {
+    for (const RadiusKey& k : kRadiusKeys) {
+        if (e.cls != k.cls) continue;
+        out.shape = Shape::EntityRadius;
+        out.entity_id = e.id;
+        out.radius_key = k.key;
+        out.centre = {e.pos[0], e.pos[1], e.pos[2]};
+        out.size[0] = std::strtof(PropertyOf(e, k.key).c_str(), nullptr);
+        return true;
+    }
+    return false;
+}
+
 bool EntityVolume(Volume& out) {
     uint32_t id = SelectedEntityId();
     for (const ViewEntity& e : *ViewEntities()) {
         if (!id || e.id != id) continue;
+        if (e.properties.empty()) return false;
+        if (RadiusVolume(e, out)) return true;
         const BoxKeys* keys = KeysOf(e.cls);
-        if (!keys || e.properties.empty()) return false;
+        if (!keys) return false;
         out.shape = Shape::EntityBox;
         out.entity_id = id;
         out.keys = keys;
@@ -198,7 +224,8 @@ std::vector<Handle> HandlesOf(const Volume& v) {
             handles.push_back(SizeHandle(v, 2, v.centre, v.size[2], 1.0f));
             break;
         }
-        case Shape::Sphere: handles.push_back(SizeHandle(v, 0, v.centre, v.size[0], 1.0f)); break;
+        case Shape::Sphere:
+        case Shape::EntityRadius: handles.push_back(SizeHandle(v, 0, v.centre, v.size[0], 1.0f)); break;
         case Shape::Points: {
             Vec middle = Centroid(v.points);
             middle[2] = v.bottom;
@@ -314,6 +341,7 @@ void Commit() {
         case Shape::EntityBox: CommitEntity(v, size); break;
         case Shape::AreaBox: SetAiAttribute(v.object, {}, kAreaBoxKeys[axis], Format(size[size_t(axis)])); break;
         case Shape::Sphere: SetAiAttribute(v.object, {}, "Radius", Format(size[0])); break;
+        case Shape::EntityRadius: SetEntityProperty(v.entity_id, v.radius_key, Format(size[0])); break;
         case Shape::Points:
             if (g_drag.handle.kind == Kind::Size) SetAiAttribute(v.object, {}, "Height", Format(size[2]));
             else SetAiPoints(v.object, DraggedPoints());

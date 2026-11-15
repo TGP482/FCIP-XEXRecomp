@@ -394,6 +394,21 @@ void Reinsert(PPCContext& ctx, uint32_t parent, uint32_t node, uint32_t index) {
     }
 }
 
+// the child at from moved to to among parent's children, the ones between shifted along
+void MoveSlot(uint32_t parent, uint32_t from, uint32_t to) {
+    uint32_t first = R32(parent + kNodeChildFirst);
+    uint32_t moved = R32(first + from * 4);
+    while (from > to) {
+        W32(first + from * 4, R32(first + (from - 1) * 4));
+        from--;
+    }
+    while (from < to) {
+        W32(first + from * 4, R32(first + (from + 1) * 4));
+        from++;
+    }
+    W32(first + to * 4, moved);
+}
+
 uint32_t IndexOf(uint32_t parent, uint32_t child) {
     for (uint32_t i = 0; i < ChildCount(parent); i++) {
         if (ChildAt(parent, i) == child) return i;
@@ -585,6 +600,38 @@ void SetAiPoints(uint32_t object, std::vector<std::array<float, 3>> points) {
         }
         // the campaign's areas start their points at Pos
         if (!points.empty()) SetAttr(ctx, object, "Pos", FormatVec3(points.front()));
+    });
+}
+
+void AddAiAction(uint32_t object, std::string tag, std::vector<XmlAttribute> attributes) {
+    QueueOn(object, "Add " + tag + " to", [=](PPCContext& ctx) {
+        uint32_t action = NewChild(ctx, object, tag);
+        for (const XmlAttribute& a : attributes) {
+            if (action) SetAttr(ctx, action, a.key, a.value);
+        }
+    });
+}
+
+void MakeFirstOfType(uint32_t object) {
+    Queue([=](PPCContext& ctx) {
+        uint32_t objects = ObjectsNode();
+        if (!IsAiObject(object)) return;
+        std::string type = Find(Attributes(object), "Type");
+        uint32_t first = 0;
+        for (uint32_t i = 0; i < ChildCount(objects) && !first; i++) {
+            uint32_t node = ChildAt(objects, i);
+            if (Tag(node) == kObject && Find(Attributes(node), "Type") == type) first = node;
+        }
+        if (!first || first == object) return;
+        uint32_t from = IndexOf(objects, object);
+        uint32_t to = IndexOf(objects, first);
+        MoveSlot(objects, from, to);
+        g_stale = true;
+        NoteMapChanged();
+        PushUndo(ctx, Label("Make first", object), [objects, from, to](PPCContext&) {
+            MoveSlot(objects, to, from);
+            g_stale = true;
+        });
     });
 }
 

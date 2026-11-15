@@ -1,5 +1,5 @@
-// event links edited in the solo editor: Shift and a drag from the picked entity to another opens a window with the
-// links between them; the Properties tab's event fields and mission calls share the lists (link_edit.cpp)
+// links edited in the solo editor: Shift and a drag from the picked entity or mission object to another opens a window
+// with what joins them; the Properties tab's event fields and mission calls share the lists (link_edit.cpp)
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -13,10 +13,19 @@
 
 namespace fcip::editor {
 
+// an entity or a mission object a link joins
+struct Endpoint {
+    uint32_t entity_id = 0;
+    uint32_t object = 0;
+    std::string name;
+    std::string kind;  // its class or Type
+    float pos[3] = {};
+};
+
 // window thread
 bool LinkMouse(ImVec2 mouse, bool pressed, bool down);  // true while a link drag has the mouse
 void DrawLinkDrag(const View& v);  // the line being dragged
-void DrawLinkWindow();             // the links between the two entities a drag joined
+void DrawLinkWindow();             // what joins the two a drag picked
 
 std::string ClassOfEntity(uint32_t entity_id);  // empty for none
 // a text field with the usual values in a list beside it

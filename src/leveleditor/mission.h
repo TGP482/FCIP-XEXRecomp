@@ -76,5 +76,8 @@ void RemoveAiObject(uint32_t object);
 void PlaceAiObject(uint32_t object, std::array<float, 3> move, std::array<float, 3> turn);
 void SetAiPoints(uint32_t object, std::vector<std::array<float, 3>> points);  // a shape's or area's, in order
 void SetAiEntities(uint32_t object, std::vector<std::string> names);          // the entities an area tells
+void AddAiAction(uint32_t object, std::string tag, std::vector<XmlAttribute> attributes);  // an anchor's, last
+// before every other object of its type (the first Respawn is where the player starts)
+void MakeFirstOfType(uint32_t object);
 
 }  // namespace fcip::editor

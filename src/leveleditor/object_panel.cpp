@@ -87,7 +87,7 @@ struct LinkEdit {
 // one value of an entity's table: its node by child indices from the table, then by sub table names
 struct Edit {
     uint32_t entity_id = 0;
-    int table = 0;
+    int table = 0;  // of kTables, -1 for the one holding the key
     std::vector<int> path;
     std::vector<std::string> names;
     std::string key;
@@ -224,10 +224,24 @@ uint32_t FindEdited(uint32_t table, const Edit& e) {
 }
 
 // its script's OnReset then takes the new values (a trigger's box), as it does when play test ends; one step of undo
-void Apply(PPCContext& ctx, const Edit& e) {
-    uint32_t entity = EntityOfId(e.entity_id);
+// the table whose node holds the key, Properties when none does
+int TableOf(PPCContext& ctx, uint32_t script, const Edit& e) {
+    for (int t = 0; t < int(std::size(kTables)); t++) {
+        Converted c = ToXml(ctx, script, kTables[t]);
+        uint32_t node = c.node ? FindEdited(c.node, e) : 0;
+        bool holds = node && CallGuest(ctx, Method(node, kNodeGetAttr), {node, KeyText(e.key)}) != 0;
+        Release(ctx, c);
+        if (holds) return t;
+    }
+    return 0;
+}
+
+void Apply(PPCContext& ctx, const Edit& edit) {
+    uint32_t entity = EntityOfId(edit.entity_id);
     uint32_t script = entity ? R32(entity + kEntityScript) : 0;
     if (!script) return;
+    Edit e = edit;
+    if (e.table < 0) e.table = TableOf(ctx, script, e);
     Converted c = ToXml(ctx, script, kTables[e.table]);
     uint32_t node = c.node ? FindEdited(c.node, e) : 0;
     std::string old;
@@ -461,7 +475,8 @@ void fcip::editor::SetEntityLinks(uint32_t entity_id, std::vector<Link> links) {
 }
 
 void fcip::editor::SetEntityProperty(uint32_t entity_id, const std::string& key, const std::string& value) {
-    Edit e{entity_id, 0, {}, {}, key, value};
+    // an AI's anchors are in PropertiesInstance
+    Edit e{entity_id, -1, {}, {}, key, value};
     for (size_t slash; (slash = e.key.find('/')) != std::string::npos;) {
         e.names.push_back(e.key.substr(0, slash));
         e.key.erase(0, slash + 1);
