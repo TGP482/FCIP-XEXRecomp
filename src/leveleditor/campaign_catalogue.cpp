@@ -1,6 +1,7 @@
-// ige.xex, the solo level editor: the campaign's enemy types take the multiplayer items' place in the Add Object
-// tool. Each campaign mission defines the types it uses in its EntityLibrary and its pack holds their assets, so the
-// packs stay open and the types join the editor's archetype library.
+// ige.xex, the solo level editor: the campaign's types in the Add Object tool. Enemies take the multiplayer items'
+// place, objects (props, destroyables, doors) follow the vehicles, solo pickups follow the weapons and items. Each
+// campaign mission defines the types it uses in its EntityLibrary and its pack holds their assets, so the packs stay
+// open and the types join the editor's archetype library.
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -22,7 +23,35 @@ constexpr const char* kCampaignLevels[] = {
 };
 // the AI section of Scripts\Default\EntityClassRegistry.lua
 constexpr const char* kEnemyClasses[] = {"Merc", "Worker", "Sapper", "Chucker", "Freak", "Crowe", "Dragon", "Valerie"};
-constexpr const char* kEnemiesCaption = "{DPLR} ENEMIES (3/8)";
+constexpr const char* kObjectClasses[] = {"DestroyableObject", "BasicEntity", "AutomaticDoor"};
+
+// the campaign's pickups the multiplayer list lacks; their scripts carry the model
+struct Pickup {
+    const char* cls;
+    const char* caption;
+};
+constexpr Pickup kSoloPickups[] = {
+    {"PickupAdrenaline", "Adrenaline"},
+    {"MRE", "Ration Pack"},
+    {"PickupGrenadeBox", "Grenade Box"},
+    {"PickupMolotovBox", "Molotov Box"},
+    {"PickupBerrettaNoSup", "9mm Pistol (No Silencer)"},
+    {"PickupBinoculars", "Binoculars"},
+    {"PickupExplo", "Explosives"},
+    {"PickupMortar", "Mortar"},
+    {"PickupBrowning", "Heavy Machine Gun"},
+    {"Secret", "Secret"},
+};
+
+// category captions by the editor's ObjectCategoryNames key
+struct CategoryCaption {
+    const char* key;
+    const char* caption;
+};
+constexpr CategoryCaption kCategoryCaptions[] = {
+    {"Vehicles", "{DPLR} VEHICLES AND OBJECTS (1/8)"},
+    {"MultiplayerItems", "{DPLR} ENEMIES (3/8)"},
+};
 // the multiplayer list's keys end in a two letter team suffix, which its tool strips before spawning
 constexpr const char* kTeamSuffix = "_E";
 
@@ -48,10 +77,12 @@ constexpr uint32_t kEntryKey = 0x00;
 constexpr uint32_t kEntryCaption = 0x1C;
 constexpr uint32_t kEntryArchetype = 0x38;
 constexpr uint32_t kEntryBytes = 0x54;
-// the catalogue's lists, one per section of the editor's string table; the third is the multiplayer items
+// the catalogue's lists, one per section of the editor's string table
 constexpr uint32_t kListFirst = 0x04;
 constexpr uint32_t kListLast = 0x08;
 constexpr uint32_t kListStride = 0x14;
+constexpr uint32_t kVehicleList = 0;
+constexpr uint32_t kWeaponList = 1;
 constexpr uint32_t kMultiplayerList = 2;
 
 // guest scratch for the calls below
@@ -64,15 +95,16 @@ constexpr uint32_t kScratchText = 0x90;
 constexpr uint32_t kScratchTextBytes = 0x100;
 constexpr uint32_t kScratchBytes = kScratchText + kScratchTextBytes;
 
-struct EnemyType {
-    std::string archetype;  // the catalogue key, less the team suffix
+struct CampaignType {
+    std::string archetype;  // the catalogue key, an enemy's less the team suffix
     std::string cls;
     std::string caption;
 };
 
 uint32_t g_scratch = 0;
 bool g_packs_open = false;
-std::vector<EnemyType> g_enemies;
+std::vector<CampaignType> g_enemies;
+std::vector<CampaignType> g_objects;
 
 uint32_t GuestText(const std::string& text) {
     size_t n = std::min<size_t>(text.size(), kScratchTextBytes - 1);
@@ -104,13 +136,16 @@ std::string Attr(PPCContext& ctx, uint32_t node, const char* key) {
     return value ? ReadCString(value) : std::string();
 }
 
-bool IsEnemyClass(const std::string& cls) {
-    return std::find(std::begin(kEnemyClasses), std::end(kEnemyClasses), cls) != std::end(kEnemyClasses);
+template <size_t N>
+bool OneOf(const char* const (&classes)[N], const std::string& cls) {
+    return std::find(std::begin(classes), std::end(classes), cls) != std::end(classes);
 }
 
-const EnemyType* EnemyByKey(const std::string& key) {
-    for (const EnemyType& e : g_enemies) {
-        if (e.archetype == key) return &e;
+const CampaignType* TypeByKey(const std::string& key) {
+    for (const std::vector<CampaignType>* types : {&g_enemies, &g_objects}) {
+        for (const CampaignType& t : *types) {
+            if (t.archetype == key) return &t;
+        }
     }
     return nullptr;
 }
@@ -121,6 +156,12 @@ std::string CaptionOf(const std::string& archetype) {
     std::replace(caption.begin(), caption.end(), '.', ' ');
     std::replace(caption.begin(), caption.end(), '_', ' ');
     return caption;
+}
+
+void SortByCaption(std::vector<CampaignType>& types) {
+    std::sort(types.begin(), types.end(), [](const CampaignType& a, const CampaignType& b) {
+        return a.caption < b.caption;
+    });
 }
 
 // the pack keeps its path, so each gets its own block
@@ -145,17 +186,20 @@ uint32_t LoadXml(PPCContext& ctx, const std::string& path) {
     return R32(g_scratch + kScratchRef);
 }
 
-void AdoptIfEnemy(PPCContext& ctx, uint32_t library, uint32_t prototype) {
+void Adopt(PPCContext& ctx, uint32_t library, uint32_t prototype) {
     std::string cls = Attr(ctx, prototype, "Class");
     std::string name = Attr(ctx, prototype, "Name");
-    if (!IsEnemyClass(cls) || name.empty() || EnemyByKey(name)) return;
+    std::vector<CampaignType>* types = nullptr;
+    if (OneOf(kEnemyClasses, cls)) types = &g_enemies;
+    if (OneOf(kObjectClasses, cls)) types = &g_objects;
+    if (!types || name.empty() || TypeByKey(name)) return;
     CallGuest(ctx, Method(prototype, kNodeAddRef), {prototype});
     W32(g_scratch + kScratchPassRef, prototype);
     CallGuest(ctx, Method(library, kNodeAddChild), {library, g_scratch + kScratchPassRef});
-    g_enemies.push_back({name, cls, CaptionOf(name)});
+    types->push_back({name, cls, CaptionOf(name)});
 }
 
-void AdoptMissionEnemies(PPCContext& ctx, uint32_t library, uint32_t mission) {
+void AdoptMissionTypes(PPCContext& ctx, uint32_t library, uint32_t mission) {
     W32(g_scratch + kScratchChildRef, 0);
     uint32_t tag = GuestText("EntityLibrary");
     CallGuest(ctx, Method(mission, kNodeFindChild), {g_scratch + kScratchChildRef, mission, tag});
@@ -167,14 +211,15 @@ void AdoptMissionEnemies(PPCContext& ctx, uint32_t library, uint32_t mission) {
         CallGuest(ctx, Method(prototypes, kNodeGetChild), {g_scratch + kScratchRef, prototypes, i});
         uint32_t prototype = R32(g_scratch + kScratchRef);
         if (!prototype) continue;
-        AdoptIfEnemy(ctx, library, prototype);
+        Adopt(ctx, library, prototype);
         Release(ctx, prototype);
     }
     Release(ctx, prototypes);
 }
 
-void AdoptCampaignEnemies(PPCContext& ctx, uint32_t library) {
+void AdoptCampaignTypes(PPCContext& ctx, uint32_t library) {
     g_enemies.clear();
+    g_objects.clear();
     for (const char* level : kCampaignLevels) {
         std::string path = std::string("\\levels\\") + level + "\\mission_mission0.xml";
         uint32_t mission = LoadXml(ctx, path);
@@ -182,37 +227,56 @@ void AdoptCampaignEnemies(PPCContext& ctx, uint32_t library) {
             LOGE("level editor: %s could not be read", path.c_str());
             continue;
         }
-        AdoptMissionEnemies(ctx, library, mission);
+        AdoptMissionTypes(ctx, library, mission);
         Release(ctx, mission);
     }
-    std::sort(g_enemies.begin(), g_enemies.end(), [](const EnemyType& a, const EnemyType& b) {
-        return a.caption < b.caption;
-    });
-    LOGR("level editor: %zu enemy types from %zu campaign levels", g_enemies.size(), std::size(kCampaignLevels));
+    SortByCaption(g_enemies);
+    SortByCaption(g_objects);
+    LOGR("level editor: %zu enemy and %zu object types from %zu campaign levels", g_enemies.size(), g_objects.size(),
+         std::size(kCampaignLevels));
 }
 
-void AddCatalogueEntry(PPCContext& ctx, uint32_t list, const EnemyType& e) {
+uint32_t List(uint32_t index) { return SYM_Catalogue_Lists + index * kListStride; }
+
+void AddCatalogueEntry(PPCContext& ctx, uint32_t list, const std::string& key, const std::string& caption,
+                       const std::string& archetype) {
     uint32_t entry = g_scratch + kScratchEntry;
     InitEmptyString(entry + kEntryKey, kStrEmptyCapacity);
     InitEmptyString(entry + kEntryCaption, kWStrEmptyCapacity);
     InitEmptyString(entry + kEntryArchetype, kStrEmptyCapacity);
-    CallGuest(ctx, SYM_String_Assign, {entry + kEntryKey, GuestText(e.archetype + kTeamSuffix)});
-    CallGuest(ctx, SYM_WString_Assign, {entry + kEntryCaption, fcip::ui::Text(e.caption.c_str())});
-    CallGuest(ctx, SYM_String_Assign, {entry + kEntryArchetype, GuestText(e.archetype)});
+    CallGuest(ctx, SYM_String_Assign, {entry + kEntryKey, GuestText(key)});
+    CallGuest(ctx, SYM_WString_Assign, {entry + kEntryCaption, fcip::ui::Text(caption.c_str())});
+    CallGuest(ctx, SYM_String_Assign, {entry + kEntryArchetype, GuestText(archetype)});
     CallGuest(ctx, SYM_Catalogue_PushBack, {list, entry});
     CallGuest(ctx, SYM_Catalogue_EntryDestroy, {entry});
 }
 
-void ReplaceMultiplayerItems(PPCContext& ctx) {
-    uint32_t list = SYM_Catalogue_Lists + kMultiplayerList * kListStride;
+void ClearList(PPCContext& ctx, uint32_t list) {
     uint32_t first = R32(list + kListFirst);
-    if (first) {
-        for (uint32_t e = first; e < R32(list + kListLast); e += kEntryBytes) {
-            CallGuest(ctx, SYM_Catalogue_EntryDestroy, {e});
-        }
-        W32(list + kListLast, first);
+    if (!first) return;
+    for (uint32_t e = first; e < R32(list + kListLast); e += kEntryBytes) {
+        CallGuest(ctx, SYM_Catalogue_EntryDestroy, {e});
     }
-    for (const EnemyType& e : g_enemies) AddCatalogueEntry(ctx, list, e);
+    W32(list + kListLast, first);
+}
+
+// the editor reads its catalogue once, before the library is built
+void FillCatalogue(PPCContext& ctx) {
+    ClearList(ctx, List(kMultiplayerList));
+    for (const CampaignType& t : g_enemies) {
+        AddCatalogueEntry(ctx, List(kMultiplayerList), t.archetype + kTeamSuffix, t.caption, t.archetype);
+    }
+    for (const CampaignType& t : g_objects) {
+        AddCatalogueEntry(ctx, List(kVehicleList), t.archetype, t.caption, t.archetype);
+    }
+    for (const Pickup& p : kSoloPickups) AddCatalogueEntry(ctx, List(kWeaponList), p.cls, p.caption, "");
+}
+
+const char* CategoryCaptionFor(const std::string& key) {
+    for (const CategoryCaption& c : kCategoryCaptions) {
+        if (key == c.key) return c.caption;
+    }
+    return nullptr;
 }
 
 }  // namespace
@@ -229,22 +293,24 @@ PPC_FUNC(sub_821AA1D8) {
     if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
     if (!library || !g_scratch) return;
     OpenCampaignPacks(ctx);
-    AdoptCampaignEnemies(ctx, library);
-    ReplaceMultiplayerItems(ctx);
+    AdoptCampaignTypes(ctx, library);
+    FillCatalogue(ctx);
 }
 
-// spawns an editor object: r4 the stripped catalogue key, which names the class; ours are archetypes, so r4 gets their
-// class
+// spawns an editor object: r4 the catalogue key (an enemy's stripped of its suffix), which names the class; ours are
+// archetypes, so r4 gets their class
 PPC_FUNC(sub_820F1200) {
-    if (const EnemyType* e = EnemyByKey(ReadCString(uint32_t(ctx.r[4])))) ctx.r[4] = GuestText(e->cls);
+    if (const CampaignType* t = TypeByKey(ReadCString(uint32_t(ctx.r[4])))) ctx.r[4] = GuestText(t->cls);
     __imp__sub_820F1200(ctx, base);
 }
 
 // a string of the editor's table: r3 the std::wstring out, r5 the section, r6 the key
 PPC_FUNC(sub_8211B9A8) {
     uint32_t out = uint32_t(ctx.r[3]);
-    bool enemies = GuestString(uint32_t(ctx.r[5])) == "ObjectCategoryNames" &&
-                   GuestString(uint32_t(ctx.r[6])) == "MultiplayerItems";
+    const char* caption = nullptr;
+    if (GuestString(uint32_t(ctx.r[5])) == "ObjectCategoryNames") {
+        caption = CategoryCaptionFor(GuestString(uint32_t(ctx.r[6])));
+    }
     __imp__sub_8211B9A8(ctx, base);
-    if (enemies) CallGuest(ctx, SYM_WString_Assign, {out, fcip::ui::Text(kEnemiesCaption)});
+    if (caption) CallGuest(ctx, SYM_WString_Assign, {out, fcip::ui::Text(caption)});
 }
