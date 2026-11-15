@@ -473,6 +473,16 @@ float3 OceanXbox(float3 water, float3 reflection) {
 }
 )";
 
+// caustics: the screen behind the water lit where the light behind it lies under the water's pixel
+const char* kCausticsWaterPrelude = R"(
+static float4 g_pixel;  // the water's SV_Position, w its view distance
+
+float3 Caustics(float3 seen) {
+    float4 c = t_caustics.Load(int3(g_pixel.xy, 0));
+    return seen * (1 + c.rgb * CausticsFade(c.a - g_pixel.w));
+}
+)";
+
 const char* kSunSoftPrelude = R"(
 // the receiver plane's depth per sun map uv, from its screen derivatives
 float2 SunSlope(float3 p) {
@@ -611,6 +621,8 @@ private:
     bool Albedo() const { return Pixel() && (opt_.tex_flags[fcip::kAlbedoOut] & fcip::kAlbedoFetch); }
     // pixel: the ocean's colour becomes its reflection over its water, as the original Xbox game drew it
     bool OceanXbox() const { return Pixel() && (opt_.tex_flags[fcip::kOceanOut] & fcip::kOceanReflection); }
+    // pixel: the index of the screen a water draw shows behind it, which takes the caustics' light, -1 none
+    int CausticsScreen() const { return Pixel() ? int(opt_.tex_flags[fcip::kCausticsOut]) - 1 : -1; }
     // pixel: colour 0 seen through the volumetric fog in front of it
     bool FogIn() const { return Pixel() && opt_.tex_flags[fcip::kFogOut] && (info_.exports & 1); }
 
@@ -946,6 +958,7 @@ void Translator::EmitTextureFetch(const Fetch& f) {
         } else {
             Line("float4 ft = " + fetch + ";");
             if (sun_op && (sun & fcip::kSunCascade)) EmitSunMaps(t, op == kGetWeights);
+            if (op == kTextureFetch && int(t) == CausticsScreen()) Line("ft.rgb = Caustics(ft.rgb);");
             if (op == kTextureFetch && (sun & fcip::kAlbedoFetch) && f.ReadsBlue() && Albedo()) {
                 Open("if (!g_albedo_set)");
                 Line("g_albedo = ft;");
@@ -1256,6 +1269,11 @@ void CommitAlu() {
     if (Albedo()) s += "static float4 g_albedo = 0;\nstatic bool g_albedo_set = false;\n";
     if (OceanXbox()) s += kOceanXboxPrelude;
     if (FogIn()) s += F("Texture2D<float4> t_fog : register(t%u);\n", fcip::kFogSlot);
+    if (CausticsScreen() >= 0) {
+        s += F("Texture2D<float4> t_caustics : register(t%u);\n", fcip::kCausticsSlot);
+        s += fcip::kCausticsFadeHlsl;
+        s += kCausticsWaterPrelude;
+    }
     return s;
 }
 
@@ -1383,6 +1401,7 @@ POut main(PIn i) {
         s += F("    r[%d] = float4(i.front ? vpos.x : -vpos.x, vpos.y, 0, 0);\n", opt_.vpos_reg & 63);
     }
     if (ray_slots_) s += "    g_frag = i.pos.xy;\n";
+    if (CausticsScreen() >= 0) s += "    g_pixel = i.pos;\n";
     s += "    Run();\n";
     if (OceanXbox()) s += "    if (g_reflection_set) oC[0].rgb = OceanXbox(oC[0].rgb, g_reflection.rgb);\n";
     s += Hooks().Output();
@@ -1444,6 +1463,11 @@ std::string TranslateShader(ShaderStage stage, const uint32_t* code, size_t dwor
 }
 
 }  // namespace gpu
+
+// caustics form a hand's width under the surface and fade as the water deepens
+const char* const fcip::kCausticsFadeHlsl = R"(
+float CausticsFade(float depth) { return saturate(depth / 0.3) * exp(-depth / 6); }
+)";
 
 // the camera's and the shadow maps' ray traced casters: records of their clip position and the interpolator an alpha
 // tested one reads. A caster is x its first record, y its alpha texture in the heap, z the alpha reference and w the

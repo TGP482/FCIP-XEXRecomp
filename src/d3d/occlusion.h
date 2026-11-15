@@ -5,7 +5,7 @@
 
 #include "gpu/state.h"
 
-// Ambient occlusion, global illumination, volumetric fog and clouds reach the renderer as a clear with a flag no
+// Ambient occlusion, global illumination, volumetric fog, clouds and caustics reach the renderer as a clear with a flag no
 // D3DCLEAR value uses, so the render thread keeps it in order with the draws; what it needs rides in the clear's
 // colour, depth, stencil and rect
 namespace gpu {
@@ -27,6 +27,11 @@ constexpr uint32_t kClearFog = 0x80000;
 constexpr uint32_t kClearFogEnd = 0x400000;
 // volumetric clouds over the sky box drawn so far, its view the CloudViewAt slot
 constexpr uint32_t kClearClouds = 0x800000;
+// caustics over the camera pass's draws so far, its view the CausticsViewAt slot: the water's draws from
+// kClearCausticsWater to kClearCausticsDry take them through the screen they show, under the sea they go straight in
+constexpr uint32_t kClearCaustics = 0x1000000;
+constexpr uint32_t kClearCausticsWater = 0x2000000;
+constexpr uint32_t kClearCausticsDry = 0x4000000;
 
 // the ambient occlusion setting
 enum : uint32_t { kAoSsao = 1, kAoGtao = 2, kAoRtao = 3 };
@@ -65,6 +70,17 @@ struct CloudView {
 };
 // render thread: the view a kClearClouds marker names
 CloudView CloudViewAt(uint32_t slot);
+
+// caustics, from the renderer's view space
+struct CausticsView {
+    FogView light;            // the sun as the receivers see it; its height, up over the sea, is the world's z
+    float world_x[4] = {};    // to the world's x and y, as light.height
+    float world_y[4] = {};
+    float toward_sun[4] = {};  // in the world, w the seconds
+    bool under = false;        // the camera under the sea
+};
+// render thread: the view a kClearCaustics marker names
+CausticsView CausticsViewAt(uint32_t slot);
 
 // the volumetric fog's terrain shade: a square of heights over the sea below which the terrain hides the sun
 struct TerrainShade {
@@ -113,6 +129,10 @@ void VolumetricFog(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView
 void VolumetricFogEnd(uint32_t dev);
 // on the title's thread after the sky box's draw
 void VolumetricClouds(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::CloudView& v);
+// on the title's thread before the camera pass's first water item, under the sea before its first item past the world
+void Caustics(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::CausticsView& v);
+// on the title's thread before the first item of each run of water items and the first after it
+void CausticsWater(uint32_t dev, bool water);
 // title thread: a new terrain shade for the volumetric fog
 void PublishTerrainShade(gpu::TerrainShade&& shade);
 }  // namespace d3d

@@ -25,6 +25,7 @@ struct Settings {
     bool global_illumination = false;  // ray traced bounce light over the camera's scene, under the fog
     bool volumetric_fog = false;       // height fog in place of the game's, shafts where the sun reaches
     bool volumetric_clouds = false;    // cumulus over the sky box, turning with it and thickening in rain
+    bool caustics = false;             // the light the water gathers on what lies under the ocean and the lakes
     uint32_t shadow_resolution = 1344;  // sun shadow map edge, 0 follows the render scale; 1344 is stock
     uint32_t shadow_filter = 0;         // shadow edges, kFilterSharp as the game
     uint32_t ocean_reflection = 0;      // kOcean360 as the game, kOceanXbox the original Xbox game's look

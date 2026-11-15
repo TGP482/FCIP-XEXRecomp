@@ -77,6 +77,13 @@ enum : uint8_t { kFogScatter = 1, kFogScatterAlpha = 2, kFogFade = 3, kFogWhite 
 constexpr uint32_t kFogOut = 29;
 constexpr uint32_t kFogSlot = 24;
 
+// caustics: on kCausticsOut the index plus one of the screen a water draw shows behind it, which takes the light bound
+// at kCausticsSlot, rgb over what it falls on and a its view distance
+constexpr uint32_t kCausticsOut = 28;
+constexpr uint32_t kCausticsSlot = 23;
+// HLSL of CausticsFade(depth): the share of the caustics' light left under depth units of water
+extern const char* const kCausticsFadeHlsl;
+
 // original Xbox ocean: on its reflection fetch and kOceanOut; g_ext.x ReflectAmount, g_ext.y GlowBoostLevel
 constexpr uint8_t kOceanReflection = 128;
 constexpr uint32_t kOceanOut = 30;

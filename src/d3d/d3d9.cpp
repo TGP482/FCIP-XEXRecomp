@@ -653,6 +653,21 @@ void VolumetricClouds(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::Clou
 
 namespace {
 
+constexpr uint32_t kCausticsViews = 16;  // one a frame, past the frames the render thread may run behind
+gpu::CausticsView g_caustics_views[kCausticsViews];
+uint32_t g_caustics_next = 0;
+
+}  // namespace
+
+void Caustics(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::CausticsView& v) {
+    gpu::OcclusionArgs marked = a;
+    marked.method = g_caustics_next++ % kCausticsViews;
+    g_caustics_views[marked.method] = v;
+    MarkScene(dev, gpu::kClearCaustics, marked);
+}
+
+namespace {
+
 std::mutex g_shade_lock;
 gpu::TerrainShade g_shade;
 uint32_t g_shade_generation = 0;
@@ -719,6 +734,7 @@ void VolumetricFogEnd(uint32_t dev) { Mark(dev, gpu::kClearFogEnd); }
 void IlluminationOcean(uint32_t dev, bool ocean) {
     Mark(dev, ocean ? gpu::kClearIlluminationOcean : gpu::kClearIlluminationPastOcean);
 }
+void CausticsWater(uint32_t dev, bool water) { Mark(dev, water ? gpu::kClearCausticsWater : gpu::kClearCausticsDry); }
 
 // Shaders: the library makes its object, the host translates the container's microcode as created
 HLE_AFTER(D3DDevice_CreateVertexShader) { CreateShader(a[0], uint32_t(ctx.r[3]), true); }
@@ -1156,3 +1172,5 @@ uint32_t gpu::TerrainShadeSince(uint32_t seen, TerrainShade& out) {
 gpu::FogView gpu::FogViewAt(uint32_t slot) { return d3d::g_fog_views[slot % d3d::kFogViews]; }
 
 gpu::CloudView gpu::CloudViewAt(uint32_t slot) { return d3d::g_cloud_views[slot % d3d::kCloudViews]; }
+
+gpu::CausticsView gpu::CausticsViewAt(uint32_t slot) { return d3d::g_caustics_views[slot % d3d::kCausticsViews]; }

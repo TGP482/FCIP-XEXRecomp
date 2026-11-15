@@ -13,7 +13,10 @@
 // reflections, over the pixels nothing but sky covers. The box turns about the world's up axis by the degrees 825EE578
 // hands it at renderer +0x92A4, RotationSpeed (engine +0xA2C) times the render time plus SkyBoxAngle (+0xA28), and the
 // clouds turn by the same. The level's Rain node (+0xB60), set by the StartRain and StopRain script calls, thickens and
-// darkens them over kRainFade.
+// darkens them over kRainFade. Caustics go in before the camera's list draws its first water item, the Ocean
+// pipeline's (Ocean.fx) or the Lake pipeline's (lakes and rivers, Lake.fx, layer 8), and each water item takes them
+// through the screen it shows behind it; with the camera under the sea they go straight onto what lies below it, before
+// the first item past the world. The ocean's layers hold the quads over and under the water, not the water itself.
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -49,6 +52,9 @@ constexpr uint32_t kEntrySize = 0x18;
 constexpr uint32_t kEntryName = 0x4;
 constexpr uint32_t kEntryPipeline = 0x8;
 constexpr uint32_t kCharactersName = 0x82070D10;  // "PerPixel Phong Color (Characters)"
+constexpr uint32_t kOceanName = 0x8207D1C0;       // "Ocean"
+constexpr uint32_t kLakeName = 0x82070D80;        // "Lake"
+constexpr uint32_t kNoPipeline = 0xFFFFFFFF;
 // pipeline: vtable first, the item draw at +0xC; the PerPixel Phong draws all end in 8250DF28
 constexpr uint32_t kPipelineDraw = 0xC;
 constexpr uint32_t kPhongDraws[] = {0x8250DF28, 0x82504FB8, 0x825050F0, 0x825052B0};
@@ -106,6 +112,7 @@ thread_local FogSplit t_fog;
 bool Enabled() { return fcip::Get().ambient_occlusion && fcip::SubmittedPass() == fcip::kPassCamera; }
 bool Illuminated() { return fcip::Get().global_illumination && fcip::SubmittedPass() == fcip::kPassCamera; }
 bool Fogged() { return fcip::Get().volumetric_fog && fcip::SubmittedPass() == fcip::kPassCamera; }
+bool Caustic() { return fcip::Get().caustics && fcip::SubmittedPass() == fcip::kPassCamera; }
 
 bool PhongDraw(uint32_t draw) {
     for (uint32_t d : kPhongDraws) {
@@ -343,6 +350,18 @@ void UpdateWeather(uint32_t engine) {
     g_weather.rain += std::clamp(target - g_weather.rain, -step, step);
 }
 
+// toward the sun in the world, as the sky draws it
+void SunToward(uint32_t engine, float out[3]) {
+    float sun[3];
+    for (uint32_t i = 0; i < 3; i++) sun[i] = GF(engine + kEngineSunRender + i * 4);
+    float length = std::sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
+    if (length <= 0) {
+        sun[2] = 1;
+        length = 1;
+    }
+    for (uint32_t i = 0; i < 3; i++) out[i] = sun[i] / length;
+}
+
 // over the sky box just drawn, turned as it is
 void Clouds(uint32_t renderer) {
     uint32_t engine = R32(SYM_C3DEngine_pointer);
@@ -354,14 +373,7 @@ void Clouds(uint32_t renderer) {
     for (uint32_t r = 0; r < 3; r++) {
         for (uint32_t c = 0; c < 3; c++) v.to_world[r * 4 + c] = world[r * 4 + c];
     }
-    float sun[3];
-    for (uint32_t i = 0; i < 3; i++) sun[i] = GF(engine + kEngineSunRender + i * 4);
-    float length = std::sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
-    if (length <= 0) {
-        sun[2] = 1;
-        length = 1;
-    }
-    for (uint32_t i = 0; i < 3; i++) v.sun[i] = sun[i] / length;
+    SunToward(engine, v.sun);
     uint32_t dev = R32(SYM_Device_pointer);
     for (uint32_t i = 0; i < 3; i++) v.sun_colour[i] = GF(dev + kDevPsConstants + kPsSunColour * 16 + i * 4);
     float turn = GF(renderer + kRendererSkyTurn) * kRadiansPerDegree;
@@ -373,6 +385,106 @@ void Clouds(uint32_t renderer) {
     v.weather[0] = kClearCoverage + (kRainCoverage - kClearCoverage) * g_weather.rain;
     v.weather[1] = g_weather.rain;
     d3d::VolumetricClouds(dev, a, v);
+}
+
+// the camera pass's list while the caustics may go in, and the water item being drawn
+struct CausticsSplit {
+    uint32_t list = 0;
+    uint32_t ocean = kNoPipeline;  // the water pipelines' registry indices
+    uint32_t lake = kNoPipeline;
+    bool under = false;           // the camera under the sea
+    bool done = false;
+    bool water = false;
+};
+thread_local CausticsSplit t_caustics;
+float g_caustics_seconds = 0;
+
+uint32_t PipelineNamed(uint32_t name) {
+    uint32_t renderer = R32(SYM_Renderer_pointer);
+    uint32_t registry = renderer ? R32(renderer + kRendererPipelines) : 0;
+    if (!registry) return kNoPipeline;
+    uint32_t first = R32(registry + kRegistryFirst);
+    uint32_t end = R32(registry + kRegistryEnd);
+    for (uint32_t i = 0; first + i * kEntrySize < end; i++) {
+        if (R32(first + i * kEntrySize + kEntryName) == name) return i;
+    }
+    return kNoPipeline;
+}
+
+// the item is the ocean's or a lake's
+bool Water(uint32_t item) {
+    if (!item) return false;
+    uint32_t pipeline = R32(item + kItemPipeline);
+    return pipeline == t_caustics.ocean || pipeline == t_caustics.lake;
+}
+
+bool HoldsWater(uint32_t list) {
+    uint32_t count = R32(list);
+    uint32_t entries = R32(list + kListEntries);
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t entry = entries + i * kListEntrySize;
+        if (Water(R32(entry + kEntryItem))) return true;
+    }
+    return false;
+}
+
+// before the camera's list: the caustics go in when it holds water or the camera is under the sea
+void StartCaustics(uint32_t list) {
+    float world[16];
+    if (!ViewToWorld(world)) return;
+    float sea = GF(R32(SYM_Device_pointer) + kDevVsConstants + kVsWaterLevel * 16);
+    t_caustics.ocean = PipelineNamed(kOceanName);
+    t_caustics.lake = PipelineNamed(kLakeName);
+    t_caustics.under = world[14] < sea;
+    bool water = HoldsWater(list);
+    if (t_caustics.under || water) t_caustics.list = list;
+    static int logged = -1;
+    int state = int(t_caustics.under) | int(water) << 1;
+    if (state == logged) return;
+    logged = state;
+    LOGR("caustics: camera %s the sea, water %s, pipelines ocean %d lake %d", t_caustics.under ? "under" : "over",
+         water ? "in view" : "out of view", int(t_caustics.ocean), int(t_caustics.lake));
+}
+
+// the caustics' light over what the camera's list drew so far, lit by the sun as the receivers are
+void CausticsIn() {
+    t_caustics.done = true;
+    uint32_t engine = R32(SYM_C3DEngine_pointer);
+    gpu::OcclusionArgs a;
+    float world[16];
+    if (!engine || !SceneArgs(a) || !ViewToWorld(world)) return;
+    gpu::CausticsView v;
+    v.light = SunView();
+    for (uint32_t r = 0; r < 4; r++) {
+        v.world_x[r] = world[r * 4];
+        v.world_y[r] = world[r * 4 + 1];
+    }
+    SunToward(engine, v.toward_sun);
+    g_caustics_seconds += float(fcip::FrameTime());
+    v.toward_sun[3] = g_caustics_seconds;
+    v.under = t_caustics.under;
+    d3d::Caustics(R32(SYM_Device_pointer), a, v);
+}
+
+// before each item: the caustics before the first water item, under the sea before the first past the world; the
+// water items take them
+void UpdateCaustics(uint32_t list) {
+    uint32_t key = 0;
+    uint32_t item = 0;
+    if (!NextItem(list, key, item)) return;
+    bool water = Water(item);
+    bool past_world = (key >> kLayerShift & kLayerMask) > kLastWorldLayer;
+    if (!t_caustics.done && (water || (t_caustics.under && past_world))) CausticsIn();
+    if (water == t_caustics.water) return;
+    t_caustics.water = water;
+    d3d::CausticsWater(R32(SYM_Device_pointer), water);
+}
+
+// after the list's last item
+void EndCaustics() {
+    if (!t_caustics.done && t_caustics.under) CausticsIn();
+    if (t_caustics.water) d3d::CausticsWater(R32(SYM_Device_pointer), false);
+    t_caustics = {};
 }
 
 // the item about to be popped lies on the camera's side of the water
@@ -438,7 +550,9 @@ PPC_FUNC(GUEST(Scene_Draw)) {
         W32(block + kBlockFogScale, 0);
         W32(block + kBlockFogBias, 0);
     }
+    if (Caustic()) StartCaustics(block + kBlockList);
     GUEST_ORIG(Scene_Draw)(ctx, base);
+    if (t_caustics.list) EndCaustics();
     if (t_draw_list) Occlude();
     if (lit) Illuminate(ctx);
     t_past_list = 0;
@@ -459,6 +573,7 @@ PPC_FUNC(GUEST(Scene_Pop)) {
     if (t_world_list && t_world_list == list && PastWorld(list, true)) EndWorld(ctx);
     if (t_past_list && t_past_list == list) UpdateOcean(list);
     if (t_fog.list && t_fog.list == list && NearLayer(list)) FogIn();
+    if (t_caustics.list && t_caustics.list == list) UpdateCaustics(list);
     fcip::MotionScenePop(list);
     GUEST_ORIG(Scene_Pop)(ctx, base);
 }

@@ -120,7 +120,8 @@ constexpr int kGiTargets = 2;
 constexpr uint32_t kFogRtv = kGiRtv + kGiTargets;  // volumetric fog's march and first blur
 constexpr int kFogTargets = 2;
 constexpr uint32_t kCloudRtv = kFogRtv + kFogTargets;  // volumetric clouds' march
-constexpr uint32_t kRtvSlots = kCloudRtv + 1;
+constexpr uint32_t kCausticsRtv = kCloudRtv + 1;       // the caustics' light
+constexpr uint32_t kRtvSlots = kCausticsRtv + 1;
 constexpr DXGI_FORMAT kAlbedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kGiFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 constexpr float kNoMotion = 32768;  // the drawn motion's clear: no draw wrote the pixel
@@ -1250,6 +1251,91 @@ float4 cloud_apply(float4 pos : SV_Position) : SV_Target {
 }
 )";
 
+// Caustics: the sunlight a tropical sea's waves gather into bright ribbons on whatever lies under them. Two sheets of
+// drifting cells glow along the edges between them, bent into curves, the finer one turned and quicker, laid on the
+// sea's plane along the sun. opt.x: 1 with the sun map bound; fog.xyz toward the sun in the world, fog.w
+// the seconds; terrain[0], terrain[1] and height take view space to the world's x, y and height over the sea
+const char* kCausticsHlsl = R"(
+Texture2D<float> sunmap : register(t2);
+static const float kCell = 1.6;        // world units between the coarse sheet's ribbons
+static const float kFine = 0.6;        // the finer sheet's cells, of the coarse one's
+static const float kRibbon = 0.12;     // a ribbon's width, of a cell
+static const float kStrength = 1.1;    // light a ribbon adds, of the sun's
+static const float3 kSea = float3(0.85, 1, 0.95);  // the sun's colour through clear shallow water
+// a cell's point, wandering about its centre
+float2 CellPoint(int2 cell, float seconds) {
+    uint h = uint(cell.x) * 0x8DA6B343u ^ uint(cell.y) * 0xD8163841u;
+    h = (h ^ (h >> 15)) * 0x2C1B3C6Du;
+    h ^= h >> 13;
+    float2 phase = float2(h & 0xFFFF, h >> 16) * (6.2831853 / 65536);
+    return cell + 0.5 + 0.35 * sin(seconds * float2(0.9, 0.7) + phase);
+}
+// cell space bent by two rippling waves, so cell edges curve like light through a moving surface
+float2 Warp(float2 q, float seconds) {
+    float2 a = sin(q.yx * float2(1.37, 1.13) + seconds * float2(0.41, -0.53));
+    float2 b = sin(q.yx * float2(2.71, 2.29) + a * 1.7 + seconds * float2(-0.67, 0.59));
+    return q + 0.32 * a + 0.16 * b;
+}
+// 1 on the edges between the nearest cells' points, blur cells wide or more spread thinner
+float Sheet(float2 q, float seconds, float blur) {
+    int2 base = int2(floor(q));
+    float nearest = 9;
+    float second = 9;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            float d = length(CellPoint(base + int2(x, y), seconds) - q);
+            second = min(second, max(nearest, d));
+            nearest = min(nearest, d);
+        }
+    }
+    float width = kRibbon + blur;
+    float glow = smoothstep(0, 1, saturate(1 - (second - nearest) / width));
+    return glow * glow * kRibbon / width;
+}
+// both sheets, brightest where their ribbons cross
+float Ribbons(float2 q, float seconds, float blur) {
+    float coarse = Sheet(Warp(q / kCell, seconds), seconds, blur / kCell);
+    float2 turned = float2(q.x * 0.8 - q.y * 0.6, q.x * 0.6 + q.y * 0.8) / (kCell * kFine) + 17.3;
+    float fine = Sheet(Warp(turned, seconds * 1.3), seconds * 1.3, blur / (kCell * kFine));
+    return saturate(0.6 * coarse + 0.4 * fine + coarse * fine);
+}
+// the light on the pixel at pos, c its view space point, a share of its own colour
+float3 CausticsLight(float2 pos, float3 c) {
+    float4 at = float4(c, 1);
+    float3 world = float3(dot(at, terrain[0]), dot(at, terrain[1]), dot(at, height));
+    // the sheets lie on the sea's plane and fall along the sun
+    float2 q = world.xy - world.z * fog.xy / max(fog.z, 0.2);
+    float blur = length(fwidth(q));
+    float3 n = Normal(pos, c);
+    // a pixel with sky on both sides each way has no normal: taken as facing the camera
+    if (!all(isfinite(n))) n = -normalize(c);
+    if (dot(n, c) > 0) n = -n;
+    float3 up = float3(dot(n, terrain[0].xyz), dot(n, terrain[1].xyz), dot(n, height.xyz));
+    float lit = saturate(dot(up, fog.xyz)) * (opt.x == 0 ? 1 : SunLit(sunmap, c));
+    return Ribbons(q, fog.w, blur) * suncolour.rgb * kSea * kStrength * lit;
+}
+// a pixel's view space point; solid false where only sky lies behind it
+float3 Floor(float2 pos, out bool solid) {
+    solid = Raw(clamp(int2(pos), int2(vp.xy), int2(vp.xy + vp.zw) - 1)) > 0;
+    return solid ? View(pos) : float3(0, 0, 1);
+}
+// the light and the view distance of what it falls on, for the water's draws to take through their screen
+float4 caustics_light(float4 pos : SV_Position) : SV_Target {
+    bool solid;
+    float3 c = Floor(pos.xy, solid);
+    float4 light = float4(CausticsLight(pos.xy, c), c.z);
+    return solid ? light : (float4)0;
+}
+// the camera under the sea: straight onto what lies under it
+float4 caustics_under(float4 pos : SV_Position) : SV_Target {
+    bool solid;
+    float3 c = Floor(pos.xy, solid);
+    float depth = -dot(float4(c, 1), height);
+    float3 light = CausticsLight(pos.xy, c) * CausticsFade(max(depth, 0));
+    return solid ? float4(light, 0) : (float4)0;
+}
+)";
+
 constexpr float kGiRadius = 32.0f;  // world units the bounce reaches
 constexpr float kGiGamma = 2.2f;
 
@@ -1313,6 +1399,22 @@ void OcclusionBlend(D3D12_RENDER_TARGET_BLEND_DESC& b) {
     b.DestBlendAlpha = D3D12_BLEND_ONE;
     b.BlendOp = D3D12_BLEND_OP_ADD;
     b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+}
+
+// dst = dst * (1 + src): light the scene's own colour takes, as what it falls on reflects it
+void CausticsBlend(D3D12_RENDER_TARGET_BLEND_DESC& b) {
+    b.BlendEnable = TRUE;
+    b.SrcBlend = D3D12_BLEND_DEST_COLOR;
+    b.SrcBlendAlpha = D3D12_BLEND_ZERO;
+    b.DestBlend = D3D12_BLEND_ONE;
+    b.DestBlendAlpha = D3D12_BLEND_ONE;
+    b.BlendOp = D3D12_BLEND_OP_ADD;
+    b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+}
+
+// a depth resolve's formats
+bool DepthFormat(xenos::TexFormat f) {
+    return f == xenos::TexFormat::k_24_8 || f == xenos::TexFormat::k_24_8_FLOAT || f == xenos::TexFormat::k_32_FLOAT;
 }
 
 // a colour map's formats, not a normal map's two channels or a mask's one
@@ -1744,6 +1846,7 @@ private:
     bool SunCascade(const State& s, const ShaderInfo& info, ShaderOptions& opt);
     bool OceanFlags(const State& s, const ShaderInfo& info, ShaderOptions& opt);
     bool FogFlags(const State& s, ShaderOptions& opt);
+    bool CausticsFlags(const State& s, const ShaderInfo& info, ShaderOptions& opt);
     uint8_t SoftShadow(uint32_t base, bool far_map) const;
     Resolved* SunMap(uint32_t base);
     void SunMapView(Resolved& r, D3D12_CPU_DESCRIPTOR_HANDLE at);
@@ -1838,6 +1941,8 @@ private:
         ID3D12Resource* shade = nullptr;  // the fog's terrain shade
         bool clouds = false;      // kCloudHlsl's
         bool half = false;        // drawn to a target of half the depth's size
+        bool caustics = false;    // kCausticsHlsl's, the sun map at t2
+        bool lighten = false;     // CausticsBlend
     };
     void Occlusion(const State& s, const OcclusionArgs& a);
     void BeginRayScene();
@@ -1846,6 +1951,8 @@ private:
     ID3D12Resource* ShadeTexture();
     void VolumetricClouds(const State& s, const OcclusionArgs& a);
     bool EnsureCloudTarget(uint32_t w, uint32_t h);
+    void Caustics(const State& s, const OcclusionArgs& a);
+    bool EnsureCausticsTarget(uint32_t w, uint32_t h);
 
     // global illumination of the camera pass: its draws' albedo beside the colour, its world's triangles traced
     void BeginIllumination(const State& s);
@@ -2005,6 +2112,15 @@ private:
     D3D12_RESOURCE_STATES clouds_state_ = D3D12_RESOURCE_STATE_COMMON;
     uint32_t clouds_w_ = 0;
     uint32_t clouds_h_ = 0;
+    // the caustics' light, past its pass read by the water's draws into its target at fcip::kCausticsSlot
+    ComPtr<ID3D12Resource> caustics_;
+    D3D12_RESOURCE_STATES caustics_state_ = D3D12_RESOURCE_STATE_COMMON;
+    uint32_t caustics_w_ = 0;
+    uint32_t caustics_h_ = 0;
+    bool caustics_lit_ = false;    // drawn since the last kClearCaustics
+    bool caustics_water_ = false;  // between kClearCausticsWater and kClearCausticsDry
+    uint64_t caustics_rt_key_ = 0;
+    ID3D12Resource* caustics_view_ = nullptr;  // the light the draw's pixel shader reads, null for none
     // the terrain shade as last published
     ComPtr<ID3D12Resource> shade_;
     D3D12_RESOURCE_STATES shade_state_ = D3D12_RESOURCE_STATE_COMMON;
@@ -2218,6 +2334,7 @@ private:
             const Resolved* sun[fcip::kSunMaps] = {};
             D3D12_GPU_VIRTUAL_ADDRESS rays[fcip::kRayScenes] = {};
             ID3D12Resource* fog = nullptr;
+            ID3D12Resource* caustics = nullptr;
         } stages[2];
     } binds_;
     // true where now differs from what the last draw set, which keeps it
@@ -3451,6 +3568,27 @@ bool D3D12Backend::OceanFlags(const State& s, const ShaderInfo& info, ShaderOpti
     return true;
 }
 
+// the water's draws into the caustics' target: the wide colour resolve they show behind them takes the light
+bool D3D12Backend::CausticsFlags(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
+    if (!caustics_lit_ || !caustics_water_ || info.textures.size() > fcip::kCausticsSlot) return false;
+    Target* rt = ColorTarget(s, 0, TargetHeight(s));
+    if (!rt || MapKey(*rt) != caustics_rt_key_) return false;
+    for (uint32_t i = 0; i < info.textures.size(); i++) {
+        uint32_t fetch[6];
+        ReadFetch(s, info.textures[i].fetch, fetch);
+        xenos::TextureFetch t = xenos::DecodeTextureFetch(fetch);
+        Resolved* r = FindResolved(t, info.textures[i], ShaderStage::Pixel, i);
+        if (!r || r->width <= r->height || DepthFormat(t.format)) continue;
+        opt.tex_flags[fcip::kCausticsOut] = uint8_t(i + 1);
+        static bool logged = false;
+        if (!std::exchange(logged, true)) LOGR("caustics: a water draw shows the screen at texture %u", i);
+        return true;
+    }
+    static bool missed = false;
+    if (!std::exchange(missed, true)) LOGR("caustics: a water draw shows no screen");
+    return false;
+}
+
 // the soft filter's flags on a fetch of the map at base, none when it is no shadow map
 uint8_t D3D12Backend::SoftShadow(uint32_t base, bool far_map) const {
     auto map = shadow_resolves_.find(base);
@@ -3591,6 +3729,8 @@ uint32_t D3D12Backend::BindTextures(const State& s, const ShaderInfo& info, Shad
     same = same && std::equal(rays, rays + fcip::kRayScenes, kept.rays);
     ID3D12Resource* fog = stage == ShaderStage::Pixel ? fog_view_ : nullptr;
     same = same && kept.fog == fog;
+    ID3D12Resource* caustics = stage == ShaderStage::Pixel ? caustics_view_ : nullptr;
+    same = same && kept.caustics == caustics;
     if (same && std::memcmp(kept.fetch, fetch, fetch_bytes) == 0) {
         samplers = kept.samplers;
         return kept.table;
@@ -3611,11 +3751,13 @@ uint32_t D3D12Backend::BindTextures(const State& s, const ShaderInfo& info, Shad
         RayViews(table + first, rays);
     }
     if (fog) ShaderView(fog, kGiFormat, table + first + fcip::kFogSlot);
+    if (caustics) ShaderView(caustics, kGiFormat, table + first + fcip::kCausticsSlot);
     samplers = EnsureSamplers(descs);
     kept.info = &info;
     std::copy(sun, sun + fcip::kSunMaps, kept.sun);
     std::copy(rays, rays + fcip::kRayScenes, kept.rays);
     kept.fog = fog;
+    kept.caustics = caustics;
     kept.aniso = app::Get().aniso;
     std::memcpy(kept.fetch, fetch, fetch_bytes);
     kept.table = table;
@@ -4111,6 +4253,8 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     if (s.ps) RayShadows(s, s.ps->info, ps_opt);
     bool ocean = s.ps && !sun && !ray_scenes_[0] && OceanFlags(s, s.ps->info, ps_opt);
     fog_view_ = FogFlags(s, ps_opt) ? fog_[0].Get() : nullptr;
+    bool caustics = s.ps && !sun && !ray_scenes_[0] && CausticsFlags(s, s.ps->info, ps_opt);
+    caustics_view_ = caustics ? caustics_.Get() : nullptr;
     Variant* vs = EnsureVariant(s.vs, vs_opt);
     // no pixel shader: a depth only draw
     Variant* ps = s.ps ? EnsureVariant(s.ps, ps_opt) : nullptr;
@@ -4278,6 +4422,14 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         if (rect) VolumetricClouds(s, UnpackOcclusion(color, z, stencil, *rect));
         return;
     }
+    if (flags & kClearCaustics) {
+        if (rect) Caustics(s, UnpackOcclusion(color, z, stencil, *rect));
+        return;
+    }
+    if (flags & (kClearCausticsWater | kClearCausticsDry)) {
+        caustics_water_ = (flags & kClearCausticsWater) != 0;
+        return;
+    }
     if (flags & kClearMotionBegin) {
         BeginMotion(s);
         return;
@@ -4401,13 +4553,14 @@ bool D3D12Backend::EnsureOcclusionTargets(uint32_t w, uint32_t h) {
 ID3D12PipelineState* D3D12Backend::EnsureOcclusionPipeline(const AoPass& p, bool ms_depth) {
     bool rt = p.scene != 0;
     uint64_t seed = uint64_t(p.out) | uint64_t(p.samples) << 8 | uint64_t(p.blend) << 16 | uint64_t(ms_depth) << 17;
-    seed |= uint64_t(p.rgb) << 18;
+    seed |= uint64_t(p.rgb) << 18 | uint64_t(p.lighten) << 19;
     auto& pso = ao_pipelines_[Hash64(p.entry, std::strlen(p.entry), seed)];
     if (pso) return pso.Get();
     std::string src = std::string(ms_depth ? "#define MS 1\n" : "") + (rt ? "#define RT 1\n" : "") + kViewHlsl;
     if (p.gi) src += std::string(kGiViewsHlsl) + fcip::kCasterHitHlsl + kGiHlsl;
     else if (p.fog) src += kFogHlsl;
     else if (p.clouds) src += kCloudHlsl;
+    else if (p.caustics) src += std::string(fcip::kCausticsFadeHlsl) + kCausticsHlsl;
     else src += kAoHlsl;
     std::vector<uint8_t> vs;
     std::vector<uint8_t> ps;
@@ -4421,6 +4574,7 @@ ID3D12PipelineState* D3D12Backend::EnsureOcclusionPipeline(const AoPass& p, bool
     D3D12_RENDER_TARGET_BLEND_DESC& b = d.BlendState.RenderTarget[0];
     b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     if (p.blend) OcclusionBlend(b);
+    if (p.lighten) CausticsBlend(b);
     // a UNORM target clamps a blend's source to 0, so light taken away is written whole
     if (p.rgb) b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN |
                                          D3D12_COLOR_WRITE_ENABLE_BLUE;
@@ -4473,7 +4627,7 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
         D3D12_GPU_DESCRIPTOR_HANDLE heap = view_heap_->GetGPUDescriptorHandleForHeapStart();
         cl_->SetGraphicsRootDescriptorTable(kRootHeap, heap);
     }
-    if (p.fog) {
+    if (p.fog || p.caustics) {
         if (p.sun) SunMapView(*p.sun, ViewCpu(views + used));
         else NullViews(views + used, 1);
         used++;
@@ -4665,6 +4819,70 @@ bool D3D12Backend::EnsureCloudTarget(uint32_t w, uint32_t h) {
     dev_->CreateRenderTargetView(clouds_.Get(), nullptr, Rtv(kCloudRtv));
     clouds_w_ = w;
     clouds_h_ = h;
+    return true;
+}
+
+// Caustics
+
+// the caustics' light over what the camera's pass drew so far, which the water's draws take; under the sea it goes
+// straight into the bound colour target
+void D3D12Backend::Caustics(const State& s, const OcclusionArgs& a) {
+    caustics_lit_ = false;
+    uint32_t height = TargetHeight(s);
+    Target* rt = ColorTarget(s, 0, height);
+    Target* ds = DepthTarget(s, height);
+    if (!rt || !ds || rt->w != ds->w || rt->h != ds->h || rt->samples != ds->samples) return;
+    CausticsView view = CausticsViewAt(a.method);
+    if (!view.under && !EnsureCausticsTarget(rt->w, rt->h)) return;
+    Bound b{TargetWidth(s), height, rt->scale};
+    DrawConstants d;
+    FillDrawConstants(s, b, d);
+    D3D12_RECT rect = HostRect(GuestScissor(s, b.w, b.h), b.scale);
+    if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+    Resolved* sun = view.light.shadowed ? SunMap(fcip::SunMapsDrawn().far_base) : nullptr;
+    float c[kAoConstants];
+    OcclusionConstants(a, d, rect, rt->w, rt->h, c);
+    c[16] = sun ? 1.0f : 0.0f;
+    std::copy(std::begin(view.toward_sun), std::end(view.toward_sun), c + 20);
+    std::copy(std::begin(view.light.sun), std::end(view.light.sun), c + 32);
+    std::copy(std::begin(view.light.height), std::end(view.light.height), c + 48);
+    std::copy(std::begin(view.light.sun_colour), std::end(view.light.sun_colour), c + 52);
+    std::copy(std::begin(view.world_x), std::end(view.world_x), c + 56);
+    std::copy(std::begin(view.world_y), std::end(view.world_y), c + 60);
+    Transition(ds->res.Get(), ds->state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    if (view.under) {
+        AoPass under{.entry = "caustics_under", .out = rt->fmt, .samples = rt->samples, .rtv = Rtv(rt->view),
+                     .rgb = true, .sun = sun, .caustics = true, .lighten = true};
+        Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        OcclusionPass(under, *ds, c, rect);
+    } else {
+        AoPass light{.entry = "caustics_light", .out = kGiFormat, .rtv = Rtv(kCausticsRtv), .sun = sun,
+                     .caustics = true};
+        Transition(caustics_.Get(), caustics_state_, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        caustics_lit_ = OcclusionPass(light, *ds, c, rect);
+        Transition(caustics_.Get(), caustics_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        caustics_rt_key_ = MapKey(*rt);
+    }
+    Unbind();
+}
+
+bool D3D12Backend::EnsureCausticsTarget(uint32_t w, uint32_t h) {
+    if (caustics_ && caustics_w_ == w && caustics_h_ == h) return true;
+    if (caustics_) Release(std::move(caustics_));
+    caustics_w_ = caustics_h_ = 0;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(kGiFormat, w, h);
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    caustics_state_ = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    HRESULT hr = dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, caustics_state_, nullptr,
+                                               IID_PPV_ARGS(&caustics_));
+    if (FAILED(hr)) {
+        LOGE("D3D12: no %ux%u caustics target", w, h);
+        return false;
+    }
+    dev_->CreateRenderTargetView(caustics_.Get(), nullptr, Rtv(kCausticsRtv));
+    caustics_w_ = w;
+    caustics_h_ = h;
     return true;
 }
 

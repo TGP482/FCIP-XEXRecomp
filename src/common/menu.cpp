@@ -126,7 +126,8 @@ enum RowId {
     kBlur, kDrawDistance,
     kInvincible, kNoclip, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kFrameGeneration, kSmaa, kAmbientOcclusion,
-    kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection, kVolumetricClouds
+    kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection, kVolumetricClouds,
+    kCaustics
 };
 
 constexpr Row kSettingsRows[] = {
@@ -144,7 +145,7 @@ constexpr Row kSettingsRows[] = {
      "Caps the frame rate to your monitor's refresh rate or a custom value, or removes the cap"},
     {Kind::Value, kFpsCounter, "FPS COUNTER", "Displays the frame rate on screen"},
     {Kind::Value, kColourBlind, "COLOUR BLIND MODE", "Adjusts the colours for protanopia, deuteranopia or tritanopia"},
-    {Kind::Heading, -1, "GRAPHICS", "Antialiasing, ambient occlusion, global illumination, fog, clouds, ocean, texture filtering, shadows and draw distance"},
+    {Kind::Heading, -1, "GRAPHICS", "Antialiasing, ambient occlusion, global illumination, fog, clouds, caustics, ocean, texture filtering, shadows and draw distance"},
     {Kind::Value, kAmbientOcclusion, "AMBIENT OCCLUSION",
      "Shades the world's creases and corners, SSAO, the more accurate GTAO or ray traced RTAO, characters and fog left alone"},
     {Kind::Value, kGlobalIllumination, "GLOBAL ILLUMINATION",
@@ -153,6 +154,8 @@ constexpr Row kSettingsRows[] = {
      "Adds height fog lit by the sun over the game's own, with god rays where trees and buildings shade it"},
     {Kind::Value, kVolumetricClouds, "VOLUMETRIC CLOUDS",
      "Adds tropical cumulus clouds to the sky that turn with it and gather and darken when it rains"},
+    {Kind::Value, kCaustics, "CAUSTICS",
+     "Adds the rippling sunlight tropical water casts on the sand, rocks and everything else under the ocean and rivers"},
     {Kind::Value, kOceanReflection, "OCEAN REFLECTION",
      "Xbox 360 keeps the game's own ocean, Original Xbox mirrors the sky and shore over it like the original Xbox game"},
     {Kind::Value, kAntiAliasing, "ANTI ALIASING",
@@ -525,6 +528,10 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
         case kVolumetricClouds:
             Flip(Get().volumetric_clouds, step);
             std::snprintf(text, sizeof(text), "%s", OnOff(Get().volumetric_clouds, false));
+            break;
+        case kCaustics:
+            Flip(Get().caustics, step);
+            std::snprintf(text, sizeof(text), "%s", OnOff(Get().caustics, false));
             break;
         case kOceanReflection:
             StepName(Get().ocean_reflection, kOceanReflectionNames, step, text);

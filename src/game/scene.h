@@ -17,6 +17,9 @@ constexpr uint32_t kCameraProjection = 0x23C;  // PerspectiveFov's right handed 
 constexpr uint32_t kListEntries = 0x8;
 constexpr uint32_t kListCursor = 0x201C;
 constexpr uint32_t kListEntrySize = 0xC;
+constexpr uint32_t kEntryItem = 0x4;
+// render item: its pipeline's index in the renderer's registry first, its layer at +0xC (82502B88 keys them)
+constexpr uint32_t kItemPipeline = 0x0;
 // keys: the layer in bits 16 to 19
 constexpr uint32_t kLayerShift = 16;
 constexpr uint32_t kLayerMask = 0xF;
@@ -30,14 +33,22 @@ inline uint32_t Camera() {
     return pass ? kernel::R32(pass) : 0;
 }
 
-// the key of the item about to be popped, false when none is
-inline bool NextKey(uint32_t list, uint32_t& key) {
+// the item about to be popped and its key, false when none is
+inline bool NextItem(uint32_t list, uint32_t& key, uint32_t& item) {
     uint32_t cursor = kernel::R32(list + kListCursor);
     if (!kernel::R32(list) || !cursor) return false;
     int32_t index = int32_t(kernel::R32(cursor));
     if (index < 0) return false;
-    key = kernel::R32(kernel::R32(list + kListEntries) + uint32_t(index) * kListEntrySize);
+    uint32_t entry = kernel::R32(list + kListEntries) + uint32_t(index) * kListEntrySize;
+    key = kernel::R32(entry);
+    item = kernel::R32(entry + kEntryItem);
     return true;
+}
+
+// the key of the item about to be popped, false when none is
+inline bool NextKey(uint32_t list, uint32_t& key) {
+    uint32_t item = 0;
+    return NextItem(list, key, item);
 }
 
 }  // namespace fcip::scene

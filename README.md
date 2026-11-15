@@ -34,6 +34,7 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 - **Global Illumination** - Adds hardware ray traced global illumination, so light bounces off every surface.
 - **Volumetric Fog** - Replaces the game's fog with volumetric height fog.
 - **Volumetric Clouds** - Adds volumetric to the sky.
+- **Caustics** - Adds the rippling sunlight the water casts on everything under the ocean and rivers.
 - **Ocean Reflection** - Choose between Xbox 360 and Original Xbox.
 - **Anti Aliasing** - Enables 2x, 4x or 8x MSAA to smooth jagged edges while preserving a sharp image, or AMD FSR 3, which also upscales with FSR when the render resolution is lowered.
 - **Frame Generation** - Generates a frame between each two rendered ones with AMD FSR Frame Generation.
