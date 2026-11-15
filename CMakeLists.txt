@@ -43,20 +43,18 @@ file(GLOB XEX_HOST_SOURCES CONFIGURE_DEPENDS src/*/*.cpp)
 list(FILTER XEX_HOST_SOURCES EXCLUDE REGEX "/src/(game|editor|leveleditor)/")
 
 # partitions as xex_symbols wrote them into each config
-foreach(image game editor leveleditor)
+foreach(image game editor)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS config/${image}.toml)
     file(STRINGS config/${image}.toml parts REGEX "^partitions *=")
     string(REGEX MATCH "[0-9]+" PARTITIONS_${image} "${parts}")
 endforeach()
 
 add_xex_image(FCIP default.xex game.toml ${PARTITIONS_game} game)
-# the map editor, which the game launches
+# the map editor, which the game launches, and the solo level editor on top of it, picked at launch
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/assets/ige.xex)
     add_xex_image(FCIPEditor ige.xex editor.toml ${PARTITIONS_editor} editor)
-    # the solo level editor, the same xex: the map editor's hooks and its own
-    add_xex_image(FCIPLevelEditor ige.xex leveleditor.toml ${PARTITIONS_leveleditor} leveleditor)
-    file(GLOB EDITOR_SOURCES CONFIGURE_DEPENDS src/editor/*.cpp)
-    target_sources(FCIPLevelEditor PRIVATE ${EDITOR_SOURCES})
+    file(GLOB LEVEL_EDITOR_SOURCES CONFIGURE_DEPENDS src/leveleditor/*.cpp)
+    target_sources(FCIPEditor PRIVATE ${LEVEL_EDITOR_SOURCES})
 endif()
 
 # build_info.h for the version resource, rewritten only when the commit changes
@@ -69,7 +67,7 @@ add_custom_target(build_info
     VERBATIM)
 set_source_files_properties(src/common/version.rc PROPERTIES
     INCLUDE_DIRECTORIES ${CMAKE_CURRENT_BINARY_DIR} OBJECT_DEPENDS ${BUILD_INFO})
-foreach(target FCIP FCIPEditor FCIPLevelEditor)
+foreach(target FCIP FCIPEditor)
     if(TARGET ${target})
         target_sources(${target} PRIVATE src/common/version.rc)
         add_dependencies(${target} build_info)

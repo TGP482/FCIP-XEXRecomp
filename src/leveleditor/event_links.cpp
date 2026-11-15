@@ -10,6 +10,7 @@
 
 #include "kernel/memory.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -149,6 +150,7 @@ PPC_EXTERN_FUNC(__imp__sub_821124B0);
 
 // an entity's <EventTargets> into its script's Events table: r4 the entity, r5 the node's XmlNodeRef
 PPC_FUNC(sub_8229FC48) {
+    if (!fcip::editor::g_solo) return __imp__sub_8229FC48(ctx, base);
     uint32_t entity = uint32_t(ctx.r[4]);
     uint32_t node = R32(uint32_t(ctx.r[5]));
     if (entity && node && EnsureScratch()) {
@@ -161,6 +163,7 @@ PPC_FUNC(sub_8229FC48) {
 
 // one entity into a mission's Objects (r4 the entity, r5 its XmlNodeRef); writing it counts EntityId up
 PPC_FUNC(sub_821043A0) {
+    if (!fcip::editor::g_solo) return __imp__sub_821043A0(ctx, base);
     uint32_t entity = uint32_t(ctx.r[4]);
     uint32_t objects = R32(uint32_t(ctx.r[5]));
     uint32_t before = R32(SYM_Save_EntityNumber);
@@ -174,6 +177,7 @@ PPC_FUNC(sub_821043A0) {
 
 // a mission's Objects, entity by entity; then their links, now that every target has its number
 PPC_FUNC(sub_82104C38) {
+    if (!fcip::editor::g_solo) return __imp__sub_82104C38(ctx, base);
     g_saved.clear();
     __imp__sub_82104C38(ctx, base);
     if (EnsureScratch()) WriteSavedLinks(ctx);
@@ -182,6 +186,7 @@ PPC_FUNC(sub_82104C38) {
 
 // the editor starts a level, new or saved: the links of the last one go
 PPC_FUNC(sub_821124B0) {
+    if (!fcip::editor::g_solo) return __imp__sub_821124B0(ctx, base);
     {
         std::lock_guard lock(g_lock);
         g_links.clear();

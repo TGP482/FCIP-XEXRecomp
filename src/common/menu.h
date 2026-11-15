@@ -33,6 +33,8 @@ inline bool (*g_load_level)(const char* folder) = nullptr;
 inline void (*g_editor_panel)() = nullptr;
 inline bool (*g_editor_panel_key)(uint32_t msg, uintptr_t wp) = nullptr;
 inline std::atomic<bool> g_editor_panel_open{false};
+// FCIPEditor.exe's launch question, set by the level editor's sources (GameInfo::init)
+inline void (*g_editor_launch)() = nullptr;
 // window thread: the cursor and buttons for the game's menus, a left click skips a skippable movie
 void MenuMouseMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);
 bool SkippableMovie();

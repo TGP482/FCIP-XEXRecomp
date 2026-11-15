@@ -15,6 +15,7 @@
 #include "common/panel_colors.h"
 #include "common/view_clip.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -94,6 +95,7 @@ PPC_EXTERN_FUNC(__imp__sub_820D6C38);
 
 // the Add Object tool's update, each frame while it runs
 PPC_FUNC(sub_820D6C38) {
+    if (!fcip::editor::g_solo) return __imp__sub_820D6C38(ctx, base);
     __imp__sub_820D6C38(ctx, base);
     fcip::editor::UpdateMarkers(ctx);
 }

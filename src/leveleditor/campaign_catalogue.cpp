@@ -10,6 +10,7 @@
 #include "core/log.h"
 #include "kernel/memory.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -283,6 +284,7 @@ PPC_EXTERN_FUNC(__imp__sub_8211B9A8);
 
 // the editor's start builds the archetype library (r3, its root XmlNodeRef at +0) right after reading the catalogue
 PPC_FUNC(sub_821AA1D8) {
+    if (!fcip::editor::g_solo) return __imp__sub_821AA1D8(ctx, base);
     uint32_t holder = uint32_t(ctx.r[3]);
     __imp__sub_821AA1D8(ctx, base);
     uint32_t library = R32(holder);
@@ -296,12 +298,14 @@ PPC_FUNC(sub_821AA1D8) {
 // spawns an editor object: r4 the catalogue key (an enemy's stripped of its suffix), which names the class; ours are
 // archetypes, so r4 gets their class
 PPC_FUNC(sub_820F1200) {
+    if (!fcip::editor::g_solo) return __imp__sub_820F1200(ctx, base);
     if (const CampaignType* t = TypeByKey(ReadCString(uint32_t(ctx.r[4])))) ctx.r[4] = GuestText(t->cls);
     __imp__sub_820F1200(ctx, base);
 }
 
 // a string of the editor's table: r3 the std::wstring out, r5 the section, r6 the key
 PPC_FUNC(sub_8211B9A8) {
+    if (!fcip::editor::g_solo) return __imp__sub_8211B9A8(ctx, base);
     uint32_t out = uint32_t(ctx.r[3]);
     const char* caption = nullptr;
     if (GuestString(uint32_t(ctx.r[5])) == "ObjectCategoryNames") {

@@ -1,5 +1,7 @@
 # Recompiler input for ige.xex, written by xex_symbols
 
+includes = ["leveleditor.toml"]
+
 [xex]
 path = "assets/ige.xex"
 title = 0x555307DC

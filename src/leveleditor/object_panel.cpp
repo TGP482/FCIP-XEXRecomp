@@ -21,6 +21,7 @@
 #include "leveleditor/event_links.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/markers.h"
+#include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -417,6 +418,7 @@ void DrawPanel() {
 }
 
 bool PanelKey(uint32_t, uintptr_t wp) {
+    if (!fcip::editor::g_solo) return false;
     bool toggle = wp == kPanelKey;
     bool close = wp == VK_ESCAPE && g_open;
     if (!toggle && !close) return false;
@@ -427,6 +429,7 @@ bool PanelKey(uint32_t, uintptr_t wp) {
 
 // the markers under the panel
 void DrawEditorUi() {
+    if (!fcip::editor::g_solo) return;
     DrawMarkers();
     DrawPanel();
 }
@@ -440,6 +443,7 @@ PPC_EXTERN_FUNC(__imp__sub_820DD258);
 
 // the Edit Object tool's update, each frame while it runs; r3 the tool
 PPC_FUNC(sub_820DE570) {
+    if (!fcip::editor::g_solo) return __imp__sub_820DE570(ctx, base);
     uint32_t tool = uint32_t(ctx.r[3]);
     __imp__sub_820DE570(ctx, base);
     Update(ctx, SelectedObject(tool));
@@ -448,6 +452,7 @@ PPC_FUNC(sub_820DE570) {
 
 // leaving the Edit Object tool: nothing is selected for the panel
 PPC_FUNC(sub_820DD258) {
+    if (!fcip::editor::g_solo) return __imp__sub_820DD258(ctx, base);
     __imp__sub_820DD258(ctx, base);
     Update(ctx, 0);
 }

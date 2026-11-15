@@ -6,8 +6,9 @@
 // renderer's constant block. RTAO traces the world's draws from the start of the camera's list to that point. Global
 // illumination traces every world layer, the characters included, and is added after the list's last item wherever a
 // draw left its albedo, the first person weapon's past the world too but not the ocean's. Volumetric fog replaces the
-// game's: the list draws without it, then the fog goes in over the whole list, through its own sun map and the
-// terrain's heights.
+// game's: the list draws without it, then the fog goes in through its own sun map and the terrain's heights before the
+// first item on the camera's side of the water, layer 9 on. Those are mostly blended and leave no depth, so the fog
+// would read the depth behind them; they draw with the game's own fog instead.
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -35,6 +36,11 @@ constexpr uint32_t kRendererPipelines = 0x10;  // the pipeline registry
 constexpr uint32_t kBlockFogScale = 0x21D4;  // fog amount / (end - start)
 constexpr uint32_t kBlockFogBias = 0x21D8;   // -scale * start
 constexpr uint32_t kBlockFogColour = 0x21E4;  // r, g, b from 0 to 1
+// shader parameters 82502D18 fills from the block once a list: the vertex constant base and the fog it caches
+constexpr uint32_t kParamsVsBase = 0x10;
+constexpr uint32_t kParamsFogScale = 0x20C;
+constexpr uint32_t kParamsFogBias = 0x210;
+constexpr uint32_t kVsFog = 0xF;  // past the base
 // pipeline registry 82503538: entries of 0x18 bytes from +8 to +0xC, the name second
 constexpr uint32_t kRegistryFirst = 0x8;
 constexpr uint32_t kRegistryEnd = 0xC;
@@ -67,6 +73,8 @@ constexpr uint32_t kPipelineShift = 11;
 constexpr uint32_t kLastPipeline = 0x1F;
 constexpr uint32_t kLayerAndPipeline = 0xFF800;  // key bits 11 to 19
 constexpr uint32_t kMovedKey = kLastWorldLayer << kLayerShift | kLastPipeline << kPipelineShift;
+// 82367D68 and the grass put what lies on the camera's side of the water from 9 on, the far side below
+constexpr uint32_t kFirstNearLayer = 9;
 
 // the registry's pipelines whose items may be characters
 struct Pipelines {
@@ -80,6 +88,16 @@ thread_local uint32_t t_draw_list = 0;  // the camera pass's list while it is dr
 thread_local uint32_t t_world_list = 0;  // the same while its world layers stream into global illumination's scene
 thread_local uint32_t t_past_list = 0;   // the same past its world, whose draws but the ocean's keep their albedo
 thread_local bool t_ocean = false;
+
+// the camera pass's list until the volumetric fog went in, and the game's fog its near layers draw with
+struct FogSplit {
+    uint32_t list = 0;
+    uint32_t block = 0;
+    uint32_t params = 0;
+    uint32_t scale = 0;
+    uint32_t bias = 0;
+};
+thread_local FogSplit t_fog;
 
 bool Enabled() { return fcip::Get().ambient_occlusion && fcip::SubmittedPass() == fcip::kPassCamera; }
 bool Illuminated() { return fcip::Get().global_illumination && fcip::SubmittedPass() == fcip::kPassCamera; }
@@ -288,6 +306,25 @@ void Fog() {
     d3d::VolumetricFog(dev, a, v);
 }
 
+// the item about to be popped lies on the camera's side of the water
+bool NearLayer(uint32_t list) {
+    uint32_t key = 0;
+    return NextKey(list, key) && (key >> kLayerShift & kLayerMask) >= kFirstNearLayer;
+}
+
+// the volumetric fog over what is drawn so far, then the game's fog back in the block, the parameters' cache and the
+// vertex constant 82502D18 set from them
+void FogIn(PPCContext& ctx) {
+    FogSplit f = std::exchange(t_fog, {});
+    W32(f.block + kBlockFogScale, f.scale);
+    W32(f.block + kBlockFogBias, f.bias);
+    Fog();
+    W32(f.params + kParamsFogScale, f.scale);
+    W32(f.params + kParamsFogBias, f.bias);
+    uint32_t reg = R32(f.params + kParamsVsBase) + kVsFog;
+    CallGuest(ctx, SYM_Renderer_SetVsConstants, {reg, f.block + kBlockFogScale, 1});
+}
+
 }  // namespace
 
 PPC_EXTERN_FUNC(GUEST_ORIG(Scene_Sort));
@@ -324,16 +361,19 @@ PPC_FUNC(GUEST(Scene_Draw)) {
         if (fcip::Get().ambient_occlusion == gpu::kAoRtao) d3d::OcclusionScene(R32(SYM_Device_pointer));
     }
     bool lit = Illuminated();
-    bool fogged = Fogged();
     if (lit) {
         t_world_list = uint32_t(ctx.r[3]) + kBlockList;
         d3d::IlluminationScene(R32(SYM_Device_pointer));
     }
-    // the volumetric fog replaces the game's: 82502D18 hands the list's draws a fog scale and bias of 0
-    uint32_t block = uint32_t(ctx.r[3]);
-    uint32_t fog_scale = R32(block + kBlockFogScale);
-    uint32_t fog_bias = R32(block + kBlockFogBias);
-    if (fogged) {
+    // the volumetric fog replaces the game's: 82502D18 hands the list's draws a fog scale and bias of 0, r5 the
+    // shader parameters
+    if (Fogged()) {
+        uint32_t block = uint32_t(ctx.r[3]);
+        t_fog.list = block + kBlockList;
+        t_fog.block = block;
+        t_fog.params = uint32_t(ctx.r[5]);
+        t_fog.scale = R32(block + kBlockFogScale);
+        t_fog.bias = R32(block + kBlockFogBias);
         W32(block + kBlockFogScale, 0);
         W32(block + kBlockFogBias, 0);
     }
@@ -342,11 +382,7 @@ PPC_FUNC(GUEST(Scene_Draw)) {
     if (lit) Illuminate(ctx);
     t_past_list = 0;
     t_ocean = false;
-    if (fogged) {
-        W32(block + kBlockFogScale, fog_scale);
-        W32(block + kBlockFogBias, fog_bias);
-        Fog();
-    }
+    if (t_fog.list) FogIn(ctx);
     fcip::MotionSceneDone();
 }
 
@@ -356,6 +392,7 @@ PPC_FUNC(GUEST(Scene_Pop)) {
     if (t_draw_list && t_draw_list == list && PastWorld(list, false)) Occlude();
     if (t_world_list && t_world_list == list && PastWorld(list, true)) EndWorld(ctx);
     if (t_past_list && t_past_list == list) UpdateOcean(list);
+    if (t_fog.list && t_fog.list == list && NearLayer(list)) FogIn(ctx);
     fcip::MotionScenePop(list);
     GUEST_ORIG(Scene_Pop)(ctx, base);
 }

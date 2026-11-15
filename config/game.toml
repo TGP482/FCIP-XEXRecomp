@@ -138,6 +138,7 @@ Overlay_Flush = 0x82369480
 PostEffects_Draw = 0x8237F6B8
 PerspectiveFov = 0x8264D520
 Renderer_Init = 0x8236EA88
+Renderer_SetVsConstants = 0x823B2FE8
 Scene_Draw = 0x82502F48
 Scene_Pop = 0x82509400
 Scene_Push = 0x825091A0

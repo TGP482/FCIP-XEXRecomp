@@ -1,11 +1,4 @@
-# Recompiler input for the solo level editor: ige.xex again, with the map editor's hooks plus its own
-
-includes = ["editor.toml"]
-
-[xex]
-out = "generated/leveleditor"
-partitions = 64
-library = "FCIPLevelEditor.dll"  # <exe>.dll, which the executable delay loads
+# What the solo level editor in FCIPEditor.exe names in ige.xex, included by editor.toml
 
 # functions the level editor calls by name
 [symbols]
