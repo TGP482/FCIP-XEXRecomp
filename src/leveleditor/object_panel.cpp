@@ -1,7 +1,12 @@
 // ige.xex, the solo level editor: the object panel (F4) lists the script properties of the one object the Edit
 // Object tool has selected, as the editor saves them, and writes edits back into the entity's tables. The game's own
-// converters do the work: a table to XML as the editor saves, XML to a table as it loads.
+// converters do the work: a table to XML as the editor saves, XML to a table as it loads. Below them are the object's
+// event links, which another object (a door, a spawner, the level) gets when this one sends an event.
+#include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstdio>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -13,6 +18,7 @@
 #include "common/menu.h"
 #include "common/panel_colors.h"
 #include "kernel/memory.h"
+#include "leveleditor/event_links.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/markers.h"
 #include "xdk/hle.h"
@@ -30,25 +36,9 @@ constexpr const char* kTables[] = {"Properties", "PropertiesInstance"};
 constexpr uint32_t kToolSelectedFirst = 0x118;
 constexpr uint32_t kToolSelectedLast = 0x11C;
 constexpr uint32_t kObjectEntity = 0x2C;  // editor object
-constexpr uint32_t kEntityScript = 0x134;  // entity: its script table
-constexpr uint32_t kEntityName = 0x04;     // entity method
 // IScriptObject methods
 constexpr uint32_t kScriptGetValue = 0x44;
 constexpr uint32_t kScriptRelease = 0x124;
-// CXmlNode: tag, children (XmlNodeRef), attributes (key and value strings)
-constexpr uint32_t kNodeBytes = 0x68;
-constexpr uint32_t kNodeTag = 0x0C;
-constexpr uint32_t kNodeChildFirst = 0x4C;
-constexpr uint32_t kNodeChildLast = 0x50;
-constexpr uint32_t kNodeAttrFirst = 0x5C;
-constexpr uint32_t kNodeAttrLast = 0x60;
-constexpr uint32_t kAttrBytes = 0x38;
-constexpr uint32_t kAttrKey = 0x00;
-constexpr uint32_t kAttrValue = 0x1C;
-// IXmlNode methods
-constexpr uint32_t kNodeAddRef = 0x08;
-constexpr uint32_t kNodeRelease = 0x0C;
-constexpr uint32_t kNodeSetAttr = 0xB0;
 // guest scratch: the converted node and table, then two texts
 constexpr uint32_t kScratchNodeRef = 0x00;
 constexpr uint32_t kScratchTableRef = 0x04;
@@ -59,6 +49,13 @@ constexpr uint32_t kScratchValueBytes = 0x100;
 constexpr uint32_t kScratchBytes = kScratchValue + kScratchValueBytes;
 
 constexpr size_t kValueChars = 256;
+constexpr size_t kEventChars = 64;
+// the events the campaign's links use most, offered beside the free text
+constexpr const char* kSourceEvents[] = {"Enter", "Leave", "Spawn", "OutputTrigger", "OnDeath", "Die", "Explode",
+                                         "Use", "StopUse", "PlayerEntered", "OnSpawnedEntityDied"};
+constexpr const char* kTargetEvents[] = {"Enable", "Disable", "Activate", "DeActivate", "InputTrigger", "Spawn",
+                                         "SpawnMax", "SwitchToGenericJob", "GoPath", "Play", "Stop", "Explode",
+                                         "Die", "SetCurrent", "DisplayText", "_Mission_Failed"};
 
 struct Attribute {
     std::string key;
@@ -71,11 +68,23 @@ struct Node {
     std::string title;
     std::vector<Attribute> attributes;
 };
+// an entity a link can name
+struct Target {
+    uint32_t id = 0;
+    std::string label;
+};
 struct Snapshot {
     uint32_t object = 0;  // editor object, 0 with nothing selected
+    uint32_t entity_id = 0;
     std::string name;
     std::vector<Node> nodes;
+    std::vector<fcip::editor::Link> links;
+    std::vector<Target> targets;
     uint32_t generation = 0;
+};
+struct LinkEdit {
+    uint32_t object = 0;
+    std::vector<fcip::editor::Link> links;
 };
 struct Edit {
     uint32_t object = 0;
@@ -93,6 +102,7 @@ struct Converted {
 std::mutex g_lock;
 Snapshot g_snapshot;        // written on the editor's thread
 std::vector<Edit> g_edits;  // queued by the panel
+std::vector<LinkEdit> g_link_edits;
 uint32_t g_scratch = 0;
 uint32_t g_shown = 0;  // the object the snapshot holds, editor thread only
 bool g_stale = false;
@@ -101,6 +111,10 @@ bool g_stale = false;
 bool g_open = false;
 Snapshot g_view;
 std::vector<std::array<char, kValueChars>> g_fields;
+// the link being added
+char g_new_source[kEventChars] = "Enter";
+char g_new_event[kEventChars] = "Enable";
+uint32_t g_new_target = 0;
 
 // Editor thread
 
@@ -118,6 +132,20 @@ uint32_t SelectedObject(uint32_t tool) {
     uint32_t first = R32(tool + kToolSelectedFirst);
     if (!first || R32(tool + kToolSelectedLast) - first != 4) return 0;
     return R32(first);
+}
+
+std::string LabelOf(PPCContext& ctx, uint32_t entity) {
+    uint32_t cls = uint32_t(CallGuest(ctx, Method(entity, kEntityClassName), {entity}));
+    std::string label = GuestString(entity + kEntityName);
+    if (cls) label += " (" + ReadCString(cls) + ")";
+    return label;
+}
+
+std::vector<Target> ReadTargets(PPCContext& ctx) {
+    std::vector<Target> targets;
+    ForEachEntity([&](uint32_t entity) { targets.push_back({R32(entity + kEntityId), LabelOf(ctx, entity)}); });
+    std::sort(targets.begin(), targets.end(), [](const Target& a, const Target& b) { return a.label < b.label; });
+    return targets;
 }
 
 uint32_t ScriptOf(uint32_t object) {
@@ -181,13 +209,15 @@ Snapshot Read(PPCContext& ctx, uint32_t object) {
     uint32_t script = object ? ScriptOf(object) : 0;
     if (!script) return s;
     uint32_t entity = R32(object + kObjectEntity);
-    uint32_t name = uint32_t(CallGuest(ctx, Method(entity, kEntityName), {entity}));
-    s.name = name ? ReadCString(name) : std::string();
+    s.entity_id = R32(entity + kEntityId);
+    s.name = LabelOf(ctx, entity);
     for (int t = 0; t < int(std::size(kTables)); t++) {
         Converted c = ToXml(ctx, script, kTables[t]);
         if (c.node) ReadNode(c.node, Node{t, {}, kTables[t], {}}, s.nodes);
         Release(ctx, c);
     }
+    s.links = LinksOf(s.entity_id);
+    s.targets = ReadTargets(ctx);
     return s;
 }
 
@@ -207,13 +237,20 @@ void Update(PPCContext& ctx, uint32_t object) {
     if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
     if (!g_scratch) return;
     std::vector<Edit> edits;
+    std::vector<LinkEdit> link_edits;
     {
         std::lock_guard lock(g_lock);
         edits.swap(g_edits);
+        link_edits.swap(g_link_edits);
     }
     for (const Edit& e : edits) {
         if (e.object != object) continue;
         Apply(ctx, e);
+        g_stale = true;
+    }
+    for (const LinkEdit& e : link_edits) {
+        if (e.object != object) continue;
+        SetLinks(ctx, R32(object + kObjectEntity), e.links);
         g_stale = true;
     }
     if (object == g_shown && !g_stale) return;
@@ -270,6 +307,84 @@ void DrawFields() {
     }
 }
 
+void QueueLinks(std::vector<fcip::editor::Link> links) {
+    std::lock_guard lock(g_lock);
+    g_link_edits.push_back({g_view.object, std::move(links)});
+}
+
+std::string TargetLabel(uint32_t id) {
+    for (const Target& t : g_view.targets) {
+        if (t.id == id) return t.label;
+    }
+    return "entity " + std::to_string(id);
+}
+
+// a text field with the usual values in a list beside it
+template <size_t N>
+void EventField(const char* id, char (&text)[kEventChars], const char* const (&usual)[N], float width) {
+    ImGui::PushID(id);
+    ImGui::SetNextItemWidth(width);
+    ImGui::InputText("##text", text, kEventChars);
+    ImGui::SameLine(0, 0);
+    if (ImGui::BeginCombo("##usual", nullptr, ImGuiComboFlags_NoPreview)) {
+        for (const char* e : usual) {
+            if (ImGui::Selectable(e)) std::snprintf(text, kEventChars, "%s", e);
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopID();
+}
+
+void TargetField(float width) {
+    ImGui::SetNextItemWidth(width);
+    std::string preview = g_new_target ? TargetLabel(g_new_target) : "pick a target";
+    if (!ImGui::BeginCombo("##target", preview.c_str())) return;
+    for (const Target& t : g_view.targets) {
+        if (t.id == g_view.entity_id) continue;
+        if (ImGui::Selectable(t.label.c_str(), t.id == g_new_target)) g_new_target = t.id;
+    }
+    ImGui::EndCombo();
+}
+
+void DrawLinks() {
+    ImGui::PushStyleColor(ImGuiCol_Text, fcip::kHeading);
+    ImGui::TextUnformatted("Events");
+    ImGui::PopStyleColor();
+    ImGui::Separator();
+    for (size_t i = 0; i < g_view.links.size(); i++) {
+        const fcip::editor::Link& l = g_view.links[i];
+        ImGui::PushID(int(i));
+        if (ImGui::SmallButton("Remove")) {
+            std::vector<fcip::editor::Link> links = g_view.links;
+            links.erase(links.begin() + std::ptrdiff_t(i));
+            QueueLinks(std::move(links));
+        }
+        ImGui::SameLine();
+        std::string target = TargetLabel(l.target);
+        ImGui::Text("On %s, %s gets %s", l.source.c_str(), target.c_str(), l.event.c_str());
+        ImGui::PopID();
+    }
+    float em = ImGui::GetFontSize();
+    ImGui::TextUnformatted("On");
+    ImGui::SameLine();
+    EventField("source", g_new_source, kSourceEvents, em * 7);
+    ImGui::SameLine();
+    TargetField(em * 12);
+    ImGui::SameLine();
+    ImGui::TextUnformatted("gets");
+    ImGui::SameLine();
+    EventField("event", g_new_event, kTargetEvents, em * 7);
+    ImGui::SameLine();
+    bool ready = g_new_target && g_new_source[0] && g_new_event[0];
+    ImGui::BeginDisabled(!ready);
+    if (ImGui::Button("Add")) {
+        std::vector<fcip::editor::Link> links = g_view.links;
+        links.push_back({g_new_source, g_new_target, g_new_event, ""});
+        QueueLinks(std::move(links));
+    }
+    ImGui::EndDisabled();
+}
+
 void DrawPanel() {
     if (!g_open) return;
     TakeSnapshot();
@@ -293,6 +408,7 @@ void DrawPanel() {
         else ImGui::Text("Object: %s", g_view.name.c_str());
         ImGui::BeginChild("##fields");
         DrawFields();
+        if (g_view.object) DrawLinks();
         ImGui::EndChild();
     }
     ImGui::End();

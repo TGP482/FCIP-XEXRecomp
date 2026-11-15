@@ -70,15 +70,6 @@ constexpr CategoryCaption kCategoryCaptions[] = {
 // the multiplayer list's keys end in a two letter team suffix, which its tool strips before spawning
 constexpr const char* kTeamSuffix = "_E";
 
-// IXmlNode methods
-constexpr uint32_t kNodeAddRef = 0x08;
-constexpr uint32_t kNodeRelease = 0x0C;
-constexpr uint32_t kNodeGetAttr = 0x4C;
-constexpr uint32_t kNodeAddChild = 0x58;  // takes an XmlNodeRef by value, which it releases
-constexpr uint32_t kNodeChildCount = 0x68;
-constexpr uint32_t kNodeGetChild = 0x6C;
-constexpr uint32_t kNodeFindChild = 0x70;
-
 // std::string and std::wstring
 constexpr uint32_t kStrText = 0x04;
 constexpr uint32_t kStrLength = 0x14;
@@ -121,10 +112,7 @@ std::vector<CampaignType> g_enemies;
 std::vector<CampaignType> g_objects;
 
 uint32_t GuestText(const std::string& text) {
-    size_t n = std::min<size_t>(text.size(), kScratchTextBytes - 1);
-    for (size_t i = 0; i < n; i++) W8(g_scratch + kScratchText + uint32_t(i), uint8_t(text[i]));
-    W8(g_scratch + kScratchText + uint32_t(n), 0);
-    return g_scratch + kScratchText;
+    return WriteText(g_scratch + kScratchText, text, kScratchTextBytes);
 }
 
 void InitEmptyString(uint32_t str, uint32_t capacity) {

@@ -26,7 +26,9 @@ XmlNode_Construct = 0x82366CC8
 Script_NewTable = 0x820C4980
 Xml_FromTable = 0x82104070
 Xml_ToTable = 0x8229F750
+Entity_LoadEvents = 0x8229FC48  # an entity's <EventTargets> into its script's Events table
 
 [data]
 Catalogue_Lists = 0x8296C760
 EntitySystem_pointer = 0x828C71F0
+Save_EntityNumber = 0x8296B2C4  # the last EntityId the mission being saved gave out

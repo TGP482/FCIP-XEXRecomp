@@ -18,22 +18,13 @@
 #include "xdk/hle.h"
 
 using namespace kernel;
+using namespace fcip::editor;
 
 namespace {
 
 // the catalogue's logic classes
 constexpr const char* kLogicClasses[] = {"Checkpoint",      "EndMapTrigger",  "ProximityTrigger", "AreaTrigger",
                                          "DelayTrigger",    "MultipleTrigger", "UtilityTrigger",   "Waypoint"};
-
-// entity system: a list of nodes, the entity at +0xC
-constexpr uint32_t kSystemEntities = 0x24;
-constexpr uint32_t kNodeNext = 0x00;
-constexpr uint32_t kNodeEntity = 0x0C;
-constexpr uint32_t kMaxNodes = 0x10000;  // a guard on the walk
-// entity: methods, then its name
-constexpr uint32_t kEntityClassName = 0x04;
-constexpr uint32_t kEntityPosition = 0x10;  // (world) returns a Vec3
-constexpr uint32_t kEntityName = 0xBC;      // std::string
 
 constexpr float kMarkerHalf = 6.0f;  // pixels
 constexpr float kMinClipW = 0.01f;   // behind the camera below this
@@ -53,11 +44,11 @@ bool IsLogic(const std::string& cls) {
 }
 
 void AddIfLogic(PPCContext& ctx, uint32_t entity, std::vector<Marker>& out) {
-    uint32_t cls = uint32_t(CallGuest(ctx, fcip::editor::Method(entity, kEntityClassName), {entity}));
+    uint32_t cls = uint32_t(CallGuest(ctx, Method(entity, kEntityClassName), {entity}));
     if (!cls || !IsLogic(ReadCString(cls))) return;
-    uint32_t pos = uint32_t(CallGuest(ctx, fcip::editor::Method(entity, kEntityPosition), {entity, 1}));
+    uint32_t pos = uint32_t(CallGuest(ctx, Method(entity, kEntityPosition), {entity, 1}));
     if (!pos) return;
-    out.push_back({{GF(pos), GF(pos + 4), GF(pos + 8)}, fcip::editor::GuestString(entity + kEntityName)});
+    out.push_back({{GF(pos), GF(pos + 4), GF(pos + 8)}, GuestString(entity + kEntityName)});
 }
 
 }  // namespace
@@ -66,13 +57,7 @@ namespace fcip::editor {
 
 void UpdateMarkers(PPCContext& ctx) {
     std::vector<Marker> found;
-    uint32_t system = R32(SYM_EntitySystem_pointer);
-    uint32_t head = system ? R32(system + kSystemEntities) : 0;
-    uint32_t node = head ? R32(head + kNodeNext) : 0;
-    for (uint32_t n = 0; node && node != head && n < kMaxNodes; n++) {
-        if (uint32_t entity = R32(node + kNodeEntity)) AddIfLogic(ctx, entity, found);
-        node = R32(node + kNodeNext);
-    }
+    ForEachEntity([&](uint32_t entity) { AddIfLogic(ctx, entity, found); });
     std::lock_guard lock(g_lock);
     g_markers.swap(found);
     g_updated = std::chrono::steady_clock::now();
