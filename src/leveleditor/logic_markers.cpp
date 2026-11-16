@@ -17,6 +17,7 @@
 #include "leveleditor/object_panel.h"
 #include "leveleditor/picking.h"
 #include "leveleditor/sequence_panel.h"
+#include "leveleditor/static_geometry.h"
 #include "leveleditor/volumes.h"
 #include "xdk/hle.h"
 
@@ -152,6 +153,7 @@ void DrawMarkers() {
     DrawGizmo(view);
     DrawLinkDrag(view);
     DrawSequenceKeys(view);
+    DrawStaticGeometry(view);
     EndView(view);
 }
 

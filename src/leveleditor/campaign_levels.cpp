@@ -29,6 +29,7 @@
 #include "leveleditor/markers.h"
 #include "leveleditor/mission.h"
 #include "leveleditor/sequences.h"
+#include "leveleditor/static_geometry.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
@@ -345,6 +346,7 @@ PPC_FUNC(sub_82112AD0) {
         UpdateEquipment(ctx);
         UpdateFormations(ctx);
         UpdateArchetypeLibrary(ctx);
+        UpdateStaticGeometry(ctx);
         UpdateSequences(ctx);
         ReloadOwnScript(ctx);
         if (ShellUp()) UpdateMarkers(ctx);

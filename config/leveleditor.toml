@@ -92,6 +92,8 @@ Environment_Load = 0x82361DB0  # (3D engine, XmlNodeRef of a node holding <Envir
 EquipPack_Load = 0x82139080           # (game, XmlNodeRef of an <EquipPack>) into the EquipPacks script table
 Game_SetPlayerEquipPack = 0x821394C0  # (game, pack name)
 Weapons_Load = 0x8220BD38             # (weapon system, name) loads a weapon class once
+# the Static Geometry tab (static_geometry.cpp)
+Brush_SetMatrix = 0x82368E78  # (CBrush, 16 floats) its matrix, world box and position, as a sector load sets them
 
 [data]
 Catalogue_Lists = 0x8296C760
