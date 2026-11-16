@@ -36,6 +36,7 @@
 #include "leveleditor/markers.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
+#include "leveleditor/objectives.h"
 #include "leveleditor/picking.h"
 #include "leveleditor/sequence_panel.h"
 #include "leveleditor/volumes.h"
@@ -510,6 +511,10 @@ void DrawTabs(const State& s) {
     }
     if (editor::g_solo && ImGui::BeginTabItem("Sequences")) {
         editor::DrawSequencePanel();
+        ImGui::EndTabItem();
+    }
+    if (editor::g_solo && ImGui::BeginTabItem("Objectives")) {
+        editor::DrawObjectivesPanel();
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("History")) {

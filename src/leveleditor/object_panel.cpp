@@ -4,8 +4,10 @@
 // object's event links, which another object (a door, a spawner, the level) gets when this one sends an event.
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -18,6 +20,7 @@
 #include "kernel/memory.h"
 #include "leveleditor/event_links.h"
 #include "leveleditor/entity_events.h"
+#include "leveleditor/fields.h"
 #include "leveleditor/gizmo.h"
 #include "leveleditor/link_edit.h"
 #include "leveleditor/guest.h"
@@ -329,6 +332,21 @@ void Queue(const Node& n, const Attribute& a, const char* value) {
     g_edits.push_back({g_view.entity_id, n.table, n.path, {}, a.key, value});
 }
 
+// the widget a script property takes, by the type its name starts with (bEnabled, fSpeed, iSoundType, nGroupID,
+// clrDiffuse, vector_Dim)
+FieldKind KindOf(const std::string& key) {
+    auto prefix = [&](const char* p) {
+        size_t n = std::strlen(p);
+        return key.size() > n && key.compare(0, n, p) == 0 && (std::isupper(uint8_t(key[n])) || key[n] == '_');
+    };
+    if (key.rfind("clr", 0) == 0) return FieldKind::Colour;
+    if (key.rfind("vector", 0) == 0) return FieldKind::Vector;
+    if (prefix("b")) return FieldKind::Bool;
+    if (prefix("f")) return FieldKind::Float;
+    if (prefix("i") || prefix("n")) return FieldKind::Int;
+    return FieldKind::Text;
+}
+
 // an enemy's anchor fields (FirstAnchor, OnPlayerSeenAnchor1) name one of the level's anchors; AnchorGroupID does not
 bool IsAnchorField(const std::string& key) {
     return key.find("Anchor") != std::string::npos && key.find("ID") == std::string::npos;
@@ -364,10 +382,13 @@ void DrawFields() {
             ImGui::TextUnformatted(a.key.c_str());
             ImGui::SameLine(label_w);
             char* text = g_fields[field].data();
+            FieldKind kind = KindOf(a.key);
             bool anchor = IsAnchorField(a.key);
             ImGui::SetNextItemWidth(anchor ? -ImGui::GetFrameHeight() : -1);
-            ImGui::InputText("##value", text, kValueChars);
-            if (ImGui::IsItemDeactivatedAfterEdit()) Queue(n, a, text);
+            std::string edited;
+            if (kind != FieldKind::Text && DrawField("##typed", kind, text, edited)) Pick(n, a, text, edited);
+            if (kind == FieldKind::Text) ImGui::InputText("##value", text, kValueChars);
+            if (kind == FieldKind::Text && ImGui::IsItemDeactivatedAfterEdit()) Queue(n, a, text);
             if (anchor) AnchorPicker(n, a, text);
             ImGui::PopID();
             field++;

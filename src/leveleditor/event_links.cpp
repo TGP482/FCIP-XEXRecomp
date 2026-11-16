@@ -11,6 +11,7 @@
 
 #include "kernel/memory.h"
 #include "leveleditor/archetypes.h"
+#include "leveleditor/editor_classes.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/mission.h"
 #include "leveleditor/mode.h"
@@ -181,13 +182,16 @@ PPC_FUNC(sub_8229FC48) {
     __imp__sub_8229FC48(ctx, base);
 }
 
-// one entity into a mission's Objects (r4 the entity, r5 its XmlNodeRef); writing it counts EntityId up
+// one entity into a mission's Objects (r4 the entity, r5 its XmlNodeRef); writing it counts EntityId up. The classes
+// the map editor leaves alone are written when the solo editor kept them (editor_classes.cpp)
 PPC_FUNC(sub_821043A0) {
     if (!fcip::editor::g_solo) return __imp__sub_821043A0(ctx, base);
     uint32_t entity = uint32_t(ctx.r[4]);
     uint32_t objects = R32(uint32_t(ctx.r[5]));
     uint32_t before = R32(SYM_Save_EntityNumber);
+    AllowClasses(SavesAsEntity(ctx, entity));
     __imp__sub_821043A0(ctx, base);
+    AllowClasses(false);
     uint32_t number = R32(SYM_Save_EntityNumber);
     uint32_t first = objects ? R32(objects + kNodeChildFirst) : 0;
     uint32_t last = objects ? R32(objects + kNodeChildLast) : 0;

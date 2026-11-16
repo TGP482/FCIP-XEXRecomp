@@ -144,6 +144,11 @@ void DrawPicked(const View& v) {
 
 uint32_t EntityOfId(uint32_t entity_id) { return FindEntity(entity_id); }
 
+uint32_t EditorObjectFor(PPCContext& ctx, uint32_t entity) {
+    if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
+    return g_scratch ? EditorObjectOf(ctx, entity) : 0;
+}
+
 uint32_t EditorObjectOfEntity(PPCContext& ctx, uint32_t entity_id) {
     if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
     uint32_t entity = g_scratch ? FindEntity(entity_id) : 0;

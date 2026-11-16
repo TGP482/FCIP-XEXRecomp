@@ -13,6 +13,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -533,6 +534,17 @@ void UpdateMission(PPCContext& ctx) {
     if (!g_stale) return;
     g_stale = false;
     Refresh();
+}
+
+std::unordered_set<uint32_t> MissionEntityIds() {
+    std::unordered_set<uint32_t> ids;
+    uint32_t objects = ObjectsNode();
+    for (uint32_t i = 0; objects && i < ChildCount(objects); i++) {
+        uint32_t node = ChildAt(objects, i);
+        if (Tag(node) != kEntity) continue;
+        ids.insert(uint32_t(std::strtoul(Find(Attributes(node), "EntityId").c_str(), nullptr, 10)));
+    }
+    return ids;
 }
 
 std::shared_ptr<const AiObjects> ReadAiObjects() {

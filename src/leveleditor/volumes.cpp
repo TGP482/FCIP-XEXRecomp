@@ -1,8 +1,8 @@
 // ige.xex, the solo level editor: what the picked object's volume is made of, dragged in the view. A box entity's
-// Dim values (SetLocalBBox(-Dim/2, Dim/2) in its script), a radius entity's radius, an AreaBox's Width, Length and
-// Height, an AreaSphere's Radius and an area's points and Height (area_markers.cpp has how the engine reads them). A
-// point drags on its own height, a mid point handle adds a point there, Alt and a click removes one. Each drag is
-// one step of undo.
+// Dim values (SetLocalBBox(-Dim/2, Dim/2) in its script), the radii a sound, light, alarm, objective or spawn spot
+// reads, an AreaBox's Width, Length and Height, an AreaSphere's Radius and an area's points and Height
+// (area_markers.cpp has how the engine reads them). A point drags on its own height, a mid point handle adds a point
+// there, Alt and a click removes one. Each drag is one step of undo.
 #include "leveleditor/volumes.h"
 
 #include <algorithm>
@@ -58,9 +58,16 @@ struct RadiusKey {
     const char* cls;
     const char* key;
 };
+// the radii their scripts read (a SoundSpot's roll offs of -1 keep the sound's own, so they get no handle)
 constexpr RadiusKey kRadiusKeys[] = {
-    {"CreatureGeneratorSpawnSpot", "fSpawnRadius"},
+    {"CreatureGeneratorSpawnSpot", "fSpawnRadius"}, {"SoundSpot", "fRollOff1_Saturation"},
+    {"SoundSpot", "fRollOff2_Background"},          {"SoundSpot", "fRollOff3_Transition"},
+    {"SoundSpot", "fRollOff4_Inaudible"},           {"ProximitySoundSpot", "OuterRadius"},
+    {"DynamicLight", "AttenuationRadius"},          {"SoundSupressor", "fRadius"},
+    {"SonicAlarm", "DamageRadius"},                 {"Waypoint", "Radius"},
+    {"DamagingAnimation", "Radius"},
 };
+constexpr float kRadiusTurn = 3.14159265f / 4.0f;  // each radius's handle an eighth of a turn from the last
 
 enum class Shape { None, EntityBox, EntityRadius, AreaBox, Sphere, Points };
 
@@ -69,7 +76,8 @@ struct Volume {
     Shape shape = Shape::None;
     uint32_t entity_id = 0;
     const BoxKeys* keys = nullptr;
-    const char* radius_key = nullptr;
+    std::vector<const char*> radius_keys;
+    std::vector<float> radii;
     uint32_t object = 0;
     Vec centre{};
     float axes[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
@@ -126,15 +134,16 @@ const BoxKeys* KeysOf(const std::string& cls) {
 
 bool RadiusVolume(const ViewEntity& e, Volume& out) {
     for (const RadiusKey& k : kRadiusKeys) {
-        if (e.cls != k.cls) continue;
-        out.shape = Shape::EntityRadius;
-        out.entity_id = e.id;
-        out.radius_key = k.key;
-        out.centre = {e.pos[0], e.pos[1], e.pos[2]};
-        out.size[0] = std::strtof(PropertyOf(e, k.key).c_str(), nullptr);
-        return true;
+        float radius = std::strtof(PropertyOf(e, k.key).c_str(), nullptr);
+        if (e.cls != k.cls || radius < 0.0f) continue;
+        out.radius_keys.push_back(k.key);
+        out.radii.push_back(radius);
     }
-    return false;
+    if (out.radii.empty()) return false;
+    out.shape = Shape::EntityRadius;
+    out.entity_id = e.id;
+    out.centre = {e.pos[0], e.pos[1], e.pos[2]};
+    return true;
 }
 
 bool EntityVolume(Volume& out) {
@@ -224,8 +233,16 @@ std::vector<Handle> HandlesOf(const Volume& v) {
             handles.push_back(SizeHandle(v, 2, v.centre, v.size[2], 1.0f));
             break;
         }
-        case Shape::Sphere:
-        case Shape::EntityRadius: handles.push_back(SizeHandle(v, 0, v.centre, v.size[0], 1.0f)); break;
+        case Shape::Sphere: handles.push_back(SizeHandle(v, 0, v.centre, v.size[0], 1.0f)); break;
+        case Shape::EntityRadius:
+            for (size_t i = 0; i < v.radii.size(); i++) {
+                Handle h = SizeHandle(v, 0, v.centre, 0.0f, 1.0f);
+                h.index = i;
+                h.dir = {std::cos(kRadiusTurn * float(i)), std::sin(kRadiusTurn * float(i)), 0.0f};
+                h.at = Add(v.centre, Scale(h.dir, v.radii[i]));
+                handles.push_back(h);
+            }
+            break;
         case Shape::Points: {
             Vec middle = Centroid(v.points);
             middle[2] = v.bottom;
@@ -341,7 +358,9 @@ void Commit() {
         case Shape::EntityBox: CommitEntity(v, size); break;
         case Shape::AreaBox: SetAiAttribute(v.object, {}, kAreaBoxKeys[axis], Format(size[size_t(axis)])); break;
         case Shape::Sphere: SetAiAttribute(v.object, {}, "Radius", Format(size[0])); break;
-        case Shape::EntityRadius: SetEntityProperty(v.entity_id, v.radius_key, Format(size[0])); break;
+        case Shape::EntityRadius:
+            SetEntityProperty(v.entity_id, v.radius_keys[g_drag.handle.index], Format(g_drag.value));
+            break;
         case Shape::Points:
             if (g_drag.handle.kind == Kind::Size) SetAiAttribute(v.object, {}, "Height", Format(size[2]));
             else SetAiPoints(v.object, DraggedPoints());
@@ -374,6 +393,7 @@ void DrawDragged(const View& view) {
     }
     Handle h = g_drag.handle;
     float distance = g_drag.value / h.scale;
+    if (v.shape == Shape::EntityRadius) Circle(view, h.base.data(), distance, kActiveColour);
     Line(view, h.base.data(), Add(h.base, Scale(h.dir, distance)).data(), kActiveColour);
     DrawHandle(view, Add(h.base, Scale(h.dir, distance)), kActiveColour);
 }
@@ -400,7 +420,8 @@ bool VolumeMouse(ImVec2 mouse, bool pressed, bool down) {
     if (at < 0) return false;
     const Handle& h = handles[size_t(at)];
     if (ImGui::GetIO().KeyAlt) return RemovePoint(v, h);
-    g_drag = {true, v, h, v.size[size_t(h.axis)], h.at};
+    float value = v.shape == Shape::EntityRadius ? v.radii[h.index] : v.size[size_t(h.axis)];
+    g_drag = {true, v, h, value, h.at};
     return true;
 }
 
@@ -415,6 +436,7 @@ void DrawVolumeHandles(const View& view) {
     for (const Handle& h : HandlesOf(v)) {
         DrawHandle(view, h.at, h.kind == Kind::Insert ? kInsertColour : kHandleColour);
     }
+    for (float radius : v.radii) Circle(view, v.centre.data(), radius, kHandleColour);
 }
 
 }  // namespace fcip::editor
