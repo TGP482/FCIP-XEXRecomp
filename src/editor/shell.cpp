@@ -31,6 +31,7 @@
 #include "leveleditor/ai_panel.h"
 #include "leveleditor/campaign_levels.h"
 #include "leveleditor/gizmo.h"
+#include "leveleditor/level_data.h"
 #include "leveleditor/level_objects.h"
 #include "leveleditor/link_edit.h"
 #include "leveleditor/markers.h"
@@ -515,6 +516,10 @@ void DrawTabs(const State& s) {
     }
     if (editor::g_solo && ImGui::BeginTabItem("Layers")) {
         editor::DrawLayerPanel();
+        ImGui::EndTabItem();
+    }
+    if (editor::g_solo && ImGui::BeginTabItem("Level")) {
+        editor::DrawLevelPanel();
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("History")) {

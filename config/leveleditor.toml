@@ -84,6 +84,8 @@ Entity_SetAngles = 0x82127578          # (entity, Vec3, 1, 1, 0) as the script's
 Entity_Reset = 0x82128F20              # (entity) its script's OnReset
 Entity_ScriptEvent = 0x8212F2F8        # (entity, event, 0, 0)
 Movie_StopAllSequences = 0x823A3C80    # (movie system)
+# the Level tab (level_data.cpp)
+Terrain_SetDetailTextures = 0x82469CE0  # (terrain, layer, texture, 0, material, axis, grass, densities, name, material)
 
 [data]
 Catalogue_Lists = 0x8296C760

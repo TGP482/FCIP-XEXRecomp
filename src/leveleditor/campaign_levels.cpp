@@ -21,6 +21,7 @@
 #include "leveleditor/archetypes.h"
 #include "leveleditor/event_links.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/level_data.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mission.h"
 #include "leveleditor/sequences.h"
@@ -335,6 +336,7 @@ PPC_FUNC(sub_82112AD0) {
     if (fcip::editor::g_solo) {
         UpdateRequest(ctx, uint32_t(ctx.r[3]));
         UpdateMission(ctx);
+        UpdateLevelData(ctx);
         UpdateSequences(ctx);
         ReloadOwnScript(ctx);
         if (ShellUp()) UpdateMarkers(ctx);
