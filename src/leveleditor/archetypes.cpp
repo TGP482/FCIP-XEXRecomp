@@ -206,6 +206,18 @@ std::string ArchetypeOf(uint32_t entity_id) {
     return found == g_archetypes.end() ? std::string() : found->second.name;
 }
 
+std::vector<uint32_t> EntitiesOfArchetype(const std::string& name) {
+    std::vector<uint32_t> ids;
+    for (const auto& [id, archetype] : g_archetypes) {
+        if (archetype.name == name) ids.push_back(id);
+    }
+    return ids;
+}
+
+void WritePropertiesTo(PPCContext& ctx, uint32_t entity, uint32_t node) {
+    if (EnsureScratch()) WriteTable(ctx, entity, node);
+}
+
 std::vector<std::string> ArchetypesOfClass(PPCContext& ctx, const std::string& cls) {
     std::vector<std::string> names;
     uint32_t library = uint32_t(CallGuest(ctx, SYM_Library_Get, {}));

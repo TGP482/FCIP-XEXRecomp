@@ -15,6 +15,9 @@ std::string ArchetypeOf(uint32_t entity_id);  // the one it loaded or was set wi
 std::vector<std::string> ArchetypesOfClass(PPCContext& ctx, const std::string& cls);
 // the entity takes the archetype's Properties and is saved with it; one step of undo
 void SetArchetype(PPCContext& ctx, uint32_t entity, const std::string& name);
+std::vector<uint32_t> EntitiesOfArchetype(const std::string& name);  // their entity ids
+// the entity's script Properties into node, as the save writes them
+void WritePropertiesTo(PPCContext& ctx, uint32_t entity, uint32_t node);
 // the save wrote an entity (node): its archetype, and its whole Properties table as LocalProperties over it
 void SaveArchetype(PPCContext& ctx, uint32_t entity, uint32_t node);
 // every archetype the saved mission's entities name, into its EntityLibrary from the editor's library

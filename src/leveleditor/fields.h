@@ -11,6 +11,11 @@ enum class FieldKind { Text, Bool, Int, Float, Colour, Colour255, Vector, Vector
 
 // true once an edit ends, with the value to keep in out; the value given shows until then
 bool DrawField(const char* id, FieldKind kind, const std::string& value, std::string& out);
+// the widget a script property takes by the type its name starts with (bEnabled, fSpeed, iSoundType, nGroupID,
+// clrDiffuse, vector_Dim)
+FieldKind KindOfKey(const std::string& key);
+// a script property's value with the widget its name asks for: its choice list, a picker, or KindOfKey's field
+bool DrawPropertyValue(const char* id, const std::string& key, const std::string& value, std::string& out);
 // a selX property's choices, the script's enumX list it picks from by index; empty when it has none
 std::vector<std::string> ChoicesOf(const std::string& key);
 // the files or effects a property may name, from what the campaign names; empty for any other property

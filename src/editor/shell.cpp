@@ -29,6 +29,7 @@
 #include "editor/icons.h"
 #include "editor/tools.h"
 #include "leveleditor/ai_panel.h"
+#include "leveleditor/archetype_library.h"
 #include "leveleditor/campaign_levels.h"
 #include "leveleditor/environment.h"
 #include "leveleditor/equipment.h"
@@ -535,6 +536,10 @@ void DrawTabs(const State& s) {
     }
     if (editor::g_solo && ImGui::BeginTabItem("Formations")) {
         editor::DrawFormationsPanel();
+        ImGui::EndTabItem();
+    }
+    if (editor::g_solo && ImGui::BeginTabItem("Archetypes")) {
+        editor::DrawArchetypeLibraryPanel();
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("History")) {

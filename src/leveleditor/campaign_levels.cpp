@@ -18,6 +18,7 @@
 #include "core/log.h"
 #include "editor/tools.h"
 #include "kernel/memory.h"
+#include "leveleditor/archetype_library.h"
 #include "leveleditor/archetypes.h"
 #include "leveleditor/event_links.h"
 #include "leveleditor/environment.h"
@@ -343,6 +344,7 @@ PPC_FUNC(sub_82112AD0) {
         UpdateEnvironment(ctx);
         UpdateEquipment(ctx);
         UpdateFormations(ctx);
+        UpdateArchetypeLibrary(ctx);
         UpdateSequences(ctx);
         ReloadOwnScript(ctx);
         if (ShellUp()) UpdateMarkers(ctx);

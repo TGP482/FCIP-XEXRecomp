@@ -126,6 +126,24 @@ std::string ExtensionOf(const std::string& path) {
 
 }  // namespace
 
+fcip::editor::FieldKind fcip::editor::KindOfKey(const std::string& key) {
+    if (key.rfind("clr", 0) == 0) return FieldKind::Colour;
+    if (key.rfind("vector", 0) == 0) return FieldKind::Vector;
+    if (HasPrefix(key, "b")) return FieldKind::Bool;
+    if (HasPrefix(key, "f")) return FieldKind::Float;
+    if (HasPrefix(key, "i") || HasPrefix(key, "n")) return FieldKind::Int;
+    return FieldKind::Text;
+}
+
+bool fcip::editor::DrawPropertyValue(const char* id, const std::string& key, const std::string& value,
+                                     std::string& out) {
+    std::vector<std::string> choices = ChoicesOf(key);
+    if (!choices.empty()) return DrawChoice(id, choices, value, out);
+    std::span<const char* const> items = PickerItemsOf(key, value);
+    if (!items.empty()) return DrawPicker(id, items, value, out);
+    return DrawField(id, KindOfKey(key), value, out);
+}
+
 std::vector<std::string> fcip::editor::ChoicesOf(const std::string& key) {
     std::vector<std::string> names;
     if (!HasPrefix(key, "sel")) return names;
