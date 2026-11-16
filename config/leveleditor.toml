@@ -86,6 +86,8 @@ Entity_ScriptEvent = 0x8212F2F8        # (entity, event, 0, 0)
 Movie_StopAllSequences = 0x823A3C80    # (movie system)
 # the Level tab (level_data.cpp)
 Terrain_SetDetailTextures = 0x82469CE0  # (terrain, layer, texture, 0, material, axis, grass, densities, name, material)
+# the Environment tab (environment.cpp)
+Environment_Load = 0x82361DB0  # (3D engine, XmlNodeRef of a node holding <Environment>)
 
 [data]
 Catalogue_Lists = 0x8296C760

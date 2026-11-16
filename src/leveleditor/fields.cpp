@@ -33,16 +33,33 @@ std::string Format(const float* v, int count) {
     return text;
 }
 
+// up to count comma separated numbers, the rest 0
 void Parse(const std::string& text, float* v, int count) {
-    for (int i = 0; i < count; i++) v[i] = 0.0f;
-    if (count == 1) v[0] = std::strtof(text.c_str(), nullptr);
-    else std::sscanf(text.c_str(), "%f,%f,%f", &v[0], &v[1], &v[2]);
+    const char* at = text.c_str();
+    for (int i = 0; i < count; i++) {
+        char* end = nullptr;
+        v[i] = std::strtof(at, &end);
+        at = *end == ',' ? end + 1 : end;
+    }
+}
+
+// a colour the mission keeps as "r,g,b" from 0 to 255
+bool Colour255(std::string& text) {
+    float v[3];
+    Parse(text, v, 3);
+    for (float& c : v) c /= 255.0f;
+    if (!ImGui::ColorEdit3("##v", v)) return false;
+    char out[32];
+    std::snprintf(out, sizeof(out), "%d,%d,%d", int(v[0] * 255.0f + 0.5f), int(v[1] * 255.0f + 0.5f),
+                  int(v[2] * 255.0f + 0.5f));
+    text = out;
+    return true;
 }
 
 // the widget for the kind; true when it changed text
 bool Widget(fcip::editor::FieldKind kind, std::string& text) {
     using fcip::editor::FieldKind;
-    float v[3];
+    float v[3] = {};
     switch (kind) {
         case FieldKind::Bool: {
             bool on = std::atoi(text.c_str()) != 0;
@@ -66,10 +83,17 @@ bool Widget(fcip::editor::FieldKind kind, std::string& text) {
             if (!ImGui::ColorEdit3("##v", v, ImGuiColorEditFlags_Float)) return false;
             text = Format(v, 3);
             return true;
+        case FieldKind::Colour255:
+            return Colour255(text);
         case FieldKind::Vector:
             Parse(text, v, 3);
             if (!ImGui::DragFloat3("##v", v, kFloatSpeed, 0.0f, 0.0f, "%g")) return false;
             text = Format(v, 3);
+            return true;
+        case FieldKind::Vector2:
+            Parse(text, v, 2);
+            if (!ImGui::DragFloat2("##v", v, kFloatSpeed, 0.0f, 0.0f, "%g")) return false;
+            text = Format(v, 2);
             return true;
         case FieldKind::Text: {
             char buffer[kTextChars];

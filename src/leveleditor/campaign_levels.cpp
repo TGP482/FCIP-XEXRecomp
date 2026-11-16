@@ -20,6 +20,7 @@
 #include "kernel/memory.h"
 #include "leveleditor/archetypes.h"
 #include "leveleditor/event_links.h"
+#include "leveleditor/environment.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/level_data.h"
 #include "leveleditor/markers.h"
@@ -337,6 +338,7 @@ PPC_FUNC(sub_82112AD0) {
         UpdateRequest(ctx, uint32_t(ctx.r[3]));
         UpdateMission(ctx);
         UpdateLevelData(ctx);
+        UpdateEnvironment(ctx);
         UpdateSequences(ctx);
         ReloadOwnScript(ctx);
         if (ShellUp()) UpdateMarkers(ctx);

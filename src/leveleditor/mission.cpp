@@ -489,6 +489,8 @@ void KeepLevelData(PPCContext& ctx, uint32_t node) { Keep(ctx, g_level_data, nod
 
 uint32_t KeptLevelData() { return g_level_data; }
 
+uint32_t KeptMission() { return g_mission; }
+
 void ForgetMission(PPCContext& ctx) {
     ClearUndo(ctx);
     {

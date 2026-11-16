@@ -55,6 +55,7 @@ void KeepMission(PPCContext& ctx, uint32_t node);    // a campaign level's missi
 void KeepLevelData(PPCContext& ctx, uint32_t node);  // its LevelData.xml, as it loads
 void ForgetMission(PPCContext& ctx);                  // a level starts
 uint32_t KeptLevelData();
+uint32_t KeptMission();  // 0 without one
 std::unordered_set<uint32_t> MissionEntityIds();  // the kept mission's entities, by EntityId
 // the kept mission for a custom level: its Objects rebuilt from the editor's entities (82104C38 on the mission object)
 // and the kept AI objects; referenced once, 0 without a kept mission

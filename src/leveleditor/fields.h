@@ -6,7 +6,8 @@
 
 namespace fcip::editor {
 
-enum class FieldKind { Text, Bool, Int, Float, Colour, Vector };
+// Colour is "r,g,b" from 0 to 1, Colour255 from 0 to 255
+enum class FieldKind { Text, Bool, Int, Float, Colour, Colour255, Vector, Vector2 };
 
 // true once an edit ends, with the value to keep in out; the value given shows until then
 bool DrawField(const char* id, FieldKind kind, const std::string& value, std::string& out);
