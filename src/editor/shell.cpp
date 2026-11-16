@@ -32,6 +32,7 @@
 #include "leveleditor/campaign_levels.h"
 #include "leveleditor/environment.h"
 #include "leveleditor/equipment.h"
+#include "leveleditor/formations.h"
 #include "leveleditor/gizmo.h"
 #include "leveleditor/level_data.h"
 #include "leveleditor/level_objects.h"
@@ -530,6 +531,10 @@ void DrawTabs(const State& s) {
     }
     if (editor::g_solo && ImGui::BeginTabItem("Equipment")) {
         editor::DrawEquipmentPanel();
+        ImGui::EndTabItem();
+    }
+    if (editor::g_solo && ImGui::BeginTabItem("Formations")) {
+        editor::DrawFormationsPanel();
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("History")) {

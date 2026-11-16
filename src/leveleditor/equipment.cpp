@@ -21,6 +21,7 @@
 #include "leveleditor/fields.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/mission.h"
+#include "leveleditor/node_edit.h"
 #include "leveleditor/property_lists.h"
 #include "leveleditor/undo.h"
 #include "xdk/hle.h"
@@ -45,13 +46,11 @@ constexpr const char* kWeaponName = "Name";
 
 constexpr uint32_t kGameWeapons = 0x338;  // the game's weapon system
 
-// guest scratch: two texts for node calls, a node reference, then the MaxAmmo script
-constexpr uint32_t kScratchKey = 0x000;
-constexpr uint32_t kScratchKeyBytes = 0x40;
-constexpr uint32_t kScratchValue = 0x040;
-constexpr uint32_t kScratchValueBytes = 0x100;
-constexpr uint32_t kScratchRef = 0x140;
-constexpr uint32_t kScratchScript = 0x150;
+// guest scratch: a name, a node reference, then the MaxAmmo script
+constexpr uint32_t kScratchName = 0x000;
+constexpr uint32_t kScratchNameBytes = 0x100;
+constexpr uint32_t kScratchRef = 0x100;
+constexpr uint32_t kScratchScript = 0x110;
 constexpr uint32_t kScratchScriptBytes = 0x800;
 constexpr uint32_t kScratchBytes = kScratchScript + kScratchScriptBytes;
 
@@ -76,7 +75,6 @@ struct Snapshot {
     uint32_t generation = 0;
 };
 using Edit = std::function<void(PPCContext&)>;
-using Change = std::function<void(PPCContext&, uint32_t)>;
 
 std::mutex g_lock;
 Snapshot g_snapshot;
@@ -96,74 +94,22 @@ bool EnsureScratch() {
     return g_scratch != 0;
 }
 
-uint32_t KeyText(const std::string& text) { return WriteText(g_scratch + kScratchKey, text, kScratchKeyBytes); }
-uint32_t ValueText(const std::string& text) { return WriteText(g_scratch + kScratchValue, text, kScratchValueBytes); }
+uint32_t NameText(const std::string& text) { return WriteText(g_scratch + kScratchName, text, kScratchNameBytes); }
 
 std::string Tag(uint32_t node) { return GuestString(node + kNodeTag); }
-
-std::vector<XmlAttribute> Attributes(uint32_t node) {
-    std::vector<XmlAttribute> out;
-    if (!node) return out;
-    for (uint32_t a = R32(node + kNodeAttrFirst); a && a < R32(node + kNodeAttrLast); a += kAttrBytes) {
-        out.push_back({GuestString(a + kAttrKey), GuestString(a + kAttrValue)});
-    }
-    return out;
-}
-
-std::string Find(const std::vector<XmlAttribute>& attributes, const std::string& key) {
-    for (const XmlAttribute& a : attributes) {
-        if (a.key == key) return a.value;
-    }
-    return {};
-}
-
-uint32_t ChildTagged(uint32_t node, const std::string& tag) {
-    for (uint32_t i = 0; node && i < ChildCount(node); i++) {
-        if (Tag(ChildAt(node, i)) == tag) return ChildAt(node, i);
-    }
-    return 0;
-}
 
 uint32_t PackNamed(uint32_t packs, const std::string& name) {
     for (uint32_t i = 0; packs && i < ChildCount(packs); i++) {
         uint32_t pack = ChildAt(packs, i);
-        if (Tag(pack) == kEquipPack && Find(Attributes(pack), kPackName) == name) return pack;
+        if (Tag(pack) == kEquipPack && XmlValue(pack, kPackName) == name) return pack;
     }
     return 0;
-}
-
-void SetAttr(PPCContext& ctx, uint32_t node, const std::string& key, const std::string& value) {
-    CallGuest(ctx, Method(node, kNodeSetAttr), {node, KeyText(key), ValueText(value)});
-}
-
-// a new child of parent, which keeps it
-uint32_t NewChild(PPCContext& ctx, uint32_t parent, const std::string& tag) {
-    W32(g_scratch + kScratchRef, 0);
-    CallGuest(ctx, Method(parent, kNodeNewChild), {g_scratch + kScratchRef, parent, KeyText(tag)});
-    uint32_t child = R32(g_scratch + kScratchRef);
-    if (child) CallGuest(ctx, Method(child, kNodeRelease), {child});
-    return child;
-}
-
-void RemoveChild(PPCContext& ctx, uint32_t parent, uint32_t child) {
-    CallGuest(ctx, Method(child, kNodeAddRef), {child});
-    W32(g_scratch + kScratchRef, child);
-    CallGuest(ctx, Method(parent, kNodeRemoveChild), {parent, g_scratch + kScratchRef});
-}
-
-void Release(PPCContext& ctx, uint32_t node) { CallGuest(ctx, Method(node, kNodeRelease), {node}); }
-
-// a deep copy, referenced once
-uint32_t Clone(PPCContext& ctx, uint32_t node) {
-    W32(g_scratch + kScratchRef, 0);
-    CallGuest(ctx, Method(node, kNodeClone), {g_scratch + kScratchRef, node});
-    return R32(g_scratch + kScratchRef);
 }
 
 // MaxAmmo as the mission load sets it, by a script
 void LoadMaxAmmo(PPCContext& ctx, uint32_t weapons) {
     std::string script = "MaxAmmo = MaxAmmo or {}\n";
-    for (const XmlAttribute& a : Attributes(ChildTagged(weapons, kAmmo))) {
+    for (const XmlAttribute& a : XmlAttributes(XmlChild(weapons, kAmmo))) {
         script += "MaxAmmo." + a.key + " = " + std::to_string(std::atoi(a.value.c_str())) + "\n";
     }
     uint32_t scripts = R32(SYM_ScriptSystem_pointer);
@@ -177,47 +123,33 @@ void Load(PPCContext& ctx) {
     uint32_t mission = KeptMission();
     uint32_t game = R32(SYM_Game_pointer);
     if (!mission || !game) return;
-    uint32_t packs = ChildTagged(mission, kEquipPacks);
+    uint32_t packs = XmlChild(mission, kEquipPacks);
     for (uint32_t i = 0; packs && i < ChildCount(packs); i++) {
         W32(g_scratch + kScratchRef, ChildAt(packs, i));
         CallGuest(ctx, SYM_EquipPack_Load, {game, g_scratch + kScratchRef});
     }
-    uint32_t weapons = ChildTagged(mission, kWeapons);
-    uint32_t used = ChildTagged(weapons, kUsed);
+    uint32_t weapons = XmlChild(mission, kWeapons);
+    uint32_t used = XmlChild(weapons, kUsed);
     for (uint32_t i = 0; used && i < ChildCount(used); i++) {
-        std::string name = Find(Attributes(ChildAt(used, i)), kWeaponName);
-        CallGuest(ctx, SYM_Weapons_Load, {R32(game + kGameWeapons), ValueText(name)});
+        std::string name = XmlValue(ChildAt(used, i), kWeaponName);
+        CallGuest(ctx, SYM_Weapons_Load, {R32(game + kGameWeapons), NameText(name)});
     }
     if (weapons) LoadMaxAmmo(ctx, weapons);
+    g_stale = true;
 }
 
-// one of the mission's nodes changed, one step of undo that puts a copy of it as it was back
-void EditNode(PPCContext& ctx, const char* tag, const std::string& label, const Change& change) {
-    uint32_t node = ChildTagged(KeptMission(), tag);
-    uint32_t before = node ? Clone(ctx, node) : 0;
-    if (!before) return;
-    change(ctx, node);
-    Load(ctx);
-    g_stale = true;
-    NoteMapChanged();
-    PushUndo(
-        ctx, label,
-        [node, before](PPCContext& ctx) {
-            SwapContent(node, before);
-            Release(ctx, before);
-            Load(ctx);
-            g_stale = true;
-        },
-        [before](PPCContext& ctx) { Release(ctx, before); });
+// one of the mission's equipment nodes changed, one step of undo
+void EditNode(PPCContext& ctx, const char* tag, const std::string& label, const NodeChange& change) {
+    EditMissionNode(ctx, tag, label, change, Load);
 }
 
 void SetPlayerPack(PPCContext& ctx, const std::string& name, bool undoable) {
     uint32_t mission = KeptMission();
     uint32_t game = R32(SYM_Game_pointer);
     if (!mission) return;
-    std::string old = Find(Attributes(mission), kPlayerPackKey);
-    SetAttr(ctx, mission, kPlayerPackKey, name);
-    if (game) CallGuest(ctx, SYM_Game_SetPlayerEquipPack, {game, ValueText(name)});
+    std::string old = XmlValue(mission, kPlayerPackKey);
+    SetXmlValue(ctx, mission, kPlayerPackKey, name);
+    if (game) CallGuest(ctx, SYM_Game_SetPlayerEquipPack, {game, NameText(name)});
     g_stale = true;
     NoteMapChanged();
     if (!undoable || old == name) return;
@@ -228,25 +160,24 @@ Snapshot ReadEquipment() {
     Snapshot s;
     uint32_t mission = KeptMission();
     s.kept = mission != 0;
-    s.player = Find(Attributes(mission), kPlayerPackKey);
-    uint32_t packs = ChildTagged(mission, kEquipPacks);
+    s.player = XmlValue(mission, kPlayerPackKey);
+    uint32_t packs = XmlChild(mission, kEquipPacks);
     for (uint32_t i = 0; packs && i < ChildCount(packs); i++) {
         uint32_t node = ChildAt(packs, i);
-        std::vector<XmlAttribute> attributes = Attributes(node);
-        Pack p{Find(attributes, kPackName), Find(attributes, kPrimary), {}, Attributes(ChildTagged(node, kAmmo))};
-        uint32_t items = ChildTagged(node, kItems);
+        Pack p{XmlValue(node, kPackName), XmlValue(node, kPrimary), {}, XmlAttributes(XmlChild(node, kAmmo))};
+        uint32_t items = XmlChild(node, kItems);
         for (uint32_t j = 0; items && j < ChildCount(items); j++) {
             uint32_t item = ChildAt(items, j);
-            p.items.push_back({Tag(item), Find(Attributes(item), kItemType)});
+            p.items.push_back({Tag(item), XmlValue(item, kItemType)});
         }
         s.packs.push_back(std::move(p));
     }
-    uint32_t weapons = ChildTagged(mission, kWeapons);
-    uint32_t used = ChildTagged(weapons, kUsed);
+    uint32_t weapons = XmlChild(mission, kWeapons);
+    uint32_t used = XmlChild(weapons, kUsed);
     for (uint32_t i = 0; used && i < ChildCount(used); i++) {
-        s.used.push_back(Find(Attributes(ChildAt(used, i)), kWeaponName));
+        s.used.push_back(XmlValue(ChildAt(used, i), kWeaponName));
     }
-    s.max_ammo = Attributes(ChildTagged(weapons, kAmmo));
+    s.max_ammo = XmlAttributes(XmlChild(weapons, kAmmo));
     return s;
 }
 
@@ -267,13 +198,13 @@ void QueuePackEdit(std::string pack, std::string label, std::function<void(PPCCo
 
 void SetPackAmmo(const std::string& pack, const std::string& key, const std::string& value) {
     QueuePackEdit(pack, "Set " + key + " ammo of " + pack, [=](PPCContext& ctx, uint32_t node) {
-        if (uint32_t ammo = ChildTagged(node, kAmmo)) SetAttr(ctx, ammo, key, value);
+        if (uint32_t ammo = XmlChild(node, kAmmo)) SetXmlValue(ctx, ammo, key, value);
     });
 }
 
 void SetPrimary(const std::string& pack, const std::string& item) {
     QueuePackEdit(pack, "Set the primary of " + pack, [=](PPCContext& ctx, uint32_t node) {
-        SetAttr(ctx, node, kPrimary, item);
+        SetXmlValue(ctx, node, kPrimary, item);
     });
 }
 
@@ -281,23 +212,23 @@ void AddItem(const std::string& pack, const EquipItem& item) {
     std::string name = item.name;
     std::string type = item.type;
     QueuePackEdit(pack, "Add " + name + " to " + pack, [=](PPCContext& ctx, uint32_t node) {
-        uint32_t items = ChildTagged(node, kItems);
-        if (!items) items = NewChild(ctx, node, kItems);
-        if (uint32_t added = items ? NewChild(ctx, items, name) : 0) SetAttr(ctx, added, kItemType, type);
+        uint32_t items = XmlChild(node, kItems);
+        if (!items) items = AddXmlChild(ctx, node, kItems);
+        if (uint32_t added = items ? AddXmlChild(ctx, items, name) : 0) SetXmlValue(ctx, added, kItemType, type);
     });
 }
 
 void RemoveItem(const std::string& pack, int index) {
     QueuePackEdit(pack, "Remove an item from " + pack, [=](PPCContext& ctx, uint32_t node) {
-        uint32_t items = ChildTagged(node, kItems);
-        if (items && uint32_t(index) < ChildCount(items)) RemoveChild(ctx, items, ChildAt(items, uint32_t(index)));
+        uint32_t items = XmlChild(node, kItems);
+        if (items && uint32_t(index) < ChildCount(items)) RemoveXmlChild(ctx, items, ChildAt(items, uint32_t(index)));
     });
 }
 
 void DeletePack(const std::string& pack) {
     Queue([=](PPCContext& ctx) {
         EditNode(ctx, kEquipPacks, "Delete the equip pack " + pack, [&](PPCContext& ctx, uint32_t packs) {
-            if (uint32_t node = PackNamed(packs, pack)) RemoveChild(ctx, packs, node);
+            if (uint32_t node = PackNamed(packs, pack)) RemoveXmlChild(ctx, packs, node);
         });
     });
 }
@@ -307,14 +238,14 @@ void CreatePack(const std::string& name) {
     Queue([=](PPCContext& ctx) {
         EditNode(ctx, kEquipPacks, "Create the equip pack " + name, [&](PPCContext& ctx, uint32_t packs) {
             if (PackNamed(packs, name)) return;
-            uint32_t pack = NewChild(ctx, packs, kEquipPack);
+            uint32_t pack = AddXmlChild(ctx, packs, kEquipPack);
             if (!pack) return;
-            SetAttr(ctx, pack, kPackName, name);
-            SetAttr(ctx, pack, kPrimary, "");
-            NewChild(ctx, pack, kItems);
-            uint32_t ammo = NewChild(ctx, pack, kAmmo);
+            SetXmlValue(ctx, pack, kPackName, name);
+            SetXmlValue(ctx, pack, kPrimary, "");
+            AddXmlChild(ctx, pack, kItems);
+            uint32_t ammo = AddXmlChild(ctx, pack, kAmmo);
             for (const char* a : kAmmoNames) {
-                if (ammo) SetAttr(ctx, ammo, a, "0");
+                if (ammo) SetXmlValue(ctx, ammo, a, "0");
             }
         });
     });
@@ -326,22 +257,22 @@ void QueueWeaponsEdit(std::string label, std::function<void(PPCContext&, uint32_
 
 void AddUsed(const std::string& name) {
     QueueWeaponsEdit("Preload " + name, [=](PPCContext& ctx, uint32_t weapons) {
-        uint32_t used = ChildTagged(weapons, kUsed);
-        if (!used) used = NewChild(ctx, weapons, kUsed);
-        if (uint32_t added = used ? NewChild(ctx, used, kWeapon) : 0) SetAttr(ctx, added, kWeaponName, name);
+        uint32_t used = XmlChild(weapons, kUsed);
+        if (!used) used = AddXmlChild(ctx, weapons, kUsed);
+        if (uint32_t added = used ? AddXmlChild(ctx, used, kWeapon) : 0) SetXmlValue(ctx, added, kWeaponName, name);
     });
 }
 
 void RemoveUsed(int index) {
     QueueWeaponsEdit("Stop preloading a weapon", [=](PPCContext& ctx, uint32_t weapons) {
-        uint32_t used = ChildTagged(weapons, kUsed);
-        if (used && uint32_t(index) < ChildCount(used)) RemoveChild(ctx, used, ChildAt(used, uint32_t(index)));
+        uint32_t used = XmlChild(weapons, kUsed);
+        if (used && uint32_t(index) < ChildCount(used)) RemoveXmlChild(ctx, used, ChildAt(used, uint32_t(index)));
     });
 }
 
 void SetMaxAmmo(const std::string& key, const std::string& value) {
     QueueWeaponsEdit("Set " + key + " max ammo", [=](PPCContext& ctx, uint32_t weapons) {
-        if (uint32_t ammo = ChildTagged(weapons, kAmmo)) SetAttr(ctx, ammo, key, value);
+        if (uint32_t ammo = XmlChild(weapons, kAmmo)) SetXmlValue(ctx, ammo, key, value);
     });
 }
 
