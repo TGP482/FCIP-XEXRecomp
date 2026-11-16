@@ -557,12 +557,6 @@ std::shared_ptr<const AiObjects> ReadLoadedAiObjects() {
     return g_loaded;
 }
 
-std::string LayerOf(uint32_t entity_id) {
-    std::shared_ptr<const AiObjects> ai = ReadAiObjects();
-    auto found = ai->layers.find(entity_id);
-    return found == ai->layers.end() ? std::string() : found->second;
-}
-
 std::vector<std::string> AiObjectNames(const std::string& type) {
     std::vector<std::string> names;
     for (const AiObject& o : ReadAiObjects()->objects) {

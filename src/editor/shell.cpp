@@ -117,21 +117,19 @@ void DrawOpenLevel() {
     ImGui::EndMenu();
 }
 
-// the mission's entity layers, shown or hidden in the editor view: as menu items or as the dock's checkboxes
-void DrawLayerToggles(bool menu) {
+// the mission's entity layers, shown or hidden in the editor view, as menu items (the Layers tab edits them)
+void DrawLayerToggles() {
     std::vector<std::string> layers = ViewLayers();
     if (layers.empty()) {
         ImGui::TextDisabled("No layers in this level");
         return;
     }
-    if (menu ? ImGui::MenuItem("Show All") : ImGui::Button("Show All")) ShowAllLayers(true);
-    if (!menu) ImGui::SameLine();
-    if (menu ? ImGui::MenuItem("Hide All") : ImGui::Button("Hide All")) ShowAllLayers(false);
-    if (menu) ImGui::Separator();
+    if (ImGui::MenuItem("Show All")) ShowAllLayers(true);
+    if (ImGui::MenuItem("Hide All")) ShowAllLayers(false);
+    ImGui::Separator();
     for (const std::string& layer : layers) {
         bool shown = LayerShown(layer);
-        bool clicked = menu ? ImGui::MenuItem(layer.c_str(), nullptr, &shown) : ImGui::Checkbox(layer.c_str(), &shown);
-        if (clicked) ShowLayer(layer, shown);
+        if (ImGui::MenuItem(layer.c_str(), nullptr, &shown)) ShowLayer(layer, shown);
     }
 }
 
@@ -198,7 +196,7 @@ void DrawMenuBar(const State& s) {
                 ImGui::MenuItem(ViewCategoryName(c), nullptr, &g_view_shown[c]);
             }
             if (ImGui::BeginMenu("Layers")) {
-                DrawLayerToggles(true);
+                DrawLayerToggles();
                 ImGui::EndMenu();
             }
         }
@@ -466,8 +464,6 @@ void DrawEditorSettings(const State& s) {
     if (!editor::g_solo) return;
     ImGui::SeparatorText("Editor View");
     for (int c = 0; c < kViewCategoryCount; c++) ImGui::Checkbox(ViewCategoryName(c), &g_view_shown[c]);
-    ImGui::SeparatorText("Layers");
-    DrawLayerToggles(false);
 }
 
 void DrawBudget(const std::vector<Category>& catalogue) {
@@ -515,6 +511,10 @@ void DrawTabs(const State& s) {
     }
     if (editor::g_solo && ImGui::BeginTabItem("Objectives")) {
         editor::DrawObjectivesPanel();
+        ImGui::EndTabItem();
+    }
+    if (editor::g_solo && ImGui::BeginTabItem("Layers")) {
+        editor::DrawLayerPanel();
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("History")) {

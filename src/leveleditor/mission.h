@@ -47,7 +47,7 @@ struct AiObjects {
     uint32_t generation = 0;
     bool kept = false;  // a mission is kept, so objects can be added
     std::vector<AiObject> objects;
-    std::unordered_map<uint32_t, std::string> layers;  // each mission entity's Layer, by EntityId
+    std::unordered_map<uint32_t, std::string> layers;  // each mission entity's Layer as loaded, by EntityId
 };
 
 // editor thread
@@ -65,7 +65,6 @@ void UpdateMission(PPCContext& ctx);                  // each frame: queued edit
 std::shared_ptr<const AiObjects> ReadAiObjects();
 std::shared_ptr<const AiObjects> ReadLoadedAiObjects();  // as the level loaded them, before any edit
 std::vector<std::string> AiObjectNames(const std::string& type);  // sorted
-std::string LayerOf(uint32_t entity_id);  // empty for an entity the mission does not place
 
 // window thread: edits the editor thread applies at its next update, each one step of undo
 void SetAiAttribute(uint32_t object, std::vector<int> path, std::string key, std::string value);

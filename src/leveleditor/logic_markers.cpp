@@ -1,12 +1,11 @@
 // ige.xex, the solo level editor: the editor view shows what the game uses to run a level, which has no model of its
 // own. Each editing frame the entities are read on the editor's thread (class, name, place, the box the engine tests
 // them with, the Properties of the classes a category needs); the window thread draws each shown category over the
-// frame. An entity in a layer hidden from the View menu is left out.
+// frame. An entity in a hidden layer is left out (layers.cpp).
 #include "leveleditor/markers.h"
 
 #include <iterator>
 #include <mutex>
-#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -42,8 +41,6 @@ constexpr uint32_t kScratchBytes = 0x18;
 
 std::mutex g_lock;
 std::shared_ptr<const std::vector<ViewEntity>> g_entities = std::make_shared<std::vector<ViewEntity>>();
-std::set<std::string> g_hidden_layers;
-bool g_has_unlayered = false;
 // editor thread
 uint32_t g_scratch = 0;
 std::unordered_map<uint32_t, std::vector<XmlAttribute>> g_properties;  // by entity id
@@ -113,30 +110,20 @@ std::string PropertyOf(const ViewEntity& e, const char* key) {
 void UpdateMarkers(PPCContext& ctx) {
     if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
     if (!g_scratch) return;
-    std::shared_ptr<const AiObjects> ai = ReadAiObjects();
-    std::set<std::string> hidden;
-    {
-        std::lock_guard lock(g_lock);
-        hidden = g_hidden_layers;
-    }
+    UpdateLayers(ctx);
     auto found = std::make_shared<std::vector<ViewEntity>>();
     int reads = kPropertyReadsPerFrame;
-    bool unlayered = false;
     ForEachEntity([&](uint32_t entity) {
-        uint32_t id = R32(entity + kEntityId);
-        auto layer = ai->layers.find(id);
-        std::string name = layer == ai->layers.end() ? kNoLayer : layer->second;
-        unlayered |= layer == ai->layers.end();
-        if (hidden.count(name)) return;
+        std::string layer = LayerOf(R32(entity + kEntityId));
+        if (!LayerShown(layer.empty() ? kNoLayer : layer)) return;
         ViewEntity e = ReadEntity(ctx, entity);
-        if (layer != ai->layers.end()) e.layer = layer->second;
+        e.layer = layer;
         if (WantsProperties(e.cls)) LatchProperties(ctx, entity, e, reads);
         found->push_back(std::move(e));
     });
     UpdateSectorGrid(ctx);
     std::lock_guard lock(g_lock);
     g_entities = std::move(found);
-    g_has_unlayered = unlayered;
 }
 
 void ForgetProperties(uint32_t entity_id) { g_properties.erase(entity_id); }
@@ -145,35 +132,7 @@ void ForgetMarkers() {
     g_properties.clear();
     ForgetSectorGrid();
     std::lock_guard lock(g_lock);
-    g_hidden_layers.clear();
     g_entities = std::make_shared<std::vector<ViewEntity>>();
-}
-
-std::vector<std::string> ViewLayers() {
-    std::set<std::string> unique;
-    for (const auto& [id, layer] : ReadAiObjects()->layers) unique.insert(layer);
-    std::vector<std::string> layers(unique.begin(), unique.end());
-    std::lock_guard lock(g_lock);
-    if (g_has_unlayered) layers.push_back(kNoLayer);
-    return layers;
-}
-
-bool LayerShown(const std::string& layer) {
-    std::lock_guard lock(g_lock);
-    return !g_hidden_layers.count(layer);
-}
-
-void ShowLayer(const std::string& layer, bool shown) {
-    std::lock_guard lock(g_lock);
-    if (shown) g_hidden_layers.erase(layer);
-    else g_hidden_layers.insert(layer);
-}
-
-void ShowAllLayers(bool shown) {
-    std::vector<std::string> layers = ViewLayers();
-    std::lock_guard lock(g_lock);
-    if (shown) g_hidden_layers.clear();
-    else g_hidden_layers.insert(layers.begin(), layers.end());
 }
 
 void DrawMarkers() {

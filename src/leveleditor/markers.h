@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "leveleditor/layers.h"
 #include "leveleditor/mission.h"
 #include "leveleditor/view_draw.h"
 
@@ -52,13 +53,6 @@ void UpdateSectorGrid(PPCContext& ctx);  // culling_markers.cpp
 void ForgetSectorGrid();
 
 void DrawMarkers();  // window thread, in the ImGui frame
-
-// the mission's entity layers; an entity in a hidden one is left out of every category from the next frame
-std::vector<std::string> ViewLayers();  // sorted, kNoLayer last when some entity has none
-bool LayerShown(const std::string& layer);
-void ShowLayer(const std::string& layer, bool shown);
-void ShowAllLayers(bool shown);
-inline constexpr const char* kNoLayer = "(no layer)";
 
 // each category's drawing, window thread
 void DrawPlayerStart(const View& v);  // player_markers.cpp

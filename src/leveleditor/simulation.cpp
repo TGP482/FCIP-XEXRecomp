@@ -14,6 +14,7 @@
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/layers.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
 
@@ -114,6 +115,7 @@ PPC_FUNC(sub_820C5548) {
     uint32_t was = R32(handler + kHandlerMode);
     __imp__sub_820C5548(ctx, base);
     if (!g_solo || was == mode || !EnsureVec()) return;
+    if (mode == kModePlayTest) ShowLayerModels(ctx);
     if (mode == kModePlayTest) KeepPlacements(ctx);
     if (mode == kModeEditing && !g_placements.empty()) RestorePlacements(ctx);
 }

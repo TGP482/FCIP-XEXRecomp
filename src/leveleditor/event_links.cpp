@@ -13,6 +13,7 @@
 #include "leveleditor/archetypes.h"
 #include "leveleditor/editor_classes.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/layers.h"
 #include "leveleditor/mission.h"
 #include "leveleditor/mode.h"
 #include "xdk/hle.h"
@@ -189,9 +190,14 @@ PPC_FUNC(sub_821043A0) {
     uint32_t entity = uint32_t(ctx.r[4]);
     uint32_t objects = R32(uint32_t(ctx.r[5]));
     uint32_t before = R32(SYM_Save_EntityNumber);
+    uint8_t flags = R8(entity + kEntityFlags);
+    bool layer_hid = ModelHiddenByLayer(R32(entity + kEntityId));
+    // a hidden layer's model is not HiddenInGame
+    if (layer_hid) W8(entity + kEntityFlags, uint8_t(flags & ~kEntityHidden));
     AllowClasses(SavesAsEntity(ctx, entity));
     __imp__sub_821043A0(ctx, base);
     AllowClasses(false);
+    if (layer_hid) W8(entity + kEntityFlags, flags);
     uint32_t number = R32(SYM_Save_EntityNumber);
     uint32_t first = objects ? R32(objects + kNodeChildFirst) : 0;
     uint32_t last = objects ? R32(objects + kNodeChildLast) : 0;
