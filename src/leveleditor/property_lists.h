@@ -1,6 +1,7 @@
 // what the solo editor's property widgets offer: each script's choice lists (lua.dat, an enumX table the selX
 // property picks from by index), every file and effect the campaign missions' entity properties name and the
-// terrain detail textures and environment textures of the campaign levels
+// terrain detail textures and environment textures of the campaign levels, and their weapons, equip pack items
+// and ammo kinds
 #pragma once
 
 namespace fcip::editor {
@@ -1606,6 +1607,110 @@ inline constexpr const char* kEnvironmentTextures[] = {
     "Textures_xbox\\sprites\\GFX_White_Smoke_Wet.xbt",
     "Textures_xbox\\water1.xbt",
     "Textures_xbox\\wave1.xbt",
+};
+
+inline constexpr const char* kWeaponNames[] = {
+    "BarrettM82A1",
+    "Berretta",
+    "BerrettaNoSup",
+    "BKnife",
+    "BlowGun",
+    "Browning",
+    "DE",
+    "DragonDart",
+    "Fist",
+    "FNM249",
+    "G_M67",
+    "Glock",
+    "HKSL8",
+    "M16",
+    "M1S90",
+    "M202",
+    "M4",
+    "Machete",
+    "Molotov",
+    "Mortar",
+    "MP5",
+    "P90",
+    "Pebble",
+    "PipeBomb",
+    "PipeBombPlunger",
+    "Seringe_Gun",
+    "VitruvianSample",
+    "Wrench",
+};
+
+// an equip pack's item: a weapon, or an item a pickup gives
+struct EquipItem {
+    const char* name;
+    const char* type;
+};
+inline constexpr EquipItem kEquipItems[] = {
+    {"AmmoM202_Pickup", "Item"},
+    {"AmmoM4_Pickup", "Item"},
+    {"AmmoSL8_Pickup", "Item"},
+    {"BarrettM82A1", "Weapon"},
+    {"Berretta", "Weapon"},
+    {"BerrettaNoSup", "Weapon"},
+    {"BKnife", "Weapon"},
+    {"BlowGun", "Weapon"},
+    {"Browning", "Weapon"},
+    {"CombatM", "Weapon"},
+    {"DE", "Weapon"},
+    {"DragonDart", "Weapon"},
+    {"Fist", "Weapon"},
+    {"FNM249", "Weapon"},
+    {"G_M67", "Weapon"},
+    {"G_XM84", "Weapon"},
+    {"Glock", "Weapon"},
+    {"HKSL8", "Weapon"},
+    {"M16", "Weapon"},
+    {"M1S90", "Weapon"},
+    {"M202", "Weapon"},
+    {"M4", "Weapon"},
+    {"Machete", "Weapon"},
+    {"Molotov", "Weapon"},
+    {"MP5", "Weapon"},
+    {"P90", "Weapon"},
+    {"Pebble", "Weapon"},
+    {"PickupBarrettM82A1", "Item"},
+    {"PickupBerretta", "Item"},
+    {"PickupBerrettaNoSup", "Item"},
+    {"PickupBinoculars", "Item"},
+    {"PickupBlowGun", "Item"},
+    {"PickupDE", "Item"},
+    {"PickupFNM249", "Item"},
+    {"PickupG_M67", "Item"},
+    {"PickupGlock", "Item"},
+    {"PickupHKSL8", "Item"},
+    {"PickupM16", "Item"},
+    {"PickupM1S90", "Item"},
+    {"PickupM202", "Item"},
+    {"PickupM4", "Item"},
+    {"PickupMP5", "Item"},
+    {"PickupP90", "Item"},
+    {"Stingray", "Weapon"},
+};
+
+inline constexpr const char* kAmmoNames[] = {
+    "Berretta",
+    "DesertEagle",
+    "Glock",
+    "M1S90",
+    "FNM249",
+    "AssaultRifle",
+    "Carbine",
+    "MP5",
+    "P90",
+    "Barrett",
+    "HKSL8",
+    "M202",
+    "HandGrenade",
+    "Molotov",
+    "PipeBomb",
+    "BlowDart",
+    "Unhinged_Browning",
+    "Unhinged_Mortar",
 };
 
 }  // namespace fcip::editor

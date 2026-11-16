@@ -88,6 +88,10 @@ Movie_StopAllSequences = 0x823A3C80    # (movie system)
 Terrain_SetDetailTextures = 0x82469CE0  # (terrain, layer, texture, 0, material, axis, grass, densities, name, material)
 # the Environment tab (environment.cpp)
 Environment_Load = 0x82361DB0  # (3D engine, XmlNodeRef of a node holding <Environment>)
+# the Equipment tab (equipment.cpp)
+EquipPack_Load = 0x82139080           # (game, XmlNodeRef of an <EquipPack>) into the EquipPacks script table
+Game_SetPlayerEquipPack = 0x821394C0  # (game, pack name)
+Weapons_Load = 0x8220BD38             # (weapon system, name) loads a weapon class once
 
 [data]
 Catalogue_Lists = 0x8296C760
@@ -108,6 +112,7 @@ Thumbnail_Stale = 0x8296B267
 Terrain_SectorsPerSide = 0x8289F428
 Editor_Manager_pointer = 0x8296B2CC
 Movie_pointer = 0x828C7204
+ScriptSystem_pointer = 0x828C785C
 
 # instruction hooks, defined in src/leveleditor/terrain_limits.cpp; each runs after its instruction
 
