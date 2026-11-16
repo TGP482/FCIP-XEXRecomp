@@ -2,6 +2,8 @@
 // the Edit Object tool has selected, as the editor saves them, and writes edits back into the entity's tables. The
 // game's own converters do the work: a table to XML as the editor saves, XML to a table as it loads. Below them are the
 // object's event links, which another object (a door, a spawner, the level) gets when this one sends an event.
+// Each value takes the widget its name asks for: a choice list for selX (the script's enumX list, not shown itself), a
+// picker of the campaign's files or effects for file, model, texture and effect names, the archetype from the library.
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -10,6 +12,7 @@
 #include <cstring>
 #include <iterator>
 #include <mutex>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -18,6 +21,7 @@
 #include "common/panel_colors.h"
 #include "editor/tools.h"
 #include "kernel/memory.h"
+#include "leveleditor/archetypes.h"
 #include "leveleditor/event_links.h"
 #include "leveleditor/entity_events.h"
 #include "leveleditor/fields.h"
@@ -78,6 +82,8 @@ struct Snapshot {
     uint32_t object = 0;  // editor object, 0 with nothing selected
     uint32_t entity_id = 0;
     std::string name;
+    std::string archetype;
+    std::vector<std::string> archetypes;  // of its class
     std::vector<Node> nodes;
     std::vector<fcip::editor::Link> links;
     std::vector<Target> targets;
@@ -86,6 +92,10 @@ struct Snapshot {
 struct LinkEdit {
     uint32_t entity_id = 0;
     std::vector<fcip::editor::Link> links;
+};
+struct ArchetypeEdit {
+    uint32_t entity_id = 0;
+    std::string name;
 };
 // one value of an entity's table: its node by child indices from the table, then by sub table names
 struct Edit {
@@ -107,6 +117,7 @@ std::mutex g_lock;
 Snapshot g_snapshot;        // written on the editor's thread
 std::vector<Edit> g_edits;  // queued by the panel
 std::vector<LinkEdit> g_link_edits;
+std::vector<ArchetypeEdit> g_archetype_edits;
 uint32_t g_scratch = 0;
 uint32_t g_shown = 0;  // the object the snapshot holds, editor thread only
 bool g_stale = false;
@@ -137,10 +148,15 @@ uint32_t SelectedObject(uint32_t tool) {
     return R32(first);
 }
 
-std::string LabelOf(PPCContext& ctx, uint32_t entity) {
+std::string ClassOf(PPCContext& ctx, uint32_t entity) {
     uint32_t cls = uint32_t(CallGuest(ctx, Method(entity, kEntityClassName), {entity}));
+    return cls ? ReadCString(cls) : std::string();
+}
+
+std::string LabelOf(PPCContext& ctx, uint32_t entity) {
+    std::string cls = ClassOf(ctx, entity);
     std::string label = GuestString(entity + kEntityName);
-    if (cls) label += " (" + ReadCString(cls) + ")";
+    if (!cls.empty()) label += " (" + cls + ")";
     return label;
 }
 
@@ -203,6 +219,8 @@ Snapshot Read(PPCContext& ctx, uint32_t object) {
     uint32_t entity = R32(object + kObjectEntity);
     s.entity_id = R32(entity + kEntityId);
     s.name = LabelOf(ctx, entity);
+    s.archetype = ArchetypeOf(s.entity_id);
+    s.archetypes = ArchetypesOfClass(ctx, ClassOf(ctx, entity));
     for (int t = 0; t < int(std::size(kTables)); t++) {
         Converted c = ToXml(ctx, script, kTables[t]);
         if (c.node) ReadNode(c.node, Node{t, {}, kTables[t], {}}, s.nodes);
@@ -289,10 +307,16 @@ void Update(PPCContext& ctx, uint32_t object) {
     if (!EnsureScratch()) return;
     std::vector<Edit> edits;
     std::vector<LinkEdit> link_edits;
+    std::vector<ArchetypeEdit> archetype_edits;
     {
         std::lock_guard lock(g_lock);
         edits.swap(g_edits);
         link_edits.swap(g_link_edits);
+        archetype_edits.swap(g_archetype_edits);
+    }
+    for (const ArchetypeEdit& e : archetype_edits) {
+        if (uint32_t entity = EntityOfId(e.entity_id)) SetArchetype(ctx, entity, e.name);
+        g_stale = true;
     }
     for (const Edit& e : edits) {
         Apply(ctx, e);
@@ -352,6 +376,16 @@ bool IsAnchorField(const std::string& key) {
     return key.find("Anchor") != std::string::npos && key.find("ID") == std::string::npos;
 }
 
+// a selX choice list's own table, or its copy saved beside selX: the script reads selX alone
+bool IsChoiceList(const std::string& name) {
+    return name.size() > 4 && name.compare(0, 4, "enum") == 0 && std::isupper(uint8_t(name[4]));
+}
+
+std::string LastTag(const Node& n) {
+    size_t at = n.title.rfind(" / ");
+    return at == std::string::npos ? n.title : n.title.substr(at + 3);
+}
+
 void Pick(const Node& n, const Attribute& a, char* text, const std::string& value) {
     std::snprintf(text, kValueChars, "%s", value.c_str());
     Queue(n, a, text);
@@ -367,30 +401,70 @@ void AnchorPicker(const Node& n, const Attribute& a, char* text) {
     ImGui::EndCombo();
 }
 
+void DrawValue(const Node& n, const Attribute& a, char* text) {
+    std::vector<std::string> choices = ChoicesOf(a.key);
+    std::span<const char* const> items = PickerItemsOf(a.key, text);
+    FieldKind kind = KindOf(a.key);
+    bool anchor = IsAnchorField(a.key);
+    ImGui::SetNextItemWidth(anchor ? -ImGui::GetFrameHeight() : -1);
+    std::string edited;
+    bool done = false;
+    if (!choices.empty()) {
+        done = DrawChoice("##choice", choices, text, edited);
+    } else if (!items.empty()) {
+        done = DrawPicker("##picker", items, text, edited);
+    } else if (kind != FieldKind::Text) {
+        done = DrawField("##typed", kind, text, edited);
+    } else {
+        ImGui::InputText("##value", text, kValueChars);
+        if (ImGui::IsItemDeactivatedAfterEdit()) Queue(n, a, text);
+    }
+    if (done) Pick(n, a, text, edited);
+    if (anchor) AnchorPicker(n, a, text);
+}
+
+void QueueArchetype(const std::string& name) {
+    std::lock_guard lock(g_lock);
+    g_archetype_edits.push_back({g_view.entity_id, name});
+}
+
+void DrawArchetype(float label_w) {
+    if (g_view.archetypes.empty()) return;
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Archetype");
+    ImGui::SameLine(label_w);
+    ImGui::SetNextItemWidth(-1);
+    const char* preview = g_view.archetype.empty() ? "(none)" : g_view.archetype.c_str();
+    if (!ImGui::BeginCombo("##archetype", preview, ImGuiComboFlags_HeightLarge)) return;
+    for (const std::string& name : g_view.archetypes) {
+        if (ImGui::Selectable(name.c_str(), name == g_view.archetype)) QueueArchetype(name);
+    }
+    ImGui::EndCombo();
+}
+
 void DrawFields() {
     float label_w = ImGui::GetFontSize() * 12;
+    DrawArchetype(label_w);
     size_t field = 0;
     for (size_t i = 0; i < g_view.nodes.size(); i++) {
         const Node& n = g_view.nodes[i];
+        if (IsChoiceList(LastTag(n))) {
+            field += n.attributes.size();
+            continue;
+        }
         ImGui::PushStyleColor(ImGuiCol_Text, fcip::kHeading);
         ImGui::TextUnformatted(n.title.c_str());
         ImGui::PopStyleColor();
         ImGui::Separator();
         for (const Attribute& a : n.attributes) {
-            ImGui::PushID(int(field));
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(a.key.c_str());
-            ImGui::SameLine(label_w);
-            char* text = g_fields[field].data();
-            FieldKind kind = KindOf(a.key);
-            bool anchor = IsAnchorField(a.key);
-            ImGui::SetNextItemWidth(anchor ? -ImGui::GetFrameHeight() : -1);
-            std::string edited;
-            if (kind != FieldKind::Text && DrawField("##typed", kind, text, edited)) Pick(n, a, text, edited);
-            if (kind == FieldKind::Text) ImGui::InputText("##value", text, kValueChars);
-            if (kind == FieldKind::Text && ImGui::IsItemDeactivatedAfterEdit()) Queue(n, a, text);
-            if (anchor) AnchorPicker(n, a, text);
-            ImGui::PopID();
+            if (!IsChoiceList(a.key)) {
+                ImGui::PushID(int(field));
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted(a.key.c_str());
+                ImGui::SameLine(label_w);
+                DrawValue(n, a, g_fields[field].data());
+                ImGui::PopID();
+            }
             field++;
         }
     }

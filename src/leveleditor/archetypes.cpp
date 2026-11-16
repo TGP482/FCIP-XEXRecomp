@@ -4,15 +4,22 @@
 // so a campaign entity was written with the whole table and no archetype, or with a catalogue archetype and no
 // overrides. Each entity's own is kept here as it loads and written back with its current table as the overrides, and
 // the saved mission's EntityLibrary gets every archetype its entities name, campaign enemies from other levels too.
+// The Properties tab picks an entity's archetype from the library's entries of its class (EntityPrototype Class).
 #include "leveleditor/archetypes.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
+#include "editor/tools.h"
 #include "kernel/memory.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/markers.h"
 #include "leveleditor/mode.h"
+#include "leveleditor/picking.h"
+#include "leveleditor/undo.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -27,6 +34,7 @@ constexpr const char* kLibrary = "EntityLibrary";
 constexpr const char* kPrototype = "EntityPrototype";
 constexpr const char* kObjects = "Objects";
 constexpr const char* kName = "Name";
+constexpr const char* kClass = "Class";
 
 // IScriptObject methods
 constexpr uint32_t kScriptGetValue = 0x44;
@@ -80,7 +88,7 @@ std::string SoleAttribute(uint32_t node, const char* key) {
     return GuestString(first + kAttrKey) == key ? GuestString(first + kAttrValue) : std::string();
 }
 
-std::string AttributeOf(uint32_t node, const char* key) {
+std::string NodeAttribute(uint32_t node, const char* key) {
     for (uint32_t a = R32(node + kNodeAttrFirst); a && a < R32(node + kNodeAttrLast); a += kAttrBytes) {
         if (GuestString(a + kAttrKey) == key) return GuestString(a + kAttrValue);
     }
@@ -111,20 +119,53 @@ void RemoveChild(PPCContext& ctx, uint32_t parent, uint32_t child) {
     CallGuest(ctx, Method(parent, kNodeRemoveChild), {parent, g_scratch + kScratchRef});
 }
 
-// the entity's script Properties table into node, as the save writes tables
-void WriteTable(PPCContext& ctx, uint32_t entity, uint32_t node) {
+// the entity's script Properties table, its reference in the scratch; 0 when it has none, else released by the caller
+uint32_t PropertiesTable(PPCContext& ctx, uint32_t entity) {
     uint32_t script = R32(entity + kEntityScript);
-    if (!script) return;
+    if (!script) return 0;
     W32(g_scratch + kScratchTableRef, 0);
     CallGuest(ctx, SYM_Script_NewTable, {g_scratch + kScratchTableRef, 1});
     uint32_t table = R32(g_scratch + kScratchTableRef);
-    if (!table) return;
+    if (!table) return 0;
     bool found = CallGuest(ctx, Method(script, kScriptGetValue), {script, KeyText(kProperties), table}) & 0xFF;
-    if (found) {
-        W32(g_scratch + kScratchRef, node);
-        CallGuest(ctx, SYM_Xml_FromTable, {g_scratch + kScratchRef, g_scratch + kScratchTableRef});
-    }
+    if (found) return table;
     CallGuest(ctx, Method(table, kScriptRelease), {table});
+    return 0;
+}
+
+// the entity's script Properties table into node, as the save writes tables
+void WriteTable(PPCContext& ctx, uint32_t entity, uint32_t node) {
+    uint32_t table = PropertiesTable(ctx, entity);
+    if (!table) return;
+    W32(g_scratch + kScratchRef, node);
+    CallGuest(ctx, SYM_Xml_FromTable, {g_scratch + kScratchRef, g_scratch + kScratchTableRef});
+    CallGuest(ctx, Method(table, kScriptRelease), {table});
+}
+
+// node's values into the entity's Properties, each key its table already has, as the engine loads properties
+void ReadTable(PPCContext& ctx, uint32_t entity, uint32_t node) {
+    uint32_t table = PropertiesTable(ctx, entity);
+    if (!table) return;
+    W32(g_scratch + kScratchRef, node);
+    CallGuest(ctx, SYM_Xml_ToTable, {0, g_scratch + kScratchTableRef, g_scratch + kScratchRef});
+    CallGuest(ctx, Method(table, kScriptRelease), {table});
+}
+
+// a new node holding the entity's Properties, referenced once, 0 when it could not be made
+uint32_t CopyTable(PPCContext& ctx, uint32_t entity) {
+    uint32_t node = uint32_t(CallGuest(ctx, SYM_Memory_Alloc, {0, 0, 0, kNodeBytes, 0}));
+    if (!node) return 0;
+    CallGuest(ctx, SYM_XmlNode_Construct, {node, KeyText(kProperties)});
+    CallGuest(ctx, Method(node, kNodeAddRef), {node});
+    WriteTable(ctx, entity, node);
+    return node;
+}
+
+// the entity's script takes its new values, the view reads them again
+void NoteChanged(PPCContext& ctx, uint32_t entity) {
+    CallGuest(ctx, SYM_Entity_Reset, {entity});
+    ForgetProperties(R32(entity + kEntityId));
+    NoteMapChanged();
 }
 
 // the editor's library entry for an archetype, referenced once, 0 when it has none
@@ -160,6 +201,50 @@ namespace fcip::editor {
 
 void ForgetArchetypes() { g_archetypes.clear(); }
 
+std::string ArchetypeOf(uint32_t entity_id) {
+    auto found = g_archetypes.find(entity_id);
+    return found == g_archetypes.end() ? std::string() : found->second.name;
+}
+
+std::vector<std::string> ArchetypesOfClass(PPCContext& ctx, const std::string& cls) {
+    std::vector<std::string> names;
+    uint32_t library = uint32_t(CallGuest(ctx, SYM_Library_Get, {}));
+    uint32_t root = library ? R32(library) : 0;
+    for (uint32_t i = 0; root && i < ChildCount(root); i++) {
+        uint32_t prototype = ChildAt(root, i);
+        if (NodeAttribute(prototype, kClass) == cls) names.push_back(NodeAttribute(prototype, kName));
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+void SetArchetype(PPCContext& ctx, uint32_t entity, const std::string& name) {
+    if (!EnsureScratch()) return;
+    uint32_t prototype = FindPrototype(ctx, name);
+    uint32_t properties = prototype ? ChildTagged(prototype, kProperties) : 0;
+    uint32_t before = properties ? CopyTable(ctx, entity) : 0;
+    if (before) {
+        uint32_t id = R32(entity + kEntityId);
+        auto found = g_archetypes.find(id);
+        Archetype old = found == g_archetypes.end() ? Archetype{} : found->second;
+        ReadTable(ctx, entity, properties);
+        g_archetypes[id] = {name, ClassOf(ctx, entity)};
+        NoteChanged(ctx, entity);
+        auto release = [before](PPCContext& ctx) { CallGuest(ctx, Method(before, kNodeRelease), {before}); };
+        std::string label = "Set the archetype of " + GuestString(entity + kEntityName);
+        PushUndo(ctx, label, [id, old, before, release](PPCContext& ctx) {
+            if (uint32_t entity = EntityOfId(id); entity && EnsureScratch()) {
+                ReadTable(ctx, entity, before);
+                if (old.name.empty()) g_archetypes.erase(id);
+                else g_archetypes[id] = old;
+                NoteChanged(ctx, entity);
+            }
+            release(ctx);
+        }, release);
+    }
+    if (prototype) CallGuest(ctx, Method(prototype, kNodeRelease), {prototype});
+}
+
 void SaveArchetype(PPCContext& ctx, uint32_t entity, uint32_t node) {
     auto found = g_archetypes.find(R32(entity + kEntityId));
     if (found == g_archetypes.end() || !EnsureScratch()) return;
@@ -178,7 +263,7 @@ void AddSavedPrototypes(PPCContext& ctx, uint32_t mission) {
     std::set<std::string> kept;
     for (uint32_t i = 0; i < ChildCount(library); i++) {
         uint32_t prototype = ChildAt(library, i);
-        if (Tag(prototype) == kPrototype) kept.insert(AttributeOf(prototype, kName));
+        if (Tag(prototype) == kPrototype) kept.insert(NodeAttribute(prototype, kName));
     }
     for (uint32_t i = 0; i < ChildCount(objects); i++) {
         uint32_t properties = ChildTagged(ChildAt(objects, i), kProperties);

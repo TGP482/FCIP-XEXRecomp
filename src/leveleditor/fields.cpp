@@ -1,12 +1,18 @@
 // the solo editor's value widgets: a check box for a flag, drags for numbers and vectors, a colour picker for a colour
 // (the level files keep colours as "r,g,b" from 0 to 1), text for the rest. The widget being edited keeps its own
-// value until the edit ends, then the panel queues one change, so a drag is one step of undo.
+// value until the edit ends, then the panel queues one change, so a drag is one step of undo. A selX property picks
+// from its script's enumX list by index; file, model, texture and effect names pick from what the campaign names.
 #include "leveleditor/fields.h"
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <string_view>
 
 #include <imgui.h>
+
+#include "leveleditor/property_lists.h"
 
 namespace {
 
@@ -15,6 +21,7 @@ constexpr float kFloatSpeed = 0.01f;
 
 ImGuiID g_editing = 0;
 std::string g_text;  // the edited value while g_editing
+char g_filter[kTextChars];  // the open picker's filter
 
 std::string Format(const float* v, int count) {
     std::string text;
@@ -75,7 +82,104 @@ bool Widget(fcip::editor::FieldKind kind, std::string& text) {
     return false;
 }
 
+// a script property's type prefix: lower case, then a capital or an underscore (selStatus, texture_CoronaTexture)
+bool HasPrefix(const std::string& key, const char* prefix) {
+    size_t n = std::strlen(prefix);
+    return key.size() > n && key.compare(0, n, prefix) == 0 && (std::isupper(uint8_t(key[n])) || key[n] == '_');
+}
+
+std::string Lower(std::string_view text) {
+    std::string out(text);
+    for (char& c : out) c = char(std::tolower(uint8_t(c)));
+    return out;
+}
+
+// a path's extension in lower case, empty for none
+std::string ExtensionOf(const std::string& path) {
+    size_t dot = path.rfind('.');
+    return dot == std::string::npos ? std::string() : Lower(std::string_view(path).substr(dot + 1));
+}
+
 }  // namespace
+
+std::vector<std::string> fcip::editor::ChoicesOf(const std::string& key) {
+    std::vector<std::string> names;
+    if (!HasPrefix(key, "sel")) return names;
+    for (const ChoiceList& list : kChoiceLists) {
+        if (key.compare(3, std::string::npos, list.name) != 0) continue;
+        std::string_view all = list.choices;
+        for (size_t bar; (bar = all.find('|')) != std::string_view::npos; all.remove_prefix(bar + 1)) {
+            names.emplace_back(all.substr(0, bar));
+        }
+        names.emplace_back(all);
+    }
+    return names;
+}
+
+std::span<const char* const> fcip::editor::PickerItemsOf(const std::string& key, const std::string& value) {
+    if (HasPrefix(key, "effect")) return kEffects;
+    bool model = HasPrefix(key, "file") || HasPrefix(key, "obj") || HasPrefix(key, "object");
+    bool texture = HasPrefix(key, "tex") || HasPrefix(key, "texture");
+    bool video = HasPrefix(key, "bink");
+    if (!model && !texture && !video) return {};
+    std::string ext = ExtensionOf(value);
+    if (ext == "xbt") return kTextures;
+    if (ext == "xba") return kAnimations;
+    if (ext == "bik") return kVideos;
+    if (ext == "xbg" || ext == "glm" || ext == "cgf") return kModels;
+    if (texture) return kTextures;
+    if (video) return kVideos;
+    // empty: fileAnimPackage and fileRopeAnim name animations, objAnimObject a model
+    bool anim = key.find("Anim") != std::string::npos && !key.ends_with("Object");
+    return anim ? std::span<const char* const>(kAnimations) : std::span<const char* const>(kModels);
+}
+
+bool fcip::editor::DrawChoice(const char* id, const std::vector<std::string>& names, const std::string& value,
+                              std::string& out) {
+    int index = std::atoi(value.c_str());
+    bool known = index >= 0 && index < int(names.size());
+    std::string preview = known ? names[size_t(index)] : value;
+    bool picked = false;
+    ImGui::PushID(id);
+    if (ImGui::BeginCombo("##v", preview.c_str())) {
+        for (int i = 0; i < int(names.size()); i++) {
+            if (!ImGui::Selectable(names[size_t(i)].c_str(), i == index)) continue;
+            out = std::to_string(i);
+            picked = true;
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopID();
+    return picked;
+}
+
+bool fcip::editor::DrawPicker(const char* id, std::span<const char* const> items, const std::string& value,
+                              std::string& out) {
+    ImGui::PushID(id);
+    ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - ImGui::GetFrameHeight());
+    bool done = DrawField("##text", FieldKind::Text, value, out);
+    ImGui::SameLine(0, 0);
+    if (ImGui::BeginCombo("##list", nullptr, ImGuiComboFlags_NoPreview | ImGuiComboFlags_HeightLarge)) {
+        if (ImGui::IsWindowAppearing()) {
+            g_filter[0] = 0;
+            ImGui::SetKeyboardFocusHere();
+        }
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##filter", "filter", g_filter, sizeof(g_filter));
+        std::string filter = Lower(g_filter);
+        std::string current = Lower(value);
+        for (const char* item : items) {
+            std::string lower = Lower(item);
+            if (!filter.empty() && lower.find(filter) == std::string::npos) continue;
+            if (!ImGui::Selectable(item, lower == current)) continue;
+            out = item;
+            done = true;
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopID();
+    return done;
+}
 
 bool fcip::editor::DrawField(const char* id, FieldKind kind, const std::string& value, std::string& out) {
     ImGui::PushID(id);

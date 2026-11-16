@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <iterator>
 #include <string>
 #include <vector>
 
@@ -21,7 +20,6 @@ using namespace fcip::editor;
 
 namespace {
 
-constexpr const char* kStatuses[] = {"Absent", "Open", "Current", "Closed"};
 struct Column {
     const char* key;
     FieldKind kind;
@@ -35,17 +33,13 @@ constexpr Column kColumns[] = {
 
 int IndexOf(const ViewEntity& e) { return std::atoi(PropertyOf(e, "TableIndex").c_str()); }
 
-// the editor keeps a list's choice twice, the script reads selStatus
+// the script reads selStatus; its enumStatus is the choice list itself
 void StatusCombo(const ViewEntity& e) {
-    int status = std::clamp(std::atoi(PropertyOf(e, "selStatus").c_str()), 0, int(std::size(kStatuses)) - 1);
     ImGui::SetNextItemWidth(-1);
-    if (!ImGui::BeginCombo("##status", kStatuses[status])) return;
-    for (int i = 0; i < int(std::size(kStatuses)); i++) {
-        if (!ImGui::Selectable(kStatuses[i], i == status)) continue;
-        SetEntityProperty(e.id, "selStatus", std::to_string(i));
-        SetEntityProperty(e.id, "enumStatus", std::to_string(i));
+    std::string edited;
+    if (DrawChoice("##status", ChoicesOf("selStatus"), PropertyOf(e, "selStatus"), edited)) {
+        SetEntityProperty(e.id, "selStatus", edited);
     }
-    ImGui::EndCombo();
 }
 
 void DrawObjective(const ViewEntity& e) {
