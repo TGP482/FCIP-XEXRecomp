@@ -19,6 +19,7 @@ constexpr float kZScale = 32.0f;     // its z, 16 bit
 constexpr float kDefaultSizes[3] = {1.0f, 1.955f, 0.51f};
 constexpr uint16_t kNone = 0xFFFF;
 constexpr uint8_t kOutdoor = 0x01;
+constexpr uint8_t kWaypointNode = 0x20;  // a waypoint building's node, no corners
 constexpr uint16_t kObstacleLeaf = 16;  // most elements a quad tree node holds before it splits
 constexpr uint16_t kPolygonLeaf = 16;
 constexpr uint16_t kIslandLeaf = 32;
@@ -854,6 +855,20 @@ std::vector<NavFile> BuildNavGraphs(const NavInput& in, const GroundHeight& heig
         out.push_back(std::move(f));
     }
     return out;
+}
+
+NavShape ShapeOfGraph(const NavFile& file) {
+    Graph g;
+    NavShape s;
+    if (!ReadGraph(file, g)) return s;
+    for (const Vec3& v : g.verts) s.verts.push_back({v.x, v.y, v.z});
+    s.boundary = g.boundary;
+    s.obstacles = g.obstacles;
+    for (const Polygon& p : g.polygons) {
+        if (p.flags & kWaypointNode) s.nodes.push_back({p.pos.x, p.pos.y, p.pos.z});
+        else s.polygons.push_back(p.corners);
+    }
+    return s;
 }
 
 NavFile NavManagerFile(uint32_t graphs) {

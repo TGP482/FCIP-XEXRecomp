@@ -14,6 +14,7 @@
 #include "leveleditor/guest.h"
 #include "leveleditor/gizmo.h"
 #include "leveleditor/link_edit.h"
+#include "leveleditor/nav_graph.h"
 #include "leveleditor/object_panel.h"
 #include "leveleditor/picking.h"
 #include "leveleditor/sequence_panel.h"
@@ -28,7 +29,7 @@ namespace {
 
 constexpr const char* kCategoryNames[] = {"Player Start", "Triggers",           "Sequences", "Culling",
                                           "Sounds",       "Lights and Effects", "Gameplay",  "AI Objects",
-                                          "AI Navigation"};
+                                          "AI Navigation", "AI Navigation Rebuilt"};
 static_assert(std::size(kCategoryNames) == kViewCategoryCount);
 
 constexpr int kPropertyReadsPerFrame = 32;  // a level's first frames read them in turns
@@ -112,6 +113,7 @@ void UpdateMarkers(PPCContext& ctx) {
     if (!g_scratch) g_scratch = mem::AllocSystem(kScratchBytes);
     if (!g_scratch) return;
     UpdateLayers(ctx);
+    UpdateNavRebuild(ctx);
     auto found = std::make_shared<std::vector<ViewEntity>>();
     int reads = kPropertyReadsPerFrame;
     ForEachEntity([&](uint32_t entity) {
@@ -141,6 +143,7 @@ void DrawMarkers() {
     if (!BeginView(view)) return;
     if (g_view_shown[kViewAi]) DrawAi(view);
     if (g_view_shown[kViewNav]) DrawNav(view);
+    if (g_view_shown[kViewNavRebuilt]) DrawNavRebuilt(view);
     if (g_view_shown[kViewTriggers]) DrawTriggers(view);
     if (g_view_shown[kViewSequences]) DrawSequences(view);
     if (g_view_shown[kViewCulling]) DrawCulling(view);

@@ -2,7 +2,8 @@
 // each Graph%d.bai from the level's folder (8228CF00, CGraph::Read 822C2148, as default.xex 822E4A00 and 822DEDE0):
 // one graph per EnclosingArea, in the order of their names, and one per waypoint building. A graph holds its
 // boundary, the walkable polygons with their neighbours, the obstacles cut out of them, its exits to other graphs
-// and the hide points. The view draws them as the game loaded them, within reach of the camera.
+// and the hide points. The view draws them as the game loaded them, within reach of the camera, and on its own toggle
+// the graphs a custom level's save would write now, built again whenever the AI objects change.
 #include <algorithm>
 #include <array>
 #include <memory>
@@ -57,6 +58,8 @@ constexpr ImU32 kObstacleColour = IM_COL32(255, 80, 80, 200);
 constexpr ImU32 kExitColour = IM_COL32(80, 220, 255, 255);
 constexpr ImU32 kWaypointColour = IM_COL32(255, 230, 90, 220);
 constexpr ImU32 kHideColour = IM_COL32(180, 255, 120, 200);
+constexpr ImU32 kRebuiltColour = IM_COL32(255, 170, 60, 110);
+constexpr ImU32 kRebuiltEdgeColour = IM_COL32(255, 170, 60, 255);
 
 using Vec = std::array<float, 3>;
 struct Polygon {
@@ -82,6 +85,9 @@ using Nav = std::vector<NavGraph>;
 std::mutex g_lock;
 std::string g_folder;  // editor thread
 std::shared_ptr<const Nav> g_nav = std::make_shared<Nav>();
+std::shared_ptr<const Nav> g_rebuilt = std::make_shared<Nav>();
+uint32_t g_rebuilt_generation = 0;  // editor thread, the AI objects the rebuilt graphs were cut for
+bool g_rebuilt_any = false;
 
 Vec ReadVec(uint32_t at) { return {GF(at), GF(at + 4), GF(at + 8)}; }
 
@@ -149,6 +155,29 @@ std::shared_ptr<const Nav> CurrentNav() {
     return g_nav;
 }
 
+std::shared_ptr<const Nav> RebuiltNav() {
+    std::lock_guard lock(g_lock);
+    return g_rebuilt;
+}
+
+std::vector<int> Indices(const std::vector<uint32_t>& from) { return {from.begin(), from.end()}; }
+
+// a rebuilt graph file as the view draws it; a polygon's first corner stands for its place
+NavGraph GraphOf(const NavShape& s) {
+    NavGraph g;
+    g.verts = s.verts;
+    g.boundary = Indices(s.boundary);
+    for (const std::vector<uint32_t>& o : s.obstacles) g.obstacles.push_back(Indices(o));
+    for (const std::vector<uint32_t>& corners : s.polygons) {
+        Polygon p;
+        p.corners = Indices(corners);
+        if (!corners.empty() && corners.front() < s.verts.size()) p.centre = s.verts[corners.front()];
+        g.polygons.push_back(std::move(p));
+    }
+    for (const NavPoint& node : s.nodes) g.polygons.push_back({{}, {}, node, true});
+    return g;
+}
+
 bool InReach(const View& v, const Vec& p) {
     float dx = p[0] - v.eye[0];
     float dy = p[1] - v.eye[1];
@@ -163,6 +192,16 @@ void Loop(const View& v, const NavGraph& g, const std::vector<int>& corners, ImU
         if (a < 0 || b < 0 || size_t(a) >= g.verts.size() || size_t(b) >= g.verts.size()) continue;
         const Vec& from = g.verts[size_t(a)];
         if (InReach(v, from)) Line(v, from.data(), g.verts[size_t(b)].data(), colour);
+    }
+}
+
+void DrawRebuiltGraph(const View& v, const NavGraph& g) {
+    Loop(v, g, g.boundary, kRebuiltEdgeColour);
+    for (const std::vector<int>& o : g.obstacles) Loop(v, g, o, kRebuiltEdgeColour);
+    for (const Polygon& p : g.polygons) {
+        if (!InReach(v, p.centre)) continue;
+        if (p.waypoint) Square(v, p.centre.data(), kRebuiltEdgeColour);
+        else Loop(v, g, p.corners, kRebuiltColour);
     }
 }
 
@@ -196,6 +235,22 @@ std::string fcip::editor::LoadedNavFolder() { return g_folder; }
 
 void fcip::editor::DrawNav(const View& v) {
     for (const NavGraph& g : *CurrentNav()) DrawGraph(v, g);
+}
+
+void fcip::editor::DrawNavRebuilt(const View& v) {
+    for (const NavGraph& g : *RebuiltNav()) DrawRebuiltGraph(v, g);
+}
+
+void fcip::editor::UpdateNavRebuild(PPCContext& ctx) {
+    std::shared_ptr<const AiObjects> objects = ReadAiObjects();
+    bool current = g_rebuilt_any && objects->generation == g_rebuilt_generation;
+    if (!g_view_shown[kViewNavRebuilt] || !objects->kept || current) return;
+    auto nav = std::make_shared<Nav>();
+    for (const NavFile& file : RebuildNavGraphs(ctx)) nav->push_back(GraphOf(ShapeOfGraph(file)));
+    g_rebuilt_generation = objects->generation;
+    g_rebuilt_any = true;
+    std::lock_guard lock(g_lock);
+    g_rebuilt = std::move(nav);
 }
 
 PPC_EXTERN_FUNC(__imp__sub_8228CF00);

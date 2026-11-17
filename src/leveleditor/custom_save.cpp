@@ -273,15 +273,8 @@ void AddAreas(const AiObjects& objects, std::vector<NavArea>* areas, std::vector
     }
 }
 
-// the AI navigation cut again for the level's areas as they are now
 void WriteNavigation(PPCContext& ctx) {
-    NavInput in;
-    in.loaded_graphs = LoadedGraphs(ctx);
-    std::vector<NavArea> loaded_areas;
-    AddAreas(*ReadLoadedAiObjects(), &loaded_areas, &in.loaded_forbidden);
-    for (const NavArea& a : loaded_areas) in.loaded_areas.push_back(a.name);
-    AddAreas(*ReadAiObjects(), &in.areas, &in.forbidden);
-    std::vector<NavFile> graphs = BuildNavGraphs(in, [&](float x, float y) { return TerrainHeightAt(ctx, x, y); });
+    std::vector<NavFile> graphs = RebuildNavGraphs(ctx);
     for (size_t i = 0; i < graphs.size(); i++) {
         WriteHostFile("Graph" + std::to_string(i) + ".bai", graphs[i].data(), graphs[i].size());
     }
@@ -377,6 +370,18 @@ void SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
 }  // namespace
 
 std::filesystem::path fcip::editor::OwnScriptPath() { return LevelFolder() / kScriptName; }
+
+// the AI navigation cut again for the level's areas as they are now
+std::vector<NavFile> fcip::editor::RebuildNavGraphs(PPCContext& ctx) {
+    if (!EnsureScratch()) return {};
+    NavInput in;
+    in.loaded_graphs = LoadedGraphs(ctx);
+    std::vector<NavArea> loaded_areas;
+    AddAreas(*ReadLoadedAiObjects(), &loaded_areas, &in.loaded_forbidden);
+    for (const NavArea& a : loaded_areas) in.loaded_areas.push_back(a.name);
+    AddAreas(*ReadAiObjects(), &in.areas, &in.forbidden);
+    return BuildNavGraphs(in, [&](float x, float y) { return TerrainHeightAt(ctx, x, y); });
+}
 
 bool fcip::editor::ReadPackFile(PPCContext& ctx, const std::string& file, std::vector<uint8_t>& out) {
     return EnsureScratch() && ReadGameFile(ctx, file, out);
