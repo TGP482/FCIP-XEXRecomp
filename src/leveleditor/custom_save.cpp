@@ -3,7 +3,8 @@
 // for 255 files, which a campaign level's 550 files and 40 MB do not fit. Its writers make real files when no pack
 // takes them (File_Open 8234EF80), so the save runs them with the engine's level path on the custom level: terrain,
 // sectors, tools, ziplines and mounted weapons. The rest are written here: the campaign's level files the editor does
-// not write, its sequences as edited, its LevelData.xml naming the campaign level, the mission with the editor's
+// not write, its dependency lists with the editor templates' added, its sequences as edited, its LevelData.xml naming
+// the campaign level, the mission with the editor's
 // entities and AI objects, the AI navigation cut for its areas, the paint layers, and a first Mission.lua that runs
 // after the campaign's mission script.
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -36,8 +38,17 @@ namespace fs = std::filesystem;
 
 // the campaign level's files the editor's save does not write, copied from its pack
 constexpr const char* kCopiedFiles[] = {"Brush.lst", "vegbank.dat", "moviedata.xml"};
-// the dependency lists, named after the level
-constexpr const char* kDependencyLists[] = {"_DepLoad.xml", "_DepLoadParticles.xml"};
+// the dependency lists, named after the level, each entry keyed by an attribute: a dependency by CRC (8239D908), a
+// particle effect by Name
+struct DependencyList {
+    const char* suffix;
+    const char* key;
+};
+constexpr DependencyList kDependencyLists[] = {{"_DepLoad.xml", " CRC=\""}, {"_DepLoadParticles.xml", " Name=\""}};
+// the editor templates' lists, which the editor loads beside a campaign level's; FCIP.exe loads only the level's
+// (825E5DA0, 825DC2E0)
+constexpr const char* kEditorLists = "levels\\MET_Dependency\\MET_Dependency";
+constexpr const char* kEntryIndent = "    <";  // a list's entries open at this indent, their children deeper
 constexpr uint32_t kMaxGraphs = 256;
 constexpr const char* kGraphManager = "GraphManager.bai";
 constexpr uint32_t kGraphCount = 4;  // GraphManager.bai: version, then the graphs
@@ -170,10 +181,66 @@ void CopyFile(PPCContext& ctx, const std::string& level, const std::string& file
     if (ReadGameFile(ctx, "levels\\" + level + "\\" + file, data)) WriteHostFile(name, data.data(), data.size());
 }
 
+std::vector<std::string> Lines(const std::vector<uint8_t>& text) {
+    std::vector<std::string> lines(1);
+    for (uint8_t c : text) {
+        lines.back() += char(c);
+        if (c == '\n') lines.emplace_back();
+    }
+    return lines;
+}
+
+bool OpensEntry(const std::string& line) {
+    size_t indent = std::char_traits<char>::length(kEntryIndent);
+    return line.compare(0, indent, kEntryIndent) == 0 && line.size() > indent && line[indent] != ' ' &&
+           line[indent] != '/';
+}
+
+std::string KeyOf(const std::string& line, const std::string& key) {
+    size_t at = line.find(key);
+    if (at == std::string::npos) return {};
+    at += key.size();
+    return line.substr(at, line.find('"', at) - at);
+}
+
+// the level's list with every editor template entry it lacks put before its closing tag
+std::vector<uint8_t> MergeLists(const std::vector<uint8_t>& level, const std::vector<uint8_t>& editor,
+                                const std::string& key) {
+    std::set<std::string> have;
+    for (const std::string& line : Lines(level)) {
+        if (OpensEntry(line)) have.insert(KeyOf(line, key));
+    }
+    std::string added;
+    bool copy = false;
+    for (const std::string& line : Lines(editor)) {
+        if (OpensEntry(line)) copy = have.insert(KeyOf(line, key)).second;
+        else if (line.compare(0, 1, "<") == 0) copy = false;  // the header and the root's own tags
+        if (copy) added += line;
+    }
+    std::string text(level.begin(), level.end());
+    size_t close = text.rfind("</");
+    if (close == std::string::npos) return level;
+    text.insert(close, added);
+    return {text.begin(), text.end()};
+}
+
+// the campaign's dependency lists with the editor templates' entries, so FCIP.exe preloads what the editor did
+void WriteDependencyLists(PPCContext& ctx, const std::string& level) {
+    for (const DependencyList& list : kDependencyLists) {
+        std::vector<uint8_t> own;
+        std::vector<uint8_t> editor;
+        bool has_own = ReadGameFile(ctx, "levels\\" + level + "\\" + level + list.suffix, own);
+        bool has_editor = ReadGameFile(ctx, std::string(kEditorLists) + list.suffix, editor);
+        if (!has_own && !has_editor) continue;
+        std::vector<uint8_t> merged = !has_own ? editor : has_editor ? MergeLists(own, editor, list.key) : own;
+        WriteHostFile(MapName() + list.suffix, merged.data(), merged.size());
+    }
+}
+
 void CopyCampaignFiles(PPCContext& ctx) {
     std::string level = CampaignLevel();
     for (const char* file : kCopiedFiles) CopyFile(ctx, level, file, file);
-    for (const char* list : kDependencyLists) CopyFile(ctx, level, level + list, MapName() + list);
+    WriteDependencyLists(ctx, level);
 }
 
 // the sequences as edited, over the campaign's copy
