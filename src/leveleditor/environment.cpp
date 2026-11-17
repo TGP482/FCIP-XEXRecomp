@@ -416,7 +416,7 @@ void fcip::editor::DrawEnvironmentPanel() {
     ImGui::PopStyleColor();
     ImGui::Separator();
     if (!g_view.kept) {
-        ImGui::TextUnformatted("Only a campaign or custom level keeps its mission's environment.");
+        ImGui::TextUnformatted("Open a level to edit its mission's environment.");
         return;
     }
     ImGui::BeginChild("##environment");

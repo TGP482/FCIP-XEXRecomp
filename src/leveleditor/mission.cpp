@@ -1,7 +1,8 @@
-// ige.xex, the solo level editor: a campaign level's mission XML and LevelData.xml stay referenced after it loads. The
-// mission's Objects hold the AI objects (tag points, anchors with their actions, shapes, areas), which the engine reads
-// into the AI system only as the level starts (8229CD10). The panel edits them here, and the custom level save writes
-// the mission back with the editor's entities in place of the campaign's.
+// ige.xex, the solo level editor: a level's mission XML (and a campaign level's LevelData.xml) stays referenced after it
+// loads. The mission's Objects hold the AI objects (tag points, anchors with their actions, shapes, areas), which the
+// engine reads into the AI system only as the level starts (8229CD10). The panel edits them here. The custom level
+// save writes the mission back with the editor's entities in place of the campaign's; a map's save writes its own
+// mission (82106B00), which gets the kept AI objects and the sections it leaves out.
 #include "leveleditor/mission.h"
 
 #include <algorithm>
@@ -283,6 +284,32 @@ uint32_t LastChildTagged(uint32_t node, const char* tag) {
     return 0;
 }
 
+// AI objects taken from a copy (each referenced once) into an Objects node, which keeps them
+void AddObjects(PPCContext& ctx, uint32_t objects, const std::vector<uint32_t>& ai) {
+    for (uint32_t node : ai) {
+        W32(g_scratch + kScratchRef, node);
+        if (objects) CallGuest(ctx, Method(objects, kNodeAddChild), {objects, g_scratch + kScratchRef});
+        else Release(ctx, node);
+    }
+}
+
+// from's children whose tag to has none of go to to as they are; with depth, the ones it has are filled the same way
+void AddMissing(PPCContext& ctx, uint32_t to, uint32_t from, int depth) {
+    std::set<std::string> tags;
+    for (uint32_t i = 0; i < ChildCount(to); i++) tags.insert(Tag(ChildAt(to, i)));
+    for (uint32_t i = 0; i < ChildCount(from); i++) {
+        uint32_t child = ChildAt(from, i);
+        std::string tag = Tag(child);
+        if (!tags.count(tag)) {
+            CallGuest(ctx, Method(child, kNodeAddRef), {child});
+            W32(g_scratch + kScratchRef, child);
+            CallGuest(ctx, Method(to, kNodeAddChild), {to, g_scratch + kScratchRef});
+        } else if (depth > 0) {
+            if (uint32_t same = ChildTagged(to, tag.c_str())) AddMissing(ctx, same, child, depth - 1);
+        }
+    }
+}
+
 std::string UniqueName(const std::string& type) {
     std::set<std::string> names;
     uint32_t objects = ObjectsNode();
@@ -514,14 +541,23 @@ uint32_t MissionToSave(PPCContext& ctx, uint32_t mission_object) {
     std::vector<uint32_t> ai = TakeAiObjects(ctx, copy);
     W32(g_scratch + kScratchRef, copy);
     CallGuest(ctx, SYM_Mission_WriteEntities, {mission_object, g_scratch + kScratchRef});
-    uint32_t objects = LastChildTagged(copy, kObjects);
-    for (uint32_t node : ai) {
-        W32(g_scratch + kScratchRef, node);
-        if (objects) CallGuest(ctx, Method(objects, kNodeAddChild), {objects, g_scratch + kScratchRef});
-        else Release(ctx, node);
-    }
+    AddObjects(ctx, LastChildTagged(copy, kObjects), ai);
     AddSavedPrototypes(ctx, copy);
     return copy;
+}
+
+void AddKeptMission(PPCContext& ctx, uint32_t node) {
+    if (!g_mission || !node || !EnsureScratch()) return;
+    W32(g_scratch + kScratchRef, 0);
+    CallGuest(ctx, Method(g_mission, kNodeClone), {g_scratch + kScratchRef, g_mission});
+    uint32_t copy = R32(g_scratch + kScratchRef);
+    if (!copy) return;
+    std::vector<uint32_t> ai = TakeAiObjects(ctx, copy);
+    uint32_t objects = LastChildTagged(node, kObjects);
+    AddObjects(ctx, objects ? objects : NewChild(ctx, node, kObjects), ai);
+    AddMissing(ctx, node, copy, 1);
+    Release(ctx, copy);
+    AddSavedPrototypes(ctx, node);
 }
 
 void UpdateMission(PPCContext& ctx) {

@@ -8,6 +8,7 @@
 #include <imgui.h>
 
 #include "editor/tools.h"
+#include "leveleditor/campaign_levels.h"
 #include "leveleditor/level_objects.h"
 #include "leveleditor/mission.h"
 
@@ -17,7 +18,7 @@ namespace {
 
 // the Add Object tool's categories
 constexpr int kWeaponCategory = 1;
-constexpr int kRespawnCategory = 3;  // multiplayer respawn points, where no mission is kept
+constexpr int kRespawnCategory = 3;  // multiplayer respawn points, a map's; a campaign level's are mission objects
 constexpr int kFirstLaterCategory = 3;  // the game's categories from here go after the level's
 
 char g_search[64] = "";
@@ -100,7 +101,7 @@ void LevelCategory(const State& s, const std::vector<Category>& catalogue, int v
         ImGui::BeginDisabled(!kept);
         for (const LevelObject* o : objects) {
             if (ImGui::Selectable(o->caption)) AddAtCursor(o->type);
-            const char* tip = kept ? "Added at the tool cursor" : "Needs a campaign or custom level";
+            const char* tip = kept ? "Added at the tool cursor" : "Open a level first";
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tip);
         }
         ImGui::EndDisabled();
@@ -121,7 +122,7 @@ void fcip::editor::DrawLevelObjects() {
     for (int c = 0; c < kFirstLaterCategory; c++) GameCategory(s, catalogue, c);
     for (int v = 0; v < kViewCategoryCount; v++) LevelCategory(s, catalogue, v, kept);
     for (int c = kFirstLaterCategory; c < kCategoryCount; c++) {
-        if (c != kRespawnCategory || !kept) GameCategory(s, catalogue, c);
+        if (c != kRespawnCategory || CampaignLevel().empty()) GameCategory(s, catalogue, c);
     }
     ImGui::EndChild();
 }

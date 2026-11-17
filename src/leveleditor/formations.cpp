@@ -427,7 +427,7 @@ void fcip::editor::DrawFormationsPanel() {
     ImGui::PopStyleColor();
     ImGui::Separator();
     if (!g_view.kept) {
-        ImGui::TextUnformatted("Only a campaign or custom level keeps its mission's formations.");
+        ImGui::TextUnformatted("Open a level to edit its mission's formations.");
         return;
     }
     ImGui::BeginChild("##formations");

@@ -4,7 +4,7 @@
 // level stays as the game shows it. A custom level saved from one, a folder in levels\ beside the executable laid over
 // game:\Levels, opens the same way with the campaign level's pack for its assets, its own Mission.lua run after the
 // campaign's mission script and again whenever that file changes, and its own copy of the mission's string table, when
-// it has one, read in place of the campaign's.
+// it has one, read in place of the campaign's. A map keeps its mission too, so it gets the same mission objects.
 #include "leveleditor/campaign_levels.h"
 
 #include <algorithm>
@@ -342,6 +342,7 @@ PPC_EXTERN_FUNC(__imp__sub_823243D8);
 PPC_EXTERN_FUNC(__imp__sub_820E3C88);
 PPC_EXTERN_FUNC(__imp__sub_82449A08);
 PPC_EXTERN_FUNC(__imp__sub_8229CC08);
+PPC_EXTERN_FUNC(__imp__sub_82106960);
 PPC_EXTERN_FUNC(__imp__sub_8222B3C8);
 PPC_EXTERN_FUNC(__imp__sub_823A23D8);
 
@@ -403,10 +404,20 @@ PPC_FUNC(sub_82138CD8) {
     W8(game + kEditorGame, editor);
 }
 
-// a level's mission objects into the AI system (r5 the mission's XmlNodeRef); a campaign level's mission is kept
+// a level's mission objects into the AI system (r5 the mission's XmlNodeRef); the mission is kept, a campaign level's
+// as it loads, a map's (its template's, or its own once saved) the first time
 PPC_FUNC(sub_8229CC08) {
-    if (g_loading) KeepMission(ctx, R32(uint32_t(ctx.r[5])));
+    bool map = fcip::editor::g_solo && g_open == kNone && !KeptMission();
+    if (g_loading || map) KeepMission(ctx, R32(uint32_t(ctx.r[5])));
     __imp__sub_8229CC08(ctx, base);
+}
+
+// a map's save adds the EntityLibrary to its mission (r4 the mission's XmlNodeRef, which it releases), the last step
+// before the file is written; the kept mission's AI objects and the sections the editor leaves out go in after it
+PPC_FUNC(sub_82106960) {
+    uint32_t mission = R32(uint32_t(ctx.r[4]));
+    __imp__sub_82106960(ctx, base);
+    if (fcip::editor::g_solo && g_open == kNone) AddKeptMission(ctx, mission);
 }
 
 // a map template's time of day preset; a campaign level keeps its mission's environment

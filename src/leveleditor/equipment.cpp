@@ -410,7 +410,7 @@ void fcip::editor::DrawEquipmentPanel() {
     ImGui::PopStyleColor();
     ImGui::Separator();
     if (!g_view.kept) {
-        ImGui::TextUnformatted("Only a campaign or custom level keeps its mission's equipment.");
+        ImGui::TextUnformatted("Open a level to edit its mission's equipment.");
         return;
     }
     ImGui::BeginChild("##equipment");

@@ -1,5 +1,5 @@
-// a campaign level's mission XML and LevelData.xml, kept after it loads for its AI objects, entity layers and the save
-// (mission.cpp)
+// a level's mission XML and a campaign level's LevelData.xml, kept after they load for its AI objects, entity layers
+// and the save (mission.cpp)
 #pragma once
 #include <array>
 #include <cstdint>
@@ -51,7 +51,7 @@ struct AiObjects {
 };
 
 // editor thread
-void KeepMission(PPCContext& ctx, uint32_t node);    // a campaign level's mission, as its objects load
+void KeepMission(PPCContext& ctx, uint32_t node);    // a level's mission, as its objects load
 void KeepLevelData(PPCContext& ctx, uint32_t node);  // its LevelData.xml, as it loads
 void ForgetMission(PPCContext& ctx);                  // a level starts
 uint32_t KeptLevelData();
@@ -60,6 +60,9 @@ std::unordered_set<uint32_t> MissionEntityIds();  // the kept mission's entities
 // the kept mission for a custom level: its Objects rebuilt from the editor's entities (82104C38 on the mission object)
 // and the kept AI objects; referenced once, 0 without a kept mission
 uint32_t MissionToSave(PPCContext& ctx, uint32_t mission_object);
+// a map's mission as the editor's save writes it (82106B00): the kept AI objects into its Objects, and what the editor
+// does not write added as kept (EquipPacks, Weapons, Formations, an Environment's Ocean)
+void AddKeptMission(PPCContext& ctx, uint32_t node);
 void UpdateMission(PPCContext& ctx);                  // each frame: queued edits, then a fresh snapshot after any
 
 // any thread
