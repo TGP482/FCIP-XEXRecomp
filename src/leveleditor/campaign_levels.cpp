@@ -3,7 +3,8 @@
 // presets, ambience, cleared sectors, forced water and border heights, rebuilt sector textures and shadows), so the
 // level stays as the game shows it. A custom level saved from one, a folder in levels\ beside the executable laid over
 // game:\Levels, opens the same way with the campaign level's pack for its assets, its own Mission.lua run after the
-// campaign's mission script and again whenever that file changes.
+// campaign's mission script and again whenever that file changes, and its own copy of the mission's string table, when
+// it has one, read in place of the campaign's.
 #include "leveleditor/campaign_levels.h"
 
 #include <algorithm>
@@ -28,6 +29,7 @@
 #include "leveleditor/level_data.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mission.h"
+#include "leveleditor/mission_text.h"
 #include "leveleditor/sequences.h"
 #include "leveleditor/static_geometry.h"
 #include "leveleditor/mode.h"
@@ -42,6 +44,11 @@ constexpr const char* kMission = "Mission0";
 // the mission loader (8229CC08) runs this after the mission's script and before Mission:OnInit
 constexpr const char* kMissionTools = "\\SCRIPTS\\MissionTools.lua";
 constexpr const char* kOwnScript = "Mission.lua";
+// the script's Language object: its language manager, then the mission table's name (std::string); the manager's first
+// field is the language's folder (std::string)
+constexpr uint32_t kLanguageManager = 0x0C;
+constexpr uint32_t kMissionTable = 0x10;
+constexpr const char* kLanguages = "LANGUAGES/";
 // ige only knows the editor templates' dependencies; default.xex loads a level's own unless it is an editor map
 constexpr const char* kEditorDependencies = "\\Levels\\MET_Dependency\\MET_Dependency_DepLoad.xml";
 
@@ -335,6 +342,8 @@ PPC_EXTERN_FUNC(__imp__sub_823243D8);
 PPC_EXTERN_FUNC(__imp__sub_820E3C88);
 PPC_EXTERN_FUNC(__imp__sub_82449A08);
 PPC_EXTERN_FUNC(__imp__sub_8229CC08);
+PPC_EXTERN_FUNC(__imp__sub_8222B3C8);
+PPC_EXTERN_FUNC(__imp__sub_823A23D8);
 
 // the editor's interface manager (r3) each frame
 PPC_FUNC(sub_82112AD0) {
@@ -437,4 +446,41 @@ PPC_FUNC(sub_82138E18) {
     uint32_t out = uint32_t(ctx.r[3]);
     __imp__sub_82138E18(ctx, base);
     if (g_loading) KeepLevelData(ctx, R32(out));
+}
+
+// Language:LoadMissionStringTable (r3 the script's Language object): a custom level's own copy loads under its own
+// name, which the level's Localize calls then read; the table is kept for the Objectives tab
+PPC_FUNC(sub_8222B3C8) {
+    uint32_t language = uint32_t(ctx.r[3]);
+    __imp__sub_8222B3C8(ctx, base);
+    if (!g_loading || !EnsureScratch()) return;
+    uint64_t result = ctx.r[3];
+    std::string name = GuestString(language + kMissionTable);
+    uint32_t manager = R32(language + kLanguageManager);
+    std::filesystem::path own = g_custom ? fcip::OwnStringTable(g_custom_name, name) : std::filesystem::path();
+    std::string text;
+    if (!own.empty()) {
+        std::string own_name = fcip::OwnStringTableName(g_custom_name, name);
+        uint32_t text_at = WriteText(g_scratch + kScratchPath, own_name, kScratchPathBytes);
+        CallGuest(ctx, SYM_String_Assign, {language + kMissionTable, text_at});
+        CallGuest(ctx, SYM_Language_LoadTable, {manager, language + kMissionTable});
+        std::ifstream in(own, std::ios::binary);
+        text.assign(std::istreambuf_iterator<char>(in), {});
+    } else {
+        std::vector<uint8_t> bytes;
+        ReadPackFile(ctx, kLanguages + GuestString(manager) + "/" + name, bytes);
+        text.assign(bytes.begin(), bytes.end());
+    }
+    KeepStringTable(name, text, !own.empty());
+    ctx.r[3] = result;
+}
+
+// an XML file loads (r3 the file, r4 its path): the custom level's own table name opens its copy
+PPC_FUNC(sub_823A23D8) {
+    std::string path = ReadCString(uint32_t(ctx.r[4]));
+    if (g_custom && path.starts_with(kLanguages) && EnsureScratch()) {
+        std::string own = fcip::OwnStringTablePath(g_custom_name, path);
+        if (!own.empty()) ctx.r[4] = WriteText(g_scratch + kScratchPath, own, kScratchPathBytes);
+    }
+    __imp__sub_823A23D8(ctx, base);
 }

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "common/custom_levels.h"
 
@@ -23,6 +24,8 @@ void OpenCustomLevel(const CustomLevel& level);
 void ForgetLevelRequest();    // the exit was cancelled
 std::string CampaignLevel();  // the campaign level open or the custom level open was made from, empty for a map
 std::filesystem::path OwnScriptPath();  // a custom level's script, levels\<name>\Mission.lua beside the executable
+// editor thread: a game file read through the packs, false when there is none (custom_save.cpp)
+bool ReadPackFile(PPCContext& ctx, const std::string& file, std::vector<uint8_t>& out);
 
 // the LEVEL MANAGER (level_manager.cpp): OPEN A LEVEL's list over the page, window thread
 bool LevelListUp();

@@ -1,6 +1,7 @@
 // default.xex: custom levels start as campaign levels do. A custom level is a folder in levels\ beside the exe laid
 // over game:\Levels, with loose files and no pack of its own: its campaign level's pack opens in its place for the
-// assets, and its Mission.lua runs after MissionTools.lua as it does in the level editor. CUSTOM CAMPAIGN plays them
+// assets, and its Mission.lua runs after MissionTools.lua as it does in the level editor, its own copy of the mission's
+// string table, when it has one, read in place of the campaign's. CUSTOM CAMPAIGN plays them
 // in folder name order: the story mode start goes to the first, and a level's end goes to the next.
 #include <algorithm>
 #include <mutex>
@@ -22,6 +23,9 @@ constexpr const char* kMissionTools = "\\SCRIPTS\\MissionTools.lua";
 constexpr const char* kCustomMission = "Mission0";  // the mission the level editor saves
 constexpr const char* kLastLevelEnd = "FadeOutEndMapReboot";
 constexpr uint32_t kTextBytes = 0x80;
+// the script's Language object: its language manager, then the mission table's name (std::string)
+constexpr uint32_t kLanguageManager = 0x0C;
+constexpr uint32_t kMissionTable = 0x10;
 
 // guest main thread
 std::string g_running;  // the custom level loading or running, empty for a campaign level
@@ -41,6 +45,16 @@ uint32_t GuestText(const std::string& text) {
     for (size_t i = 0; i < n; i++) W8(g_text + uint32_t(i), uint8_t(text[i]));
     W8(g_text + uint32_t(n), 0);
     return g_text;
+}
+
+// a std::string: its text inline until the capacity reaches 16 bytes, else a pointer
+std::string GuestString(uint32_t str) {
+    constexpr uint32_t kText = 0x04;
+    constexpr uint32_t kCapacity = 0x18;
+    constexpr uint32_t kInlineBytes = 0x10;
+    uint32_t text = str + kText;
+    if (R32(str + kCapacity) >= kInlineBytes) text = R32(text);
+    return ReadCString(text);
 }
 
 std::string CampaignOf(const std::string& level) {
@@ -123,6 +137,8 @@ std::string RouteLevelCommand(const std::string& command, bool ours) {
 
 PPC_EXTERN_FUNC(GUEST_ORIG(Streaming_OpenLevelPack));
 PPC_EXTERN_FUNC(GUEST_ORIG(Script_ExecuteFile));
+PPC_EXTERN_FUNC(GUEST_ORIG(Language_LoadMissionStringTable));
+PPC_EXTERN_FUNC(GUEST_ORIG(XmlFile_Load));
 
 // a level's pack opens (r4 its folder, r5 1 for a user map); a custom level's campaign level's opens in its place
 PPC_FUNC(GUEST(Streaming_OpenLevelPack)) {
@@ -146,4 +162,26 @@ PPC_FUNC(GUEST(Script_ExecuteFile)) {
     ctx.r[6] = 0;
     GUEST_ORIG(Script_ExecuteFile)(ctx, base);
     ctx.r[3] = result;
+}
+
+// Language:LoadMissionStringTable (r3 the script's Language object): a custom level's own copy of the table loads
+// under its own name, which the level's Localize calls then read
+PPC_FUNC(GUEST(Language_LoadMissionStringTable)) {
+    uint32_t language = uint32_t(ctx.r[3]);
+    GUEST_ORIG(Language_LoadMissionStringTable)(ctx, base);
+    std::string name = GuestString(language + kMissionTable);
+    if (g_running.empty() || fcip::OwnStringTable(g_running, name).empty()) return;
+    uint64_t result = ctx.r[3];
+    std::string own = fcip::OwnStringTableName(g_running, name);
+    CallGuest(ctx, SYM_String_AssignText, {language + kMissionTable, GuestText(own), uint32_t(own.size())});
+    CallGuest(ctx, SYM_Language_LoadTable, {R32(language + kLanguageManager), language + kMissionTable});
+    ctx.r[3] = result;
+    LOGR("custom levels: %s's own string table loaded", g_running.c_str());
+}
+
+// an XML file loads (r3 the file, r4 its path): the custom level's own table name opens its copy
+PPC_FUNC(GUEST(XmlFile_Load)) {
+    std::string own = fcip::OwnStringTablePath(g_running, ReadCString(uint32_t(ctx.r[4])));
+    if (!own.empty()) ctx.r[4] = GuestText(own);
+    GUEST_ORIG(XmlFile_Load)(ctx, base);
 }

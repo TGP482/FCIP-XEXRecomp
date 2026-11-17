@@ -76,6 +76,7 @@ Library_Find = 0x821AA900           # (XmlNodeRef out, library, std::string full
 # a custom level opened (campaign_levels.cpp)
 Script_ExecuteFile = 0x823243D8       # (script system, path, 0, 0)
 Script_ExecuteBuffer = 0x82322788     # (script system, text, size)
+Language_LoadTable = 0x8211BAF0       # (language manager, std::string name) LANGUAGES/<language>/<name>
 TerrainPaint_Load = 0x820D4A90        # textureinfo.ige
 # the terrain tool's paint texture caption (terrain_limits.cpp)
 Page_SetText = 0x820C0EB0  # (page, widget name, std::wstring)

@@ -1,7 +1,8 @@
 // ige.xex, the solo level editor: the level's objectives. Each is a Waypoint entity (its script, lua.dat 0xa126a704):
 // TableIndex orders it in the objectives list, selStatus is where it starts (Absent, Open, Current, Closed),
 // WaypointTag and CompletionTag name its text in the objectives, Radius and bTriggeredOnEnter complete it when the
-// player gets there. Edits go to the entity as the Properties tab's do, each one step of undo.
+// player gets there. Edits go to the entity as the Properties tab's do, each one step of undo. The text the tags name
+// is the mission's string table's (mission_text.cpp).
 #include "leveleditor/objectives.h"
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include "common/panel_colors.h"
 #include "leveleditor/fields.h"
 #include "leveleditor/markers.h"
+#include "leveleditor/mission_text.h"
 #include "leveleditor/object_panel.h"
 
 using namespace fcip::editor;
@@ -29,6 +31,17 @@ constexpr Column kColumns[] = {
     {"CompletionTag", FieldKind::Text},    {"Radius", FieldKind::Float},
     {"bTriggeredOnEnter", FieldKind::Bool}, {"bDisplayNewObjectiveMessage", FieldKind::Bool},
     {"bBlinking", FieldKind::Bool},
+};
+
+// a tag's text in a section of the mission's string table
+struct TagText {
+    const char* key;
+    const char* section;
+    const char* label;
+};
+constexpr TagText kTexts[] = {
+    {"WaypointTag", "Waypoints", "Objective text"},
+    {"CompletionTag", "Completions", "Completion text"},
 };
 
 int IndexOf(const ViewEntity& e) { return std::atoi(PropertyOf(e, "TableIndex").c_str()); }
@@ -60,6 +73,21 @@ void DrawObjective(const ViewEntity& e) {
         std::string edited;
         if (DrawField(c.key, c.kind, PropertyOf(e, c.key), edited)) SetEntityProperty(e.id, c.key, edited);
     }
+    for (const TagText& t : kTexts) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(t.label);
+        ImGui::SameLine(label_w);
+        std::string tag = PropertyOf(e, t.key);
+        if (tag.empty() || !HasStringTable()) {
+            ImGui::TextDisabled(tag.empty() ? "no tag" : "no string table loaded");
+            continue;
+        }
+        ImGui::SetNextItemWidth(-1);
+        std::string edited;
+        if (DrawField(t.label, FieldKind::Text, MissionText(t.section, tag), edited)) {
+            SetMissionText(t.section, tag, edited);
+        }
+    }
     ImGui::Separator();
     ImGui::PopID();
 }
@@ -70,6 +98,7 @@ void fcip::editor::DrawObjectivesPanel() {
     ImGui::TextUnformatted("OBJECTIVES");
     ImGui::PushStyleColor(ImGuiCol_Text, fcip::kDim);
     ImGui::TextUnformatted("Objective Waypoints, placed from the Objects tab's Gameplay");
+    ImGui::TextUnformatted("Their text saves with the level and shows once it opens again");
     ImGui::PopStyleColor();
     ImGui::Separator();
     std::vector<const ViewEntity*> waypoints;

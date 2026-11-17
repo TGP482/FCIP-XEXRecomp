@@ -4,7 +4,7 @@
 // takes them (File_Open 8234EF80), so the save runs them with the engine's level path on the custom level: terrain,
 // sectors, tools, ziplines and mounted weapons. The rest are written here: the campaign's level files the editor does
 // not write, its dependency lists with the editor templates' added, its sequences as edited, its LevelData.xml naming
-// the campaign level, the mission with the editor's
+// the campaign level, its mission's string table when its text was edited, the mission with the editor's
 // entities and AI objects, the AI navigation cut for its areas, the paint layers, and a first Mission.lua that runs
 // after the campaign's mission script.
 #include <algorithm>
@@ -24,6 +24,7 @@
 #include "leveleditor/campaign_levels.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/mission.h"
+#include "leveleditor/mission_text.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/nav_graph.h"
 #include "leveleditor/sequences.h"
@@ -361,6 +362,8 @@ void SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     WriteMovie(ctx);
     WriteLevelData(ctx);
     WriteMission(ctx);
+    StringTableFile table = SavedStringTable();
+    if (!table.name.empty()) WriteHostFile(table.name, table.text.data(), table.text.size());
     WriteNavigation(ctx);
     WriteEditorFiles(ctx, manager);
     std::vector<uint8_t> paint = PaintLayerBytes();
@@ -374,6 +377,10 @@ void SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
 }  // namespace
 
 std::filesystem::path fcip::editor::OwnScriptPath() { return LevelFolder() / kScriptName; }
+
+bool fcip::editor::ReadPackFile(PPCContext& ctx, const std::string& file, std::vector<uint8_t>& out) {
+    return EnsureScratch() && ReadGameFile(ctx, file, out);
+}
 
 PPC_EXTERN_FUNC(__imp__sub_82109BF8);
 

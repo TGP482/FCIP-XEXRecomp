@@ -39,6 +39,7 @@
 #include "leveleditor/level_objects.h"
 #include "leveleditor/link_edit.h"
 #include "leveleditor/markers.h"
+#include "leveleditor/mission_text.h"
 #include "leveleditor/mode.h"
 #include "leveleditor/object_panel.h"
 #include "leveleditor/objectives.h"
@@ -517,6 +518,10 @@ void DrawTabs(const State& s) {
     }
     if (editor::g_solo && ImGui::BeginTabItem("Objectives")) {
         editor::DrawObjectivesPanel();
+        ImGui::EndTabItem();
+    }
+    if (editor::g_solo && ImGui::BeginTabItem("Script")) {
+        editor::DrawScriptPanel();
         ImGui::EndTabItem();
     }
     if (editor::g_solo && ImGui::BeginTabItem("Layers")) {

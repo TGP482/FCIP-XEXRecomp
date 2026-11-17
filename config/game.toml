@@ -166,9 +166,13 @@ LoadingScreen_Wait = 0x82156AB0
 Player_SetProperty = 0x8210A788
 SaveManager_NewStory = 0x8222AE98
 
-# custom levels (custom_level_start.cpp): a level's pack opened for it, and a script file run
-Streaming_OpenLevelPack = 0x823EEE18  # (streaming, level folder, from user content)
-Script_ExecuteFile = 0x823CB380       # (script system, path, 0, 0)
+# custom levels (custom_level_start.cpp): a level's pack opened for it, a script file run, the mission's string table
+Streaming_OpenLevelPack = 0x823EEE18          # (streaming, level folder, from user content)
+Script_ExecuteFile = 0x823CB380               # (script system, path, 0, 0)
+Language_LoadMissionStringTable = 0x820F8140  # (Language script object, Lua state)
+Language_LoadTable = 0x82133090               # (language manager, std::string name) LANGUAGES/<language>/<name>
+String_AssignText = 0x820C0E30                # (std::string, text, length)
+XmlFile_Load = 0x823FC7E8                     # (XML file, path)
 
 # CryAnimation, MORE: a model's animation step
 Animation_Step = 0x82461648
