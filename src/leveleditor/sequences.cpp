@@ -587,6 +587,10 @@ void EndPreview() {
     g_request = {};
 }
 
+void StopPreview(PPCContext& ctx) {
+    if (EnsureScratch()) Restore(ctx);
+}
+
 }  // namespace fcip::editor
 
 PPC_EXTERN_FUNC(__imp__sub_823AEFE0);

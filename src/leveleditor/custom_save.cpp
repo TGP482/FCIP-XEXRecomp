@@ -384,8 +384,10 @@ bool fcip::editor::ReadPackFile(PPCContext& ctx, const std::string& file, std::v
 
 PPC_EXTERN_FUNC(__imp__sub_82109BF8);
 
-// the editor's save (r3 the manager); a campaign level saves as its own folder
+// the editor's save (r3 the manager); a campaign level saves as its own folder. A sequence preview's placements are
+// put back first, so entities save where they stand
 PPC_FUNC(sub_82109BF8) {
+    if (g_solo) StopPreview(ctx);
     if (!Saving() || !EnsureScratch()) return __imp__sub_82109BF8(ctx, base);
     SaveCustomLevel(ctx, uint32_t(ctx.r[3]));
     ctx.r[3] = 1;

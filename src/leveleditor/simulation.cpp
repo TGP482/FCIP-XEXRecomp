@@ -5,7 +5,8 @@
 // (82312D30), the AI (821C8A88) and the entity system (82312EC0); play test runs them as the game does.
 // Leaving play test puts the level back as play test found it, as the game's own map reset (GameRulesLib
 // ResetMapEntities) does for a round: entities spawned since are removed, the rest go back to where they stood and
-// are reset (their scripts' OnReset rearms triggers and sends the AI back to their jobs), and sequences stop.
+// are reset (their scripts' OnReset rearms triggers and sends the AI back to their jobs), and sequences stop. What only
+// the editor shows goes before play test: a sequence preview's placements, and the models of hidden layers.
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -16,6 +17,7 @@
 #include "leveleditor/guest.h"
 #include "leveleditor/layers.h"
 #include "leveleditor/mode.h"
+#include "leveleditor/sequences.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -115,8 +117,11 @@ PPC_FUNC(sub_820C5548) {
     uint32_t was = R32(handler + kHandlerMode);
     __imp__sub_820C5548(ctx, base);
     if (!g_solo || was == mode || !EnsureVec()) return;
-    if (mode == kModePlayTest) ShowLayerModels(ctx);
-    if (mode == kModePlayTest) KeepPlacements(ctx);
+    if (mode == kModePlayTest) {
+        StopPreview(ctx);
+        ShowLayerModels(ctx);
+        KeepPlacements(ctx);
+    }
     if (mode == kModeEditing && !g_placements.empty()) RestorePlacements(ctx);
 }
 

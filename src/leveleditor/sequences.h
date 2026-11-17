@@ -57,5 +57,8 @@ void UpdateSequences(PPCContext& ctx);  // editor thread, each frame: queued edi
 // window thread: the sequence's entities placed as the game would have them at the time, until preview ends
 void PreviewSequence(const std::string& name, float time);
 void EndPreview();
+// editor thread: the previewed entities back where they stood, before play test or a save; the preview comes back
+// with the next editing frame
+void StopPreview(PPCContext& ctx);
 
 }  // namespace fcip::editor
