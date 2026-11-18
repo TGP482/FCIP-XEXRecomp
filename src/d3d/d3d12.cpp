@@ -2247,6 +2247,9 @@ private:
     uint64_t stamp_records_ = 0;
     uint32_t stamp_refused_ = 0;
     uint32_t stamp_draws_[2] = {};
+    uint32_t stamp_depth_passes_ = 0;
+    uint32_t stamp_logs_ = 0;
+    uint32_t diag_mode_ = 0;  // 0 as built, 1 four rays at most, 2 alpha casters skipped, 3 no rays
     uint32_t stamp_frames_ = 0;
     std::chrono::steady_clock::time_point stamp_start_ = std::chrono::steady_clock::now();
     std::vector<CasterDraw> caster_draws_;
@@ -4409,6 +4412,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         if (ray_scenes_[0]) stamp_draws_[ps_opt.alpha_test ? 1 : 0]++;  // diag
     }
     if (depth_pass) {
+        stamp_depth_passes_++;  // diag
         cl_->SetPipelineState(depth_pass);
         cl_->DrawIndexedInstanced(count, 1, 0, a.base_vertex, 0);
         cl_->SetPipelineState(pso);
@@ -6060,6 +6064,7 @@ void D3D12Backend::RayShadows(const State& s, const ShaderInfo& info, ShaderOpti
         opt.tex_flags[i] |= uint8_t(fcip::kShadowRay | slot << fcip::kRaySlotShift);
     }
     if (!used) return;
+    opt.tex_flags[26] = uint8_t(diag_mode_);  // diag
     Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
 }
@@ -6110,6 +6115,9 @@ void D3D12Backend::ReadStamps() {
          stamp_ms_[kStampTraced] / n, stamp_draws_[0] / n, stamp_ms_[kStampTracedAlpha] / n, stamp_draws_[1] / n,
          stamp_ms_[kStampShadowMap] / n, stamp_ms_[kStampScene] / n, stamp_ms_[kStampOther] / n,
          double(stamp_records_) / 3 / n / 1000, stamp_refused_, fcip::Get().shadow_filter);
+    LOGR("gpu ms mode %u, %.0f depth passes", diag_mode_, stamp_depth_passes_ / n);
+    stamp_depth_passes_ = 0;
+    if (++stamp_logs_ % 4 == 0) diag_mode_ = (diag_mode_ + 1) % 4;
     stamp_draws_[0] = 0;
     stamp_draws_[1] = 0;
     std::fill(std::begin(stamp_ms_), std::end(stamp_ms_), 0.0);
@@ -6120,7 +6128,7 @@ void D3D12Backend::ReadStamps() {
 }
 
 // an alpha tested draw that traces shadows, depth tested and written without stencil, blending or alpha to coverage:
-// its depth goes first through the same shader without rays, then k tests equal without writing, so the traced pass
+// its depth goes first through its alpha test alone, then k tests equal without writing, so the traced pass
 // shades only the pixels the draw shows. None while a query counts samples
 ID3D12PipelineState* D3D12Backend::EnsureDepthPass(const State& s, const ShaderOptions& ps_opt, const Variant& vs,
                                                    PipelineKey& k) {
@@ -6138,6 +6146,7 @@ ID3D12PipelineState* D3D12Backend::EnsureDepthPass(const State& s, const ShaderO
     for (uint32_t i = 0; i < s.ps->info.textures.size(); i++) {
         if (opt.tex_flags[i] & fcip::kShadowRay) opt.tex_flags[i] &= uint8_t(~kRayFlags);
     }
+    opt.tex_flags[fcip::kDepthOut] = 1;
     Variant* ps = EnsureVariant(s.ps, opt);
     if (!ps || ps->info.writes_depth) return nullptr;
     PipelineKey depth = k;

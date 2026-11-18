@@ -547,7 +547,7 @@ bool RayLit(RaytracingAccelerationStructure scene, float3 p, float3 dir, float t
     ray.TMin = tmin;
     ray.TMax = 1e30;
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
-    q.TraceRayInline(scene, RAY_FLAG_NONE, 0xFF, ray);
+    q.TraceRayInline(scene, kDiagMode == 2 ? RAY_FLAG_CULL_NON_OPAQUE : RAY_FLAG_NONE, 0xFF, ray);  // diag
     while (q.Proceed()) {
         uint caster = q.CandidateInstanceID() + q.CandidateGeometryIndex();
         float2 bary = q.CandidateTriangleBarycentrics();
@@ -563,6 +563,7 @@ float RayShare(RaytracingAccelerationStructure scene, float3 p, float tmin, floa
 #ifdef HELPER_LANES
     if (IsHelperLane()) return 1;
 #endif
+    if (kDiagMode == 3) return 1;  // diag
     float turn = 6.2831853 * frac(52.9829189 * frac(dot(g_frag, float2(0.06711056, 0.00583715))));
     float lit = 0;
     for (int i = 0; i < 16; i++) {
@@ -572,7 +573,7 @@ float RayShare(RaytracingAccelerationStructure scene, float3 p, float tmin, floa
         float3 at = spread < 0 ? float3(p.xy - o * spread, p.z) : p;
         float3 dir = float3(spread > 0 ? o * spread : 0, 1);
         lit += RayLit(scene, at, dir, tmin) ? 1 : 0;
-        if (i == 3 && (lit == 0 || lit == 4)) return lit / 4;
+        if (i == 3 && (kDiagMode == 1 || lit == 0 || lit == 4)) return lit / 4;  // diag
     }
     return lit / 16;
 }
@@ -624,6 +625,7 @@ private:
     bool Albedo() const { return Pixel() && (opt_.tex_flags[fcip::kAlbedoOut] & fcip::kAlbedoFetch); }
     // pixel: the ocean's colour becomes its reflection over its water, as the original Xbox game drew it
     bool OceanXbox() const { return Pixel() && (opt_.tex_flags[fcip::kOceanOut] & fcip::kOceanReflection); }
+    bool DepthOnly() const { return Pixel() && opt_.tex_flags[fcip::kDepthOut]; }
     // pixel: the index of the screen a water draw shows behind it, which takes the caustics' light, -1 none
     int CausticsScreen() const { return Pixel() ? int(opt_.tex_flags[fcip::kCausticsOut]) - 1 : -1; }
     // pixel: colour 0 seen through the volumetric fog in front of it
@@ -1267,6 +1269,7 @@ void CommitAlu() {
             s += F("RaytracingAccelerationStructure t_ray%u : register(t%u);\n", i, fcip::kRayFirstSlot + 2 + i);
         }
         s += fcip::kCasterHitHlsl;
+        s += F("static const uint kDiagMode = %u;\n", opt_.tex_flags[26]);  // diag
         s += kRayShadowPrelude;
     }
     if (Albedo()) s += "static float4 g_albedo = 0;\nstatic bool g_albedo_set = false;\n";
@@ -1423,6 +1426,8 @@ POut main(PIn i) {
     if (!pass) discard;
 )";
     }
+    // the alpha test is all a depth pass keeps, the rest compiles away
+    if (DepthOnly()) return s + "    return (POut)0;\n}\n";
     if (FogIn()) s += FogOutput();
     s += "    POut o;\n";
     for (uint32_t i = 0; i < kColorTargets; i++) {
