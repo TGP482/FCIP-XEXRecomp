@@ -1,6 +1,7 @@
 // default.xex: EXIT on the main menu asks through the game's own message box, Yes closes the window. CUSTOM CAMPAIGN
 // presses STORY MODE, or EXPANSION CAMPAIGN for an Evolution level, so the game's own new game and save slot pages
-// run, and the level they start becomes the first custom level.
+// run, and the level they start becomes the first custom level. Its page reads CUSTOM CAMPAIGN and LOAD A MAP lists
+// the custom levels.
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -9,6 +10,8 @@
 #endif
 #include <windows.h>
 
+#include <algorithm>
+#include <cctype>
 #include <string>
 
 #include "app/app.h"
@@ -43,6 +46,22 @@ constexpr const char* kQuestion = "Are you sure you want to exit to the desktop?
 // the story buttons on P_Main
 constexpr uint32_t kCrcStoryMode = 0x17130B2Fu;
 constexpr uint32_t kCrcExpansion = 0x28A23D05u;
+
+// CryPreGame's P_StoryMode is pages[0]: its title, LOAD A MAP, its list and the level each row starts
+constexpr uint32_t kCrcStoryTitle = 0x06326AC4u;  // B_TitleButton
+constexpr uint32_t kLoadMapButton = 0xECu;
+constexpr uint32_t kMapList = 0xF4u;
+constexpr uint32_t kMapLevels = 0xF8u;  // std::vector<std::string>, begin +4, end +8
+constexpr uint32_t kPageListener = 0x04u;  // the page shown listener inside CryPreGame
+constexpr uint32_t kStringBytes = 0x1Cu;
+constexpr uint32_t kNameBytes = 0x100u;
+constexpr uint32_t kStringInit = 0x820C0DB8u;   // (std::string*, const char*)
+constexpr uint32_t kStringFree = 0x820C0518u;   // (std::string*, 1, 0)
+constexpr uint32_t kLevelsPush = 0x820E7A30u;   // (vector, const std::string*)
+constexpr uint32_t kLevelsErase = 0x820E7B08u;  // (iterator out, vector, first, last)
+constexpr uint32_t kListClear = 0x82471F18u;    // (list)
+constexpr uint32_t kListAddRow = 0x82471CA0u;   // (list, UTF-16 text, 0)
+constexpr uint32_t kWidgetEnable = 0x82478188u;  // (widget, on)
 
 // an empty std::wstring: inline buffer at +0x04, length +0x14, capacity +0x18
 constexpr uint32_t kWstringBytes = 0x1Cu;
@@ -79,11 +98,47 @@ uint32_t CustomCampaignButton(uint32_t self) {
     return FindWidget(page, fcip::EvolutionLevel(campaign) ? kCrcExpansion : kCrcStoryMode);
 }
 
+uint32_t StoryPage(uint32_t self) { return Read32(Read32(self + kPages)); }
+
+void SetStoryTitle(PPCContext& ctx, uint32_t self) {
+    uint32_t title = FindWidget(StoryPage(self), kCrcStoryTitle);
+    SetCaption(ctx, Read32(title + kWidgetElement), CaptionFor(kCrcCustomCampaign));
+}
+
+std::string Upper(std::string text) {
+    for (char& c : text) c = char(std::toupper(uint8_t(c)));
+    return text;
+}
+
+// LOAD A MAP's rows and the levels they start, as the game fills them (821B7FD8) from the unlocked levels
+void ListCustomLevels(PPCContext& ctx, uint32_t self) {
+    static const uint32_t scratch = mem::AllocSystem(kStringBytes + 4 + kNameBytes);
+    if (!scratch) return;
+    uint32_t str = scratch;
+    uint32_t iterator = scratch + kStringBytes;
+    uint32_t name = iterator + 4;
+    uint32_t levels = self + kMapLevels;
+    uint32_t list = Read32(self + kMapList);
+    kernel::CallGuest(ctx, kLevelsErase, {iterator, levels, Read32(levels + 4), Read32(levels + 8)});
+    kernel::CallGuest(ctx, kListClear, {list});
+    for (const fcip::CustomLevel& level : fcip::FindCustomLevels()) {
+        size_t n = std::min<size_t>(level.name.size(), kNameBytes - 1);
+        for (size_t i = 0; i < n; i++) Write8(name + uint32_t(i), uint8_t(level.name[i]));
+        Write8(name + uint32_t(n), 0);
+        kernel::CallGuest(ctx, kStringInit, {str, name});
+        kernel::CallGuest(ctx, kLevelsPush, {levels, str});
+        kernel::CallGuest(ctx, kStringFree, {str, 1, 0});
+        kernel::CallGuest(ctx, kListAddRow, {list, Text(Upper(level.name).c_str()), 0});
+    }
+}
+
 }  // namespace
 
 PPC_EXTERN_FUNC(__imp__sub_821B1FD0);
 PPC_EXTERN_FUNC(__imp__sub_821B7B40);
 PPC_EXTERN_FUNC(__imp__sub_821B3380);
+PPC_EXTERN_FUNC(__imp__sub_821B7CC0);
+PPC_EXTERN_FUNC(__imp__sub_821B7FD8);
 
 // main menu press, r4 the widget
 PPC_FUNC(sub_821B1FD0) {
@@ -92,24 +147,50 @@ PPC_FUNC(sub_821B1FD0) {
         AskExit(ctx, uint32_t(ctx.r[3]));
         return;
     }
-    if (crc == kCrcCustomCampaign) {
-        uint32_t button = CustomCampaignButton(uint32_t(ctx.r[3]));
-        if (!button) return;
-        ctx.r[4] = button;
+    if (crc != kCrcCustomCampaign) {
+        __imp__sub_821B1FD0(ctx, base);
+        return;
     }
+    uint32_t self = uint32_t(ctx.r[3]);
+    uint32_t button = CustomCampaignButton(self);
+    if (!button) return;
+    ctx.r[4] = button;
     __imp__sub_821B1FD0(ctx, base);
+    uint64_t result = ctx.r[3];
+    SetStoryTitle(ctx, self);
+    ctx.r[3] = result;
 }
 
-// main menu help text, r4 the focused widget; back on the main menu a CUSTOM CAMPAIGN start was left
+// main and story menu help text, r4 the focused widget; back on the main menu a CUSTOM CAMPAIGN start was left
 PPC_FUNC(sub_821B7B40) {
     uint32_t self = uint32_t(ctx.r[3]);
     uint32_t sender = uint32_t(ctx.r[4]);
     __imp__sub_821B7B40(ctx, base);
-    fcip::CancelCustomCampaign();
     uint32_t crc = Read32(sender + kWidgetNameCrc);
-    if (crc != kCrcExit && crc != kCrcCustomCampaign) return;
     uint32_t page = Read32(Read32(self + kPages) + 4);
+    if (FindWidget(page, crc) == sender) fcip::CancelCustomCampaign();
+    if (crc != kCrcExit && crc != kCrcCustomCampaign) return;
     if (uint32_t help = View(HelpFor(crc))) kernel::CallGuest(ctx, kSetPageHelp, {self, page, help, 0});
+}
+
+// a CryPreGame page shown, r3 its page listener, r4 the page; P_StoryMode turns LOAD A MAP off with no level unlocked
+PPC_FUNC(sub_821B7CC0) {
+    uint32_t self = uint32_t(ctx.r[3]) - kPageListener;
+    uint32_t page = uint32_t(ctx.r[4]);
+    __imp__sub_821B7CC0(ctx, base);
+    if (!fcip::CustomCampaignPending() || page != StoryPage(self)) return;
+    uint64_t result = ctx.r[3];
+    kernel::CallGuest(ctx, kWidgetEnable, {Read32(self + kLoadMapButton), 1});
+    ctx.r[3] = result;
+}
+
+// LOAD A MAP's list filled, r3 CryPreGame
+PPC_FUNC(sub_821B7FD8) {
+    if (fcip::CustomCampaignPending()) {
+        ListCustomLevels(ctx, uint32_t(ctx.r[3]));
+        return;
+    }
+    __imp__sub_821B7FD8(ctx, base);
 }
 
 // message box A, r4 the box's id

@@ -139,6 +139,11 @@ std::string BeginCustomCampaign() {
 
 void CancelCustomCampaign() { TakeStart(); }
 
+bool CustomCampaignPending() {
+    std::lock_guard lock(g_start_lock);
+    return !g_start.empty();
+}
+
 // Level starts: "<prefix>StartLevel level=X mission=Y ...", or a script's "StartLevel X". A level change in a level
 // (FadeOut, Restart or a script's) that leaves a custom level for a campaign level, as its end trigger's NextMap
 // does, goes to the next custom level instead; a custom level's mission is always Mission0.
@@ -153,9 +158,9 @@ std::string RouteLevelCommand(const std::string& command, bool ours) {
     std::string target = level;
     bool continuing = command.find("checkpoint=Yes") != std::string::npos;  // a saved game's own level
     bool in_level = !keyed || command.starts_with("FadeOut") || command.starts_with("Restart");
-    // the next level start takes it, whichever it is
+    // the next level start takes it, whichever it is; LOAD A MAP's custom levels keep their own
     std::string first = TakeStart();
-    if (!first.empty() && !continuing && !in_level) {
+    if (!first.empty() && !continuing && !in_level && CampaignOf(level).empty()) {
         target = first;
     } else if (in_level && !ours && !g_running.empty() && CampaignOf(level).empty()) {
         target = NextLevel(g_running);
