@@ -79,6 +79,9 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 constexpr int kFrames = 2;
+// diag: GPU time by kind of work, a timestamp where the kind changes
+constexpr uint32_t kStamps = 4096;
+enum : uint8_t { kStampOther, kStampTraced, kStampShadowMap, kStampScene, kStampTracedAlpha, kStampEnd };
 constexpr uint64_t kUploadSize = 96ull << 20;  // per frame
 constexpr uint32_t kViewsPerFrame = 1u << 18;
 constexpr uint32_t kSamplerCount = 2048;
@@ -399,7 +402,7 @@ struct PipelineKey {
     uint32_t stream_out = 0;  // kStreamRtao or a kStreamCaster
     uint32_t motion = 0;      // kMotionTarget's format, 0 none
     uint32_t albedo = 0;      // fcip::kAlbedoTarget's use, kAlbedo*
-    uint32_t unused = 0;      // no padding: the key is hashed and compared as bytes
+    uint32_t depth_only = 0;  // no colour written; the key is hashed and compared as bytes, so no padding
 };
 enum : uint32_t { kAlbedoWrite = 1, kAlbedoClear = 2 };
 
@@ -1843,6 +1846,8 @@ private:
     Variant* EnsureVariant(Shader* s, const ShaderOptions& opt);
     Variant* FindVariant(Shader* s, const ShaderOptions& opt);
     ID3D12PipelineState* EnsurePipeline(const PipelineKey& k, const Variant& vs, const Variant* ps);
+    ID3D12PipelineState* EnsureDepthPass(const State& s, const ShaderOptions& ps_opt, const Variant& vs,
+                                         PipelineKey& k);
     ID3D12PipelineState* FindPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps);
     ComPtr<ID3D12PipelineState> MakePipeline(const BuiltPipeline& b) const;
     void TakeBuilt();
@@ -2025,6 +2030,9 @@ private:
     void StreamOutCasters(CasterDraw caster, const DrawConstants& c);
     void DropCasters(const Target* t);
     void BuildRayShadow(const Target& src, const ResolveArgs& r);
+    void Stamp(uint8_t kind);  // diag
+    void EndStamps();          // diag
+    void ReadStamps();         // diag
     bool BuildCasterScene(const std::vector<CasterDraw>& draws, bool opaque, ComPtr<ID3D12Resource>& bottom_out,
                           ComPtr<ID3D12Resource>& top_out);
     void DivideCasters(const std::vector<CasterDraw>& draws, const ResolveArgs& r);
@@ -2228,6 +2236,19 @@ private:
         uint64_t frame = 0;
     };
     std::unordered_map<uint32_t, RayShadow> ray_shadows_;  // by map address
+    bool fog_map_ = false;  // between kClearFogMap and kClearFogMapEnd
+    // diag
+    ComPtr<ID3D12QueryHeap> stamp_heap_;
+    ComPtr<ID3D12Resource> stamp_read_;
+    std::vector<uint8_t> stamp_kinds_[kFrames];
+    uint8_t stamp_kind_ = kStampEnd;
+    uint64_t stamp_hz_ = 0;
+    double stamp_ms_[kStampEnd] = {};
+    uint64_t stamp_records_ = 0;
+    uint32_t stamp_refused_ = 0;
+    uint32_t stamp_draws_[2] = {};
+    uint32_t stamp_frames_ = 0;
+    std::chrono::steady_clock::time_point stamp_start_ = std::chrono::steady_clock::now();
     std::vector<CasterDraw> caster_draws_;
     std::vector<CasterDraw> caster_build_;
     uint64_t casters_used_ = 0;   // records this frame
@@ -2266,6 +2287,7 @@ private:
     uint64_t frame_ = 0;
     uint64_t presents_ = 0;
     bool tearing_ = false;
+    bool helper_lanes_ = false;  // shader model 6.6: ray traced shadows skip the pixels drawn only for derivatives
     uint32_t swap_w_ = 0, swap_h_ = 0;
     uint32_t guest_w_ = 0, guest_h_ = 0;
     float scale_ = 1;
@@ -2371,6 +2393,7 @@ private:
     ComPtr<ID3D12QueryHeap> query_heap_;
     ComPtr<ID3D12Resource> query_read_;
     Query queries_[kQueryCount];
+    uint32_t open_queries_ = 0;
 
     std::chrono::steady_clock::time_point fps_start_ = std::chrono::steady_clock::now();
     uint32_t fps_frames_ = 0;
@@ -2447,6 +2470,9 @@ bool D3D12Backend::CreateDevice() {
     dev_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &o5, sizeof(o5));
     if (o5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1) dev_.As(&dev5_);
     g_ray_tracing = dev5_ != nullptr;
+    D3D12_FEATURE_DATA_SHADER_MODEL sm{D3D_SHADER_MODEL_6_6};
+    helper_lanes_ = SUCCEEDED(dev_->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))) &&
+                    sm.HighestShaderModel >= D3D_SHADER_MODEL_6_6;
     LOGR("D3D12: RTAO %s", dev5_ ? "available" : "unavailable, GTAO in its place");
     return true;
 }
@@ -2607,6 +2633,13 @@ void D3D12Backend::CreateFrames() {
     D3D12_RESOURCE_DESC rd = BufferDesc(kQueryCount * sizeof(uint64_t));
     dev_->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                                   IID_PPV_ARGS(&query_read_));
+    // diag
+    D3D12_QUERY_HEAP_DESC sd{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kStamps * kFrames, 0};
+    dev_->CreateQueryHeap(&sd, IID_PPV_ARGS(&stamp_heap_));
+    D3D12_RESOURCE_DESC sr = BufferDesc(kStamps * kFrames * sizeof(uint64_t));
+    dev_->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &sr, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                  IID_PPV_ARGS(&stamp_read_));
+    queue_->GetTimestampFrequency(&stamp_hz_);
 }
 
 std::filesystem::path PipelineCachePath() { return app::ExeDir() / "cache" / "pipelines.bin"; }
@@ -3046,6 +3079,10 @@ Variant* D3D12Backend::FindVariant(Shader* s, const ShaderOptions& opt) {
     bool rays = std::any_of(std::begin(opt.tex_flags), std::end(opt.tex_flags), traced);
     const wchar_t* profile = L"vs_6_0";
     if (s->stage == ShaderStage::Pixel) profile = rays ? L"ps_6_5" : L"ps_6_0";
+    if (rays && helper_lanes_) {
+        profile = L"ps_6_6";
+        hlsl = "#define HELPER_LANES\n" + hlsl;
+    }
     g_perf.shaders++;
     if (FindHlsl(hlsl, profile, v->dxil)) {
         v->key = Hash64(v->dxil.data(), v->dxil.size());
@@ -3077,6 +3114,10 @@ void FillBlend(const PipelineKey& k, D3D12_BLEND_DESC& d) {
         rt.RenderTargetWriteMask = UINT8(Bits(k.color_mask, 4 * i, 4));
     }
     if (k.motion) d.RenderTarget[kMotionTarget].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    if (k.depth_only) {
+        for (D3D12_RENDER_TARGET_BLEND_DESC& rt : d.RenderTarget) rt.RenderTargetWriteMask = 0;
+        return;
+    }
     if (!k.albedo) return;
     D3D12_RENDER_TARGET_BLEND_DESC& albedo = d.RenderTarget[fcip::kAlbedoTarget];
     albedo.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
@@ -4319,6 +4360,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     uint32_t caster_vertices = CasterVertices(s, a, k, topo, count, bound, ps_opt.alpha_test, caster);
     uint32_t ray_vertices = caster_vertices ? 0 : RayVertices(a, k, topo, count, ps_opt.alpha_test);
     k.stream_out = ray_vertices ? kStreamRtao : caster.stream;
+    ID3D12PipelineState* depth_pass = s.ps ? EnsureDepthPass(s, ps_opt, *vs, k) : nullptr;
     ID3D12PipelineState* pso = EnsurePipeline(k, *vs, ps);
     if (!pso) return;
     g_perf.draws++;
@@ -4359,6 +4401,17 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         KeepShadowTarget(*bound.ds);
         if (bound.rt) KeepShadowTarget(*bound.rt);
         shadow_drawn_ = true;
+        Stamp(kStampShadowMap);  // diag
+    } else {
+        uint8_t kind = kStampOther;  // diag
+        if (ray_scenes_[0]) kind = ps_opt.alpha_test ? kStampTracedAlpha : kStampTraced;  // diag
+        Stamp(kind);  // diag
+        if (ray_scenes_[0]) stamp_draws_[ps_opt.alpha_test ? 1 : 0]++;  // diag
+    }
+    if (depth_pass) {
+        cl_->SetPipelineState(depth_pass);
+        cl_->DrawIndexedInstanced(count, 1, 0, a.base_vertex, 0);
+        cl_->SetPipelineState(pso);
     }
     if (ray_vertices) StreamOut(c, ray_vertices);
     if (caster_vertices) StreamOutCasters(caster, c);
@@ -4397,6 +4450,7 @@ void D3D12Backend::CapIllumination(const State& s, const PipelineKey& k, const B
 // D3D Clear, within the scissor: a whole target clear also clears the targets its EDRAM range holds
 void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], float z, uint32_t stencil,
                          const Rect* rect) {
+    Stamp(kStampOther);  // diag
     if (flags & kClearOcclusion) {
         if (rect) Occlusion(s, UnpackOcclusion(color, z, stencil, *rect));
         return;
@@ -4440,6 +4494,10 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
     }
     if (flags & (kClearCausticsWater | kClearCausticsDry)) {
         caustics_water_ = (flags & kClearCausticsWater) != 0;
+        return;
+    }
+    if (flags & (kClearFogMap | kClearFogMapEnd)) {
+        fog_map_ = (flags & kClearFogMap) != 0;
         return;
     }
     if (flags & kClearMotionBegin) {
@@ -5691,14 +5749,14 @@ bool D3D12Backend::EnsureCasterBuffers() {
 }
 
 // records a shadow map draw or a camera pass world draw streams out, filling its caster; none without ray traced
-// shadows or global illumination, or past the frame's room. An alpha tested one, or one whose alpha covers samples, is
-// traced through its first fetch only, the texture its shader opens with
+// shadows or global illumination, for the volumetric fog's sun map, or past the frame's room. An alpha tested one, or
+// one whose alpha covers samples, is traced through its first fetch only, the texture its shader opens with
 uint32_t D3D12Backend::CasterVertices(const State& s, const DrawArgs& a, const PipelineKey& k,
                                       D3D12_PRIMITIVE_TOPOLOGY topo, uint32_t count, const Bound& b, bool alpha_test,
                                       CasterDraw& caster) {
     if (!divide_pso_ || !b.ds || !Bits(k.depth_control, 2, 1)) return 0;
     bool view = SceneCaster(k, b);
-    bool shadow = fcip::Get().shadow_filter >= fcip::kFilterRay && ShadowWidth(b.ds->width);
+    bool shadow = !fog_map_ && fcip::Get().shadow_filter >= fcip::kFilterRay && ShadowWidth(b.ds->width);
     if (!view && !shadow) return 0;
     fcip::FirstFetch f = s.ps ? s.ps->first_fetch : fcip::FirstFetch{};
     bool coverage = view && !alpha_test && Bits(k.color_control, 4, 1);
@@ -5708,6 +5766,7 @@ uint32_t D3D12Backend::CasterVertices(const State& s, const DrawArgs& a, const P
     if (caster_slots_ >= kCasterDraws || casters_used_ + vertices > kCasterRecords) {
         static bool logged = false;
         if (view && !std::exchange(logged, true)) LOGR("D3D12: global illumination scene full, draws past it left out");
+        if (shadow) stamp_refused_++;  // diag
         return 0;
     }
     caster.target = b.ds;
@@ -5837,9 +5896,11 @@ void D3D12Backend::BuildRayShadow(const Target& src, const ResolveArgs& r) {
         return true;
     });
     if (draws.empty() || casters_built_ + draws.size() > kCasterDraws) return;
+    Stamp(kStampScene);  // diag
     DivideCasters(draws, r);
     RayShadow& scene = ray_shadows_[r.dst_base];
     if (BuildCasterScene(draws, false, scene.bottom, scene.top)) scene.frame = frame_;
+    Stamp(kStampOther);  // diag
 }
 
 // the draws' divided casters built into one scene: the instance id is its first caster, a geometry per draw after it.
@@ -6003,6 +6064,91 @@ void D3D12Backend::RayShadows(const State& s, const ShaderInfo& info, ShaderOpti
     Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
 }
 
+// diag: a timestamp where the kind of GPU work changes, the frame's last always fits
+void D3D12Backend::Stamp(uint8_t kind) {
+    std::vector<uint8_t>& kinds = stamp_kinds_[frame_ % kFrames];
+    size_t room = kind == kStampEnd ? kStamps : kStamps - 1;
+    if (!stamp_heap_ || kind == stamp_kind_ || kinds.size() >= room) return;
+    uint32_t at = uint32_t(frame_ % kFrames) * kStamps + uint32_t(kinds.size());
+    cl_->EndQuery(stamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, at);
+    kinds.push_back(kind);
+    stamp_kind_ = kind;
+}
+
+// diag
+void D3D12Backend::EndStamps() {
+    Stamp(kStampEnd);
+    const std::vector<uint8_t>& kinds = stamp_kinds_[frame_ % kFrames];
+    if (kinds.empty()) return;
+    uint32_t base = uint32_t(frame_ % kFrames) * kStamps;
+    cl_->ResolveQueryData(stamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, base, UINT(kinds.size()), stamp_read_.Get(),
+                          base * sizeof(uint64_t));
+}
+
+// diag: the frame this slot last recorded, its GPU done; logged once a second
+void D3D12Backend::ReadStamps() {
+    std::vector<uint8_t>& kinds = stamp_kinds_[frame_ % kFrames];
+    stamp_kind_ = kStampEnd;
+    uint32_t base = uint32_t(frame_ % kFrames) * kStamps;
+    D3D12_RANGE range{base * sizeof(uint64_t), (base + kinds.size()) * sizeof(uint64_t)};
+    uint64_t* t = nullptr;
+    if (kinds.size() > 1 && stamp_hz_ && SUCCEEDED(stamp_read_->Map(0, &range, reinterpret_cast<void**>(&t)))) {
+        double ms = 1000.0 / double(stamp_hz_);
+        for (size_t i = 0; i + 1 < kinds.size(); i++) {
+            if (kinds[i] < kStampEnd) stamp_ms_[kinds[i]] += double(t[base + i + 1] - t[base + i]) * ms;
+        }
+        D3D12_RANGE none{};
+        stamp_read_->Unmap(0, &none);
+        stamp_frames_++;
+    }
+    kinds.clear();
+    auto now = std::chrono::steady_clock::now();
+    if (now - stamp_start_ < std::chrono::seconds(1) || !stamp_frames_) return;
+    double n = stamp_frames_;
+    LOGR("gpu ms a frame: traced draws %.2f (%.0f), alpha tested traced draws %.2f (%.0f), shadow map draws %.2f, "
+         "shadow scene builds %.2f, other %.2f | %.0fk caster triangles, %u casters refused, filter %u",
+         stamp_ms_[kStampTraced] / n, stamp_draws_[0] / n, stamp_ms_[kStampTracedAlpha] / n, stamp_draws_[1] / n,
+         stamp_ms_[kStampShadowMap] / n, stamp_ms_[kStampScene] / n, stamp_ms_[kStampOther] / n,
+         double(stamp_records_) / 3 / n / 1000, stamp_refused_, fcip::Get().shadow_filter);
+    stamp_draws_[0] = 0;
+    stamp_draws_[1] = 0;
+    std::fill(std::begin(stamp_ms_), std::end(stamp_ms_), 0.0);
+    stamp_records_ = 0;
+    stamp_refused_ = 0;
+    stamp_frames_ = 0;
+    stamp_start_ = now;
+}
+
+// an alpha tested draw that traces shadows, depth tested and written without stencil, blending or alpha to coverage:
+// its depth goes first through the same shader without rays, then k tests equal without writing, so the traced pass
+// shades only the pixels the draw shows. None while a query counts samples
+ID3D12PipelineState* D3D12Backend::EnsureDepthPass(const State& s, const ShaderOptions& ps_opt, const Variant& vs,
+                                                   PipelineKey& k) {
+    constexpr uint32_t kZTestAndWrite = 6;  // RB_DEPTHCONTROL bits 0 to 2: stencil off, z on, z write on
+    constexpr uint32_t kZWriteAndFunc = 0x74;  // z write bit 2, z func bits 4 to 6
+    constexpr uint32_t kZEqual = 2 << 4;
+    constexpr uint8_t kRayFlags = fcip::kShadowRay | (fcip::kRayScenes - 1) << fcip::kRaySlotShift;
+    uint32_t c = k.depth_control;
+    if (!ray_scenes_[0] || !ps_opt.alpha_test || open_queries_ || Bits(c, 0, 3) != kZTestAndWrite) return nullptr;
+    if (Bits(k.color_control, 4, 1)) return nullptr;
+    for (uint32_t i = 0; i < 4; i++) {
+        if (k.rt_formats[i] && (k.blend[i] & 0x1FFF1FFF) != 0x00010001) return nullptr;
+    }
+    ShaderOptions opt = ps_opt;
+    for (uint32_t i = 0; i < s.ps->info.textures.size(); i++) {
+        if (opt.tex_flags[i] & fcip::kShadowRay) opt.tex_flags[i] &= uint8_t(~kRayFlags);
+    }
+    Variant* ps = EnsureVariant(s.ps, opt);
+    if (!ps || ps->info.writes_depth) return nullptr;
+    PipelineKey depth = k;
+    depth.ps = ps->key;
+    depth.stream_out = 0;
+    depth.depth_only = 1;
+    ID3D12PipelineState* pso = EnsurePipeline(depth, vs, ps);
+    if (pso) k.depth_control = (c & ~kZWriteAndFunc) | kZEqual;
+    return pso;
+}
+
 // the far sun map's rays spread over the sun's disc, its uv per unit of depth; another light's over a disc of the same
 // world size at every shadow resolution, negative
 float D3D12Backend::RaySpread(uint32_t base, const fcip::SunMaps& sun) const {
@@ -6040,6 +6186,7 @@ void D3D12Backend::CasterViews(uint32_t at) {
 
 // D3D Resolve: the target's rect to the texture at dst_base, held on the host and read in place of guest memory
 void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
+    Stamp(kStampOther);  // diag
     g_perf.resolves++;
     uint32_t height = std::max<uint32_t>(TargetHeight(s), uint32_t(r.rect.y2));
     Target* src = r.source < 4 ? ColorTarget(s, r.source, height) : DepthTarget(s, height);
@@ -6735,6 +6882,7 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     } else if (g_capture.exchange(false)) {
         StartCapture();
     }
+    EndStamps();  // diag
     UpdateHdrDisplay();
     if (GenerationWanted() != generation_wanted_) RecreateSwapChain();
     ResizeSwap();
@@ -6750,11 +6898,13 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     next.alloc->Reset();
     next.garbage.clear();
     next.used = 0;
+    ReadStamps();  // diag
     if (texturedumper::Update()) ReleasePackTextures();
     upload_epoch_++;
     next.views = 0;
     cl_->Reset(next.alloc.Get(), nullptr);
     Begin();
+    Stamp(kStampOther);  // diag
     if (uint32_t side = fcip::SunShadowSide(); side != shadow_side_) {
         last_shadow_side_ = shadow_side_;
         shadow_side_ = side;
@@ -6765,6 +6915,7 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     gi_.draws.clear();
     gi_.capture = false;
     gi_.mode = 0;
+    stamp_records_ += casters_used_;  // diag
     casters_used_ = 0;
     caster_slots_ = 0;
     casters_built_ = 0;
@@ -7136,6 +7287,7 @@ void D3D12Backend::CapFinite(ID3D12Resource* res, D3D12_RESOURCE_STATES& state, 
 
 void D3D12Backend::BeginQuery(uint32_t q) {
     q %= kQueryCount;
+    if (!queries_[q].open) open_queries_++;
     queries_[q] = {0, true};
     cl_->BeginQuery(query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION, q);
 }
@@ -7144,6 +7296,7 @@ void D3D12Backend::EndQuery(uint32_t q) {
     q %= kQueryCount;
     if (!queries_[q].open) return;
     queries_[q].open = false;
+    open_queries_--;
     cl_->EndQuery(query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION, q);
     cl_->ResolveQueryData(query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION, q, 1, query_read_.Get(), q * 8ull);
     // resolved in the next submission

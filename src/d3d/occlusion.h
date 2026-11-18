@@ -32,6 +32,9 @@ constexpr uint32_t kClearClouds = 0x800000;
 constexpr uint32_t kClearCaustics = 0x1000000;
 constexpr uint32_t kClearCausticsWater = 0x2000000;
 constexpr uint32_t kClearCausticsDry = 0x4000000;
+// the volumetric fog's own sun map, drawn from kClearFogMap to kClearFogMapEnd; no receiver traces it
+constexpr uint32_t kClearFogMap = 0x8000000;
+constexpr uint32_t kClearFogMapEnd = 0x10000000;
 
 // the ambient occlusion setting
 enum : uint32_t { kAoSsao = 1, kAoGtao = 2, kAoRtao = 3 };
@@ -127,6 +130,8 @@ void Illumination(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView&
 void VolumetricFog(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);
 // after the camera pass's last item
 void VolumetricFogEnd(uint32_t dev);
+// on the title's thread before and after the volumetric fog's run of the shadow map update
+void FogMap(uint32_t dev, bool drawing);
 // on the title's thread after the sky box's draw
 void VolumetricClouds(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::CloudView& v);
 // on the title's thread before the camera pass's first water item, under the sea before its first item past the world

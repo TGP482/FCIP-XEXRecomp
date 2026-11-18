@@ -560,6 +560,9 @@ bool RayLit(RaytracingAccelerationStructure scene, float3 p, float3 dir, float t
 // unit of depth toward it, so penumbrae widen with the distance to what casts them; < 0 parallel rays over a disc of
 // that radius in uv. The disc is turned per pixel; when the first four rays agree the rest are skipped
 float RayShare(RaytracingAccelerationStructure scene, float3 p, float tmin, float spread) {
+#ifdef HELPER_LANES
+    if (IsHelperLane()) return 1;
+#endif
     float turn = 6.2831853 * frac(52.9829189 * frac(dot(g_frag, float2(0.06711056, 0.00583715))));
     float lit = 0;
     for (int i = 0; i < 16; i++) {

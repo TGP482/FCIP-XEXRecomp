@@ -22,7 +22,7 @@
 // drawn for them. Inside a vis area the far run draws the game's four light frustums, the sun among them;
 // the sharper runs draw one frustum, the top scored light, normally the sun. Only the sun's resolves are recorded.
 // With volumetric fog on, one more run before the far one draws the far map again with every object casting, those
-// without CastShadowMaps too; only the fog reads it.
+// without CastShadowMaps too; only the fog reads it, so ray traced shadows build no scene from it.
 //
 // Each sun camera culls its casters to the part of its map a receiver can read: receivers lie in the view frustum, or
 // with water in its reflection, and a caster only shades what it covers along the sun. The camera's side planes are
@@ -531,6 +531,17 @@ void RunShadowMaps(PPCContext& ctx, uint8_t* base, int map) {
     ctx.f[2] = f2;
 }
 
+// the volumetric fog's map, marked so ray traced shadows stream no casters from it
+void RunFogMap(PPCContext& ctx, uint8_t* base) {
+#if HAS_Device_pointer
+    d3d::FogMap(R32(SYM_Device_pointer), true);
+    RunShadowMaps(ctx, base, kFogMap);
+    d3d::FogMap(R32(SYM_Device_pointer), false);
+#else
+    RunShadowMaps(ctx, base, kFogMap);
+#endif
+}
+
 // a sharper map before the far one, with its own slope bias
 void RunCascade(PPCContext& ctx, uint8_t* base, int map) {
     fcip::UseNearSunSlope(true, Reach(map));
@@ -559,7 +570,7 @@ void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     ctx.r[6] = 0;  // one frustum: the sharper maps hold only the sun
     for (uint32_t i = 0; i < maps; i++) RunCascade(ctx, base, int(i));
     // ray traced ultra already makes every object cast into the far map
-    if (Get().volumetric_fog && !every) RunShadowMaps(ctx, base, kFogMap);
+    if (Get().volumetric_fog && !every) RunFogMap(ctx, base);
     ctx.r[6] = quad;
     RunShadowMaps(ctx, base, kFarMap);
 }
