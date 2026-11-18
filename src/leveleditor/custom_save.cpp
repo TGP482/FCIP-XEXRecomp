@@ -1,5 +1,5 @@
 // ige.xex, the solo level editor: a campaign level, or a level made from an editor template, saves as a custom level,
-// its own folder levels\<name>\ beside the executable, which is laid over game:\Levels. The editor's own save
+// its own folder levels\saved\<name>\ beside the executable, which is laid over game:\Levels. The editor's own save
 // (82109BF8) puts a map into a user map, a 4 MB blob with room for 255 files, which a campaign level's 550 files and
 // 40 MB do not fit. Its writers make real files when no pack
 // takes them (File_Open 8234EF80), so the save runs them with the engine's level path on the custom level: terrain,
@@ -10,6 +10,7 @@
 // layers, and a first Mission.lua that runs after the campaign's mission script.
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -17,7 +18,6 @@
 #include <string>
 #include <vector>
 
-#include "app/app.h"
 #include "core/log.h"
 #include "editor/tools.h"
 #include "kernel/memory.h"
@@ -68,8 +68,39 @@ constexpr uint32_t kMissionObject = 0x8296CBC0;
 // the editor's interface manager: the map's name, UTF-16
 constexpr uint32_t kMapName = 0x68;
 constexpr uint32_t kMapNameChars = 32;
-// the 3D engine: the level folder's path, a C string
+// the 3D engine: the level folder's path, a C string, and its terrain
 constexpr uint32_t kEngineLevelPath = 0x3A8;
+constexpr uint32_t kEngineTerrain = 0x364;
+// the terrain the editor's writers save (terrain.sdat 823255E8, LevelData 82109278), set by its save (82109C24)
+constexpr uint32_t kSavedTerrain = 0x8296B2C8;
+// the zip line ends the map save (82104C38) and zipline.dat (820F6A10) write, each with the cable to its other end;
+// a ZipLine entity the solo editor gives a generic editor object, or one placed on its own, has none
+constexpr uint32_t kZiplineCable = 0x80;
+constexpr uint32_t kGenericObjectVtable = 0x8206AA30;
+// the mounted weapons MountedWeapon.dat (820F6F10) writes, each with its weapon and the weapon's model, whose class
+// names the type (820E7C78)
+constexpr uint32_t kMountedWeapons = 0x828C5E7C;
+constexpr uint32_t kMountedWeapon = 0x48;
+constexpr uint32_t kWeaponModel = 0x2C;
+// a std::vector: its first, last and end
+constexpr uint32_t kVectorFirst = 0x04;
+constexpr uint32_t kVectorLast = 0x08;
+constexpr uint32_t kVectorEnd = 0x0C;
+// a terrain sector (terrain +0x80, 0x160 each): its number, and its state, loaded once the streaming read it (82354EA8)
+constexpr uint32_t kTerrainSectors = 0x80;
+constexpr uint32_t kSectorBytes = 0x160;
+constexpr uint32_t kSectorNumber = 0x78;  // int16
+constexpr uint32_t kSectorState = 0x149;
+constexpr uint8_t kSectorLoaded = 0x08;
+constexpr uint32_t kSectorMetres = 64;
+// the files the sector save (82353C18) writes from a loaded sector
+constexpr const char* kSectorFiles[] = {"sdat\\sd%u.sdat", "sdat\\ShortRange%u.sdat", "sdat\\sd%u_diffuse_hi.xbt",
+                                        "sdat\\ShortRange%u_shadow_hi.xbt"};
+// terrain.sdat (823255E8): the side, big endian, then side x side vertices of 16 bytes
+constexpr const char* kTerrainFile = "sdat\\terrain.sdat";
+constexpr uint32_t kTerrainSide = 0x18;
+constexpr uint32_t kTerrainVertices = 0x1C;
+constexpr uint32_t kVertexBytes = 16;
 constexpr uint32_t kLevelPathBytes = 0x40;
 // the pack manager: set while a pack takes the files written
 constexpr uint32_t kPacksWriting = 0x88;
@@ -97,6 +128,7 @@ constexpr uint32_t kStringCapacity = 0x18;
 constexpr uint32_t kStringInlineCapacity = 0x0F;
 
 uint32_t g_scratch = 0;
+bool g_saving = false;  // SaveCustomLevel runs
 uint32_t g_buffer = 0;  // a copied file
 uint32_t g_buffer_bytes = 0;
 
@@ -123,7 +155,7 @@ std::string MapName() {
     return IsCampaignLevel(name) ? name + kCustomSuffix : name;
 }
 
-fs::path LevelFolder() { return app::ExeDir() / "levels" / MapName(); }
+fs::path LevelFolder() { return fcip::CustomLevelsFolder() / MapName(); }
 
 void WriteHostFile(const std::string& name, const void* data, size_t size) {
     std::ofstream(LevelFolder() / name, std::ios::binary).write(static_cast<const char*>(data), std::streamsize(size));
@@ -149,11 +181,13 @@ uint32_t Buffer(uint32_t bytes) {
     return g_buffer;
 }
 
-// a file as the game reads it, through the packs; false when there is none
+// a file as the game reads it, through the packs; false when there is none, which File_Open would stop the game for
 bool ReadGameFile(PPCContext& ctx, const std::string& file, std::vector<uint8_t>& out) {
     uint32_t packs = uint32_t(CallGuest(ctx, SYM_PackManager_Get, {}));
+    uint32_t path = Text(kScratchPath, file);
+    if (!(CallGuest(ctx, SYM_File_Exists, {packs, path}) & 0xFF)) return false;
     uint32_t handle = g_scratch + kScratchFile;
-    CallGuest(ctx, SYM_File_Open, {handle, packs, Text(kScratchPath, file), kRead, 0, 0});
+    CallGuest(ctx, SYM_File_Open, {handle, packs, path, kRead, 0, 0});
     bool open = CallGuest(ctx, SYM_File_IsOpen, {handle}) & 0xFF;
     if (open) {
         uint32_t size = uint32_t(CallGuest(ctx, SYM_File_Size, {packs, handle}));
@@ -218,23 +252,10 @@ std::vector<uint8_t> MergeLists(const std::vector<uint8_t>& level, const std::ve
     return {text.begin(), text.end()};
 }
 
-// the campaign's dependency lists with the editor templates' entries, so FCIP.exe preloads what the editor did
-void WriteDependencyLists(PPCContext& ctx, const std::string& level) {
-    for (const DependencyList& list : kDependencyLists) {
-        std::vector<uint8_t> own;
-        std::vector<uint8_t> editor;
-        bool has_own = ReadGameFile(ctx, "levels\\" + level + "\\" + level + list.suffix, own);
-        bool has_editor = ReadGameFile(ctx, std::string(kEditorLists) + list.suffix, editor);
-        if (!has_own && !has_editor) continue;
-        std::vector<uint8_t> merged = !has_own ? editor : has_editor ? MergeLists(own, editor, list.key) : own;
-        WriteHostFile(MapName() + list.suffix, merged.data(), merged.size());
-    }
-}
-
 void CopyCampaignFiles(PPCContext& ctx) {
     std::string level = BaseLevel();
     for (const char* file : kCopiedFiles) CopyFile(ctx, level, file, file);
-    WriteDependencyLists(ctx, level);
+    WriteDependencyLists(ctx, level, LevelFolder(), MapName());
 }
 
 // the sequences as edited, over the campaign's copy
@@ -320,6 +341,109 @@ void EnsureScript() {
     LOGR("level editor: %s written", path.string().c_str());
 }
 
+// a file of the level as it loaded, from its pack or its folder
+bool ReadLevelFile(PPCContext& ctx, const std::string& name, std::vector<uint8_t>& out) {
+    return ReadGameFile(ctx, "levels\\" + StartedLevel() + "\\" + name, out);
+}
+
+// the save goes to the folder the level loaded from, which already holds what it has not changed
+bool SavingInPlace() {
+    std::error_code ec;
+    return fs::equivalent(fcip::CustomLevelsFolder() / StartedLevel(), LevelFolder(), ec);
+}
+
+uint32_t Sector(uint32_t index) {
+    uint32_t terrain = R32(R32(SYM_C3DEngine_pointer) + kEngineTerrain);
+    return R32(terrain + kTerrainSectors) + index * kSectorBytes;
+}
+
+bool SectorLoaded(uint32_t index) { return R8(Sector(index) + kSectorState) & kSectorLoaded; }
+
+// a sector the streaming has not loaded has no data to save; its files stay as the level has them
+void KeepSectorFiles(PPCContext& ctx, uint32_t number) {
+    if (SavingInPlace()) return;
+    for (const char* pattern : kSectorFiles) {
+        char name[64];
+        std::snprintf(name, sizeof(name), pattern, number);
+        std::vector<uint8_t> data;
+        if (ReadLevelFile(ctx, name, data)) WriteHostFile(name, data.data(), data.size());
+    }
+}
+
+uint32_t Be32(const std::vector<uint8_t>& b, size_t at) {
+    return uint32_t(b[at]) << 24 | uint32_t(b[at + 1]) << 16 | uint32_t(b[at + 2]) << 8 | uint32_t(b[at + 3]);
+}
+
+// terrain.sdat as saved takes its vertices from loaded sectors only (823255E8); the rest come from the level's own
+void KeepUnloadedTerrain(const std::vector<uint8_t>& old) {
+    fs::path path = LevelFolder() / kTerrainFile;
+    std::ifstream in(path, std::ios::binary);
+    std::vector<uint8_t> now(std::istreambuf_iterator<char>(in), {});
+    in.close();
+    if (now.size() <= kTerrainVertices || now.size() != old.size()) return;
+    uint32_t side = Be32(now, kTerrainSide);
+    uint32_t sectors = R32(SYM_Terrain_SectorsPerSide);
+    if (side < 2 || size_t(side) * side * kVertexBytes + kTerrainVertices != now.size()) return;
+    std::vector<bool> loaded(size_t(sectors) * sectors);
+    for (uint32_t i = 0; i < loaded.size(); i++) loaded[i] = SectorLoaded(i);
+    for (uint32_t y = 0; y < side; y++) {
+        for (uint32_t x = 0; x < side; x++) {
+            uint32_t sector = std::min(y, side - 2) / kSectorMetres * sectors + std::min(x, side - 2) / kSectorMetres;
+            if (sector >= loaded.size() || loaded[sector]) continue;
+            size_t at = kTerrainVertices + (size_t(y) * side + x) * kVertexBytes;
+            std::copy_n(old.begin() + at, kVertexBytes, now.begin() + at);
+        }
+    }
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(now.data()), std::streamsize(now.size()));
+}
+
+// an editor list holding only the objects its writers can save while the save runs
+struct KeptList {
+    uint32_t list;
+    bool (*whole)(uint32_t object);
+    uint32_t buffer = 0;
+    uint32_t bytes = 0;
+    uint32_t first = 0;
+    uint32_t last = 0;
+    uint32_t end = 0;
+};
+
+bool Cabled(uint32_t end) { return R32(end) != kGenericObjectVtable && R32(end + kZiplineCable); }
+
+bool Armed(uint32_t mounted) {
+    uint32_t weapon = R32(mounted + kMountedWeapon);
+    return R32(mounted) != kGenericObjectVtable && weapon && R32(weapon + kWeaponModel);
+}
+
+KeptList g_ziplines{SYM_Ziplines, Cabled};
+KeptList g_mounted{kMountedWeapons, Armed};
+
+void Keep(KeptList& kept) {
+    kept.first = R32(kept.list + kVectorFirst);
+    kept.last = R32(kept.list + kVectorLast);
+    kept.end = R32(kept.list + kVectorEnd);
+    std::vector<uint32_t> whole;
+    for (uint32_t at = kept.first; at && at < kept.last; at += 4)
+        if (kept.whole(R32(at))) whole.push_back(R32(at));
+    if (whole.size() == (kept.last - kept.first) / 4) return;
+    uint32_t bytes = uint32_t(whole.size() * 4);
+    if (bytes > kept.bytes) {
+        kept.buffer = mem::AllocSystem(bytes);
+        kept.bytes = kept.buffer ? bytes : 0;
+    }
+    if (!kept.buffer && bytes) return;
+    for (size_t i = 0; i < whole.size(); i++) W32(kept.buffer + uint32_t(i * 4), whole[i]);
+    W32(kept.list + kVectorFirst, kept.buffer);
+    W32(kept.list + kVectorLast, kept.buffer + bytes);
+    W32(kept.list + kVectorEnd, kept.buffer + bytes);
+}
+
+void Restore(const KeptList& kept) {
+    W32(kept.list + kVectorFirst, kept.first);
+    W32(kept.list + kVectorLast, kept.last);
+    W32(kept.list + kVectorEnd, kept.end);
+}
+
 // the editor's own writers, their files going to the level path
 void WriteEditorFiles(PPCContext& ctx, uint32_t manager) {
     uint32_t count = uint32_t(CallGuest(ctx, SYM_Tools_Count, {}));
@@ -342,6 +466,9 @@ void fcip::editor::SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     std::error_code ec;
     fs::create_directories(LevelFolder() / "sdat", ec);
     uint32_t engine = R32(SYM_C3DEngine_pointer);
+    W32(kSavedTerrain, R32(engine + kEngineTerrain));
+    Keep(g_ziplines);
+    Keep(g_mounted);
     std::string level_path = ReadCString(engine + kEngineLevelPath);
     WriteText(engine + kEngineLevelPath, MapName(), kLevelPathBytes);
     uint32_t packs = uint32_t(CallGuest(ctx, SYM_PackManager_Get, {}));
@@ -354,16 +481,40 @@ void fcip::editor::SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     StringTableFile table = SavedStringTable();
     if (!table.name.empty()) WriteHostFile(table.name, table.text.data(), table.text.size());
     WriteNavigation(ctx);
+    std::vector<uint8_t> terrain;
+    ReadLevelFile(ctx, kTerrainFile, terrain);
+    g_saving = true;
     WriteEditorFiles(ctx, manager);
+    g_saving = false;
+    KeepUnloadedTerrain(terrain);
     std::vector<uint8_t> paint = PaintLayerBytes();
     WriteHostFile(kPaintFile, paint.data(), paint.size());
     EnsureScript();
     W8(packs + kPacksWriting, writing);
     WriteText(engine + kEngineLevelPath, level_path, kLevelPathBytes);
+    Restore(g_mounted);
+    Restore(g_ziplines);
     LOGR("level editor: %s saved as %s", BaseLevel().c_str(), LevelFolder().string().c_str());
 }
 
 std::filesystem::path fcip::editor::OwnScriptPath() { return LevelFolder() / kScriptName; }
+
+// the base level's dependency lists with the editor templates' entries, so FCIP.exe preloads what the editor did; the
+// editor's start needs the level's own (8239D908 reads it through 82367828, which stops the game on a missing file)
+void fcip::editor::WriteDependencyLists(PPCContext& ctx, const std::string& base, const fs::path& folder,
+                                        const std::string& name) {
+    if (!EnsureScratch()) return;
+    for (const DependencyList& list : kDependencyLists) {
+        std::vector<uint8_t> own;
+        std::vector<uint8_t> editor;
+        bool has_own = ReadGameFile(ctx, "levels\\" + base + "\\" + base + list.suffix, own);
+        bool has_editor = ReadGameFile(ctx, std::string(kEditorLists) + list.suffix, editor);
+        if (!has_own && !has_editor) continue;
+        std::vector<uint8_t> merged = !has_own ? editor : has_editor ? MergeLists(own, editor, list.key) : own;
+        std::ofstream(folder / (name + list.suffix), std::ios::binary)
+            .write(reinterpret_cast<const char*>(merged.data()), std::streamsize(merged.size()));
+    }
+}
 
 // the AI navigation cut again for the level's areas as they are now
 std::vector<NavFile> fcip::editor::RebuildNavGraphs(PPCContext& ctx) {
@@ -389,6 +540,15 @@ bool fcip::editor::ReadPackFile(PPCContext& ctx, const std::string& file, std::v
 }
 
 PPC_EXTERN_FUNC(__imp__sub_82109BF8);
+PPC_EXTERN_FUNC(__imp__sub_82353C18);
+
+// a sector saves (r3 the sector); one the streaming has not loaded keeps the files the level has
+PPC_FUNC(sub_82353C18) {
+    uint32_t sector = uint32_t(ctx.r[3]);
+    if (!g_saving || (R8(sector + kSectorState) & kSectorLoaded)) return __imp__sub_82353C18(ctx, base);
+    KeepSectorFiles(ctx, R16(sector + kSectorNumber));
+    ctx.r[3] = 1;
+}
 
 // the editor's save (r3 the manager); a campaign level saves as its own folder. A sequence preview's placements are
 // put back first, so entities save where they stand

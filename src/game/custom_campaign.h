@@ -1,4 +1,4 @@
-// default.xex: CUSTOM CAMPAIGN, the custom levels in levels\ beside the exe played in folder name order
+// default.xex: CUSTOM CAMPAIGN, the custom levels in levels\play beside the exe played in folder name order
 #pragma once
 #include <string>
 

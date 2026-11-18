@@ -1,6 +1,6 @@
 // ige.xex, the solo level editor: the map manager is the LEVEL MANAGER. OPEN A LEVEL lists the campaign's levels
-// and the custom levels in levels\ in a window over the page, CREATE A NEW LEVEL takes publishing's row and makes one from a template, and
-// creating without saving goes, EXIT EDITOR taking its row.
+// and the custom levels in levels\saved in a window over the page, CREATE A NEW LEVEL takes publishing's row and makes
+// one from a template, and creating without saving goes, EXIT EDITOR taking its row.
 #include <atomic>
 #include <cstdint>
 

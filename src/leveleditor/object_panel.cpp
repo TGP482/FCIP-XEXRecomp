@@ -166,11 +166,6 @@ std::vector<Target> ReadTargets(PPCContext& ctx) {
     return targets;
 }
 
-uint32_t ScriptOf(uint32_t object) {
-    uint32_t entity = R32(object + kObjectEntity);
-    return entity ? R32(entity + kEntityScript) : 0;
-}
-
 void Release(PPCContext& ctx, Converted& c) {
     if (c.node) CallGuest(ctx, Method(c.node, kNodeRelease), {c.node});
     if (c.table) CallGuest(ctx, Method(c.table, kScriptRelease), {c.table});
@@ -213,9 +208,11 @@ void ReadNode(uint32_t node, const Node& at, std::vector<Node>& out) {
 Snapshot Read(PPCContext& ctx, uint32_t object) {
     Snapshot s;
     s.object = object;
-    uint32_t script = object ? ScriptOf(object) : 0;
+    // only an entity's own editor object holds it, zip line ends and mounted weapons hold other data there
+    uint32_t entity = object ? R32(object + kObjectEntity) : 0;
+    if (!entity || EditorObjectFor(ctx, entity) != object) return s;
+    uint32_t script = R32(entity + kEntityScript);
     if (!script) return s;
-    uint32_t entity = R32(object + kObjectEntity);
     s.entity_id = R32(entity + kEntityId);
     s.name = LabelOf(ctx, entity);
     s.archetype = ArchetypeOf(s.entity_id);

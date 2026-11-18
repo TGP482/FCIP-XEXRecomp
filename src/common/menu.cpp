@@ -202,7 +202,7 @@ constexpr Level kLevels[] = {
     {"30_mountain", "30 MOUNTAIN"},
 };
 
-// the story levels, then the custom levels found in levels\ at start
+// the story levels, then the custom levels found in levels\play at start
 struct LevelEntry {
     std::string folder;
     std::string label;

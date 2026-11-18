@@ -40,7 +40,7 @@ constexpr const char* kControllerHelp = "Controller sensitivity and gyro setting
 constexpr const char* kExitCaption = "EXIT";
 constexpr const char* kExitHelp = "Close the game and return to the desktop";
 constexpr const char* kCustomCaption = "CUSTOM CAMPAIGN";
-constexpr const char* kCustomHelp = "Play the custom levels in the levels folder in order";
+constexpr const char* kCustomHelp = "Play the custom levels in the levels\\play folder in order";
 
 // UTF-16 text, then a string view of it, then scratch for the copy visitor and a by reference argument
 constexpr uint32_t kTextUnits = 0x180u;

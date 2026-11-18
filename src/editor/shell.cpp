@@ -108,7 +108,7 @@ bool g_applying = false;  // the left button went down on the view
 
 // Menus and toolbar
 
-// the campaign's levels, opened as the game loads them, and the custom levels in levels\ beside the exe
+// the campaign's levels, opened as the game loads them, and the custom levels in levels\saved beside the exe
 void DrawOpenLevel() {
     if (ImGui::BeginMenu("Open Campaign Level")) {
         for (int i = 0; i < int(std::size(kCampaignLevels)); i++) {

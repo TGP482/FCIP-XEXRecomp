@@ -1,11 +1,15 @@
-// default.xex: custom levels start as campaign levels do. A custom level is a folder in levels\ beside the exe laid
-// over game:\Levels, with loose files and no pack of its own: its base level's pack (a campaign level's or an editor
-// template's) opens in its place for the assets, and its Mission.lua runs after MissionTools.lua as it does in the
-// level editor, unless it is the mission's own script, as a level made from an editor template's is; its own copy of
-// the mission's string table, when it has one, is read in place of the campaign's. CUSTOM CAMPAIGN plays them in
-// folder name order: the story mode start goes to the first, and a level's end goes to the next.
+// default.xex: custom levels start as campaign levels do. A custom level is a folder in levels\play beside the exe laid
+// over game:\Levels, its loose files packed into its own level pack as the game streams them; its base level's pack (a
+// campaign level's or an editor template's) is kept open beside it for the assets, and its Mission.lua runs after
+// MissionTools.lua as it does in the level editor, or as the mission's own script, as a level made from an editor
+// template's is; its own copy of the mission's string table, when it has one, is read in place of the campaign's.
+// CUSTOM CAMPAIGN plays them in folder name order: the story mode start goes to the first, and a level's end goes to
+// the next.
 #include <algorithm>
+#include <fstream>
+#include <iterator>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,13 +28,17 @@ constexpr const char* kMissionTools = "\\SCRIPTS\\MissionTools.lua";
 constexpr const char* kCustomMission = "Mission0";  // the mission the level editor saves
 constexpr const char* kLastLevelEnd = "FadeOutEndMapReboot";
 constexpr uint32_t kTextBytes = 0x80;
+constexpr uint32_t kScriptBufferName = 0x82074180;  // "__script_buffer__", the chunk name 823CB380 runs text under
 // the script's Language object: its language manager, then the mission table's name (std::string)
 constexpr uint32_t kLanguageManager = 0x0C;
 constexpr uint32_t kMissionTable = 0x10;
 
 // guest main thread
 std::string g_running;  // the custom level loading or running, empty for a campaign level
-bool g_own_ran = false;  // its Mission.lua ran as its mission's script, as a level made from an editor template's does
+uint32_t g_script = 0;  // the own script's text
+uint32_t g_script_bytes = 0;
+bool g_own_ran = false;
+std::set<std::string> g_base_packs;  // the base levels' packs opened for custom levels  // its Mission.lua ran as its mission's script, as a level made from an editor template's does
 uint32_t g_text = 0;
 // CUSTOM CAMPAIGN's first level, until the story mode start takes it; set on the menu thread
 std::mutex g_start_lock;
@@ -57,6 +65,35 @@ std::string GuestString(uint32_t str) {
     uint32_t text = str + kText;
     if (R32(str + kCapacity) >= kInlineBytes) text = R32(text);
     return ReadCString(text);
+}
+
+// the running custom level's Mission.lua, read from its folder: the game's script loader first opens
+// <path>_compiled, which stops the game when a loose file is missing (823B4788)
+bool RunOwnScript(PPCContext& ctx, uint32_t scripts) {
+    std::ifstream in(fcip::CustomLevelsFolder() / g_running / "Mission.lua", std::ios::binary);
+    std::string text(std::istreambuf_iterator<char>(in), {});
+    uint32_t bytes = uint32_t(text.size());
+    if (bytes > g_script_bytes) {
+        g_script = mem::AllocSystem(bytes);
+        g_script_bytes = g_script ? bytes : 0;
+    }
+    if (!bytes || !g_script) return false;
+    for (uint32_t i = 0; i < bytes; i++) W8(g_script + i, uint8_t(text[i]));
+    bool ran = CallGuest(ctx, SYM_Lua_DoBuffer, {R32(scripts), g_script, bytes, kScriptBufferName}) == 0;
+    LOGR("custom levels: %s's Mission.lua %s", g_running.c_str(), ran ? "ran" : "failed");
+    return ran;
+}
+
+// a base level's pack, opened once and kept: a pack keeps its path, so each gets its own block
+void OpenBasePack(PPCContext& ctx, const std::string& level) {
+    if (!g_base_packs.insert(level).second) return;
+    std::string path = "Levels\\" + level + "\\" + level + ".dat";
+    uint32_t text = mem::AllocSystem(uint32_t(path.size() + 1));
+    if (!text) return;
+    for (size_t i = 0; i <= path.size(); i++) W8(text + uint32_t(i), uint8_t(path.c_str()[i]));
+    if (!CallGuest(ctx, SYM_PackManager_Open, {R32(SYM_Packs_pointer), text, 0, 0, 0, 0})) {
+        LOGE("custom levels: %s could not be opened", path.c_str());
+    }
 }
 
 std::string CampaignOf(const std::string& level) {
@@ -141,32 +178,38 @@ PPC_EXTERN_FUNC(GUEST_ORIG(Streaming_OpenLevelPack));
 PPC_EXTERN_FUNC(GUEST_ORIG(Script_ExecuteFile));
 PPC_EXTERN_FUNC(GUEST_ORIG(Language_LoadMissionStringTable));
 PPC_EXTERN_FUNC(GUEST_ORIG(XmlFile_Load));
+PPC_EXTERN_FUNC(GUEST_ORIG(File_CreateHandle));
+PPC_EXTERN_FUNC(GUEST_ORIG(File_Exists));
 
-// a level's pack opens (r4 its folder, r5 1 for a user map); a custom level's campaign level's opens in its place
+// a level's pack opens (r4 its folder, r5 1 for a user map); a custom level's own, which holds its sectors, with its
+// base level's kept open beside it for the assets
 PPC_FUNC(GUEST(Streaming_OpenLevelPack)) {
     std::string level = ReadCString(uint32_t(ctx.r[4]));
     std::string campaign = uint32_t(ctx.r[5]) ? std::string() : CampaignOf(level);
     g_running = campaign.empty() ? std::string() : level;
     g_own_ran = false;
-    if (!campaign.empty()) ctx.r[4] = GuestText(campaign);
+    if (!campaign.empty()) {
+        fcip::EnsureLevelPack(level);
+        OpenBasePack(ctx, campaign);
+    }
     GUEST_ORIG(Streaming_OpenLevelPack)(ctx, base);
 }
 
 // a script file runs (r3 the script system, r4 its path); a custom level's own script runs after MissionTools.lua,
-// unless it ran as the mission's script
+// or as the mission's script, as a level made from an editor template's does; 1 in r3 when it ran
 PPC_FUNC(GUEST(Script_ExecuteFile)) {
     std::string path = ReadCString(uint32_t(ctx.r[4]));
-    bool tools = !g_running.empty() && path == kMissionTools;
-    if (fcip::IsOwnScript(g_running, path)) g_own_ran = true;
     uint32_t scripts = uint32_t(ctx.r[3]);
+    if (fcip::IsOwnScript(g_running, path)) {
+        g_own_ran = true;
+        ctx.r[3] = RunOwnScript(ctx, scripts) ? 1 : 0;
+        return;
+    }
+    bool tools = !g_running.empty() && path == kMissionTools;
     GUEST_ORIG(Script_ExecuteFile)(ctx, base);
     if (!tools || g_own_ran) return;
     uint64_t result = ctx.r[3];
-    ctx.r[3] = scripts;
-    ctx.r[4] = GuestText("\\Levels\\" + g_running + "\\Mission.lua");
-    ctx.r[5] = 0;
-    ctx.r[6] = 0;
-    GUEST_ORIG(Script_ExecuteFile)(ctx, base);
+    RunOwnScript(ctx, scripts);
     ctx.r[3] = result;
 }
 
@@ -190,4 +233,22 @@ PPC_FUNC(GUEST(XmlFile_Load)) {
     std::string own = fcip::OwnStringTablePath(g_running, ReadCString(uint32_t(ctx.r[4])));
     if (!own.empty()) ctx.r[4] = GuestText(own);
     GUEST_ORIG(XmlFile_Load)(ctx, base);
+}
+
+// a loose file opens (r3 its path, r5 set when a failure stops the game as a damaged disc would): a custom level's
+// folder holds only the files the level has, so one it lacks fails as missing
+PPC_FUNC(GUEST(File_CreateHandle)) {
+    if (uint8_t(ctx.r[5]) && !fcip::CustomLevelFile(ReadCString(uint32_t(ctx.r[3]))).empty()) ctx.r[5] = 0;
+    GUEST_ORIG(File_CreateHandle)(ctx, base);
+}
+
+// a file is looked for (r3 the packs, r4 its path), in a pack, else as named; a custom level's loose file is named
+// from the game's root, where the file open finds it but the check does not (the AI's graphs)
+PPC_FUNC(GUEST(File_Exists)) {
+    std::string path = ReadCString(uint32_t(ctx.r[4]));
+    GUEST_ORIG(File_Exists)(ctx, base);
+    if (uint8_t(ctx.r[3])) return;
+    std::error_code ec;
+    std::filesystem::path host = fcip::CustomLevelFile(path);
+    if (!host.empty() && std::filesystem::is_regular_file(host, ec)) ctx.r[3] = 1;
 }

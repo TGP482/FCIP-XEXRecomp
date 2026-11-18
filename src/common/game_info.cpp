@@ -1,6 +1,8 @@
+#include <filesystem>
 #include <string_view>
 
 #include "app/app.h"
+#include "common/custom_levels.h"
 #include "common/input.h"
 #include "common/keys.h"
 #include "common/menu.h"
@@ -22,8 +24,12 @@ constexpr bool kEditor = std::string_view(IMAGE_XEX) == "ige.xex";
 constexpr const wchar_t* kTitle =
     kEditor ? L"Far Cry Instincts: Predator - XEX Recomp Editor" : L"Far Cry Instincts: Predator - XEX Recomp";
 
-// custom levels live in levels\ beside the exe, laid over the disc's Levels for the game and the editor
-void Loaded() { kernel::MountDiscOverlay("Levels", (app::ExeDir() / "levels").string()); }
+// custom levels live in this exe's custom levels folder, made at start and laid over the disc's Levels
+void Loaded() {
+    std::error_code ec;
+    std::filesystem::create_directories(fcip::CustomLevelsFolder(), ec);
+    kernel::MountDiscOverlay("Levels", fcip::CustomLevelsFolder().string());
+}
 
 void Init() {
     fcip::EnsureDisplay();

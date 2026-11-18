@@ -59,7 +59,8 @@ Terrain_Cell = 0x8234F5E0             # (sector render data, row, column) a heig
 Terrain_SetSurfaceType = 0x82357FA8   # (cell, surface type)
 # a campaign level saved as a custom level, its own folder (custom_save.cpp)
 Engine_LevelFilePath = 0x823365E8   # (3D engine, name, 0) the path of a file in the level's folder
-File_Open = 0x8234EF80              # (file, packs, path, mode, 0, 0); mode 2 writes
+File_Exists = 0x8234EC40            # (packs, path) in a pack or a loose file
+File_Open = 0x8234EF80              # (file, packs, path, mode, 0, 0); mode 2 writes, a missing loose file stops the game
 File_Write = 0x8234ECC0             # (packs, data, size, file)
 File_Close = 0x8234ED48             # (packs, file)
 File_Destroy = 0x824FAF08           # (file)
