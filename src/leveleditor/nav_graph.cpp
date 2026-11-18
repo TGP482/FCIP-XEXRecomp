@@ -814,6 +814,26 @@ Graph BuildArea(const NavArea& area, const Graph* loaded, const std::vector<NavR
 
 }  // namespace
 
+namespace {
+
+// the ring's middle within the box's bounds
+bool MiddleInside(const NavRing& box, const NavRing& ring) {
+    if (box.empty() || ring.empty()) return false;
+    float x = 0;
+    float y = 0;
+    for (const NavPoint& p : ring) {
+        x += p[0];
+        y += p[1];
+    }
+    x /= float(ring.size());
+    y /= float(ring.size());
+    auto [min_x, max_x] = std::minmax_element(box.begin(), box.end(), [](auto& a, auto& b) { return a[0] < b[0]; });
+    auto [min_y, max_y] = std::minmax_element(box.begin(), box.end(), [](auto& a, auto& b) { return a[1] < b[1]; });
+    return x >= (*min_x)[0] && x <= (*max_x)[0] && y >= (*min_y)[1] && y <= (*max_y)[1];
+}
+
+}  // namespace
+
 std::vector<NavFile> BuildNavGraphs(const NavInput& in, const GroundHeight& height) {
     std::vector<Graph> loaded(in.loaded_graphs.size());
     std::vector<bool> readable(loaded.size());
@@ -830,7 +850,10 @@ std::vector<NavFile> BuildNavGraphs(const NavInput& in, const GroundHeight& heig
             }
             auto same = [&](const NavRing& k) { return SameRing(k, r); };
             bool forbidden = std::any_of(in.loaded_forbidden.begin(), in.loaded_forbidden.end(), same);
-            if (!forbidden && std::none_of(obstacles.begin(), obstacles.end(), same)) obstacles.push_back(r);
+            auto under = [&](const NavRing& c) { return MiddleInside(c, r); };
+            bool cleared = std::any_of(in.cleared.begin(), in.cleared.end(), under);
+            bool known = std::any_of(obstacles.begin(), obstacles.end(), same);
+            if (!forbidden && !cleared && !known) obstacles.push_back(r);
         }
     }
     obstacles.insert(obstacles.end(), in.forbidden.begin(), in.forbidden.end());

@@ -25,6 +25,7 @@
 #include "editor/tools.h"
 #include "kernel/memory.h"
 #include "leveleditor/campaign_levels.h"
+#include "leveleditor/edge_walls.h"
 #include "leveleditor/guest.h"
 #include "leveleditor/level_data.h"
 #include "leveleditor/level_rules.h"
@@ -724,6 +725,8 @@ void fcip::editor::SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     WriteEditorFiles(ctx, manager);
     g_saving = false;
     KeepUnloadedTerrain(terrain);
+    WriteBrushEdits(LevelFolder());
+    WriteWallEdits(LevelFolder());
     std::vector<uint8_t> paint = PaintLayerBytes();
     WriteHostFile(kPaintFile, paint.data(), paint.size());
     EnsureScript();
@@ -777,11 +780,16 @@ std::vector<NavFile> fcip::editor::RebuildNavGraphs(PPCContext& ctx) {
     for (const NavArea& a : loaded_areas) in.loaded_areas.push_back(a.name);
     AddAreas(*ReadAiObjects(), &in.areas, &in.forbidden);
     // a level with no graphs yet, a new one, has no static geometry cut: its brushes are cut as obstacles
+    auto ring = [](const BrushFootprint& b) {
+        return NavRing{{b.min_x, b.min_y, 0}, {b.max_x, b.min_y, 0}, {b.max_x, b.max_y, 0}, {b.min_x, b.max_y, 0}};
+    };
     if (in.loaded_graphs.empty()) {
-        for (const BrushFootprint& b : BrushFootprints()) {
-            in.forbidden.push_back({{b.min_x, b.min_y, 0}, {b.max_x, b.min_y, 0}, {b.max_x, b.max_y, 0},
-                                    {b.min_x, b.max_y, 0}});
-        }
+        for (const BrushFootprint& b : BrushFootprints()) in.forbidden.push_back(ring(b));
+    } else {
+        // the loaded graphs hold the brushes as they opened; moved, removed and added ones are cut again
+        BrushChanges changes = ChangedBrushes();
+        for (const BrushFootprint& b : changes.cleared) in.cleared.push_back(ring(b));
+        for (const BrushFootprint& b : changes.placed) in.forbidden.push_back(ring(b));
     }
     return BuildNavGraphs(in, [&](float x, float y) { return TerrainHeightAt(ctx, x, y); });
 }

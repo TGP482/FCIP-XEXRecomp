@@ -2,6 +2,7 @@
 // (static_geometry.cpp)
 #pragma once
 
+#include <filesystem>
 #include <vector>
 
 #include <imgui.h>
@@ -26,6 +27,15 @@ struct BrushFootprint {
     float max_x = 0;
     float max_y = 0;
 };
-std::vector<BrushFootprint> BrushFootprints();  // editor thread, every sector's brushes as they stand
+std::vector<BrushFootprint> BrushFootprints();  // editor thread, every sector's brushes as they stand, added included
+// editor thread, for the navigation: where brushes stood as the level opened that moved or went, and where moved and
+// added ones stand now
+struct BrushChanges {
+    std::vector<BrushFootprint> cleared;
+    std::vector<BrushFootprint> placed;
+};
+BrushChanges ChangedBrushes();
+// editor thread, the save: added brushes appended to and removed ones dropped from the folder's sdat\sd%d.sdat files
+void WriteBrushEdits(const std::filesystem::path& folder);
 
 }  // namespace fcip::editor

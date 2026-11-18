@@ -27,6 +27,7 @@ struct NavInput {
     std::vector<NavRing> loaded_forbidden;   // its ForbiddenAreas
     std::vector<NavArea> areas;              // the EnclosingAreas now
     std::vector<NavRing> forbidden;          // the ForbiddenAreas now
+    std::vector<NavRing> cleared;            // where static brushes stood that moved or went; their obstacles drop
 };
 
 using GroundHeight = std::function<float(float x, float y)>;
