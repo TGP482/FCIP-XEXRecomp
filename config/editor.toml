@@ -16,6 +16,9 @@ library = "FCIPEditor.dll"  # <exe>.dll, which the executable delay loads
 
 # functions the host replaces or calls by name, 0 where the image has none
 [symbols]
+# the C runtime's setjmp and longjmp, which Lua's errors unwind through
+Crt_SetJmp                    = 0x82622380
+Crt_LongJmp                   = 0x82622450
 # Direct3D 9, drawn by the host
 D3D_InitializeEngines         = 0x82653DB8
 D3D_InterruptHandler          = 0x8264C8D0
