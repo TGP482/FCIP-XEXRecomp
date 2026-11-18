@@ -20,7 +20,8 @@ inline constexpr const char* kUnsavedLevelPrefix = "UNSAVED_";  // a new level's
 std::filesystem::path CustomLevelFolder(const std::string& level);  // in either folder
 std::vector<CustomLevel> FindCustomLevels();  // any thread, in folder name order
 // the game streams a level's sectors by the CRC of their path, which only a pack's FAT answers, so a custom level's
-// folder is packed into <level>.dat and <level>.fat, the pack the level start opens; made again when a file is newer
+// folder is packed into <level>.dat and <level>.fat, the pack the level start opens, in FCIP.exe with its base level's
+// files; made again when a file is newer
 void EnsureLevelPack(const std::string& level);
 bool EvolutionLevel(const std::string& level);  // Evolution's levels are 2x and 3x
 // the path names the level's own Mission.lua, Levels\<level>\Mission.lua in any case: the mission script of a level

@@ -1,6 +1,6 @@
 // default.xex: custom levels start as campaign levels do. A custom level is a folder in levels\play beside the exe laid
-// over game:\Levels, its loose files packed into its own level pack as the game streams them; its base level's pack (a
-// campaign level's or an editor template's) is kept open beside it for the assets, and its Mission.lua runs after
+// over game:\Levels, its loose files packed into its own level pack as the game streams them, with its base level's
+// files (a campaign level's or an editor template's) packed in beside them for the assets; its Mission.lua runs after
 // MissionTools.lua as it does in the level editor, or as the mission's own script, as a level made from an editor
 // template's is; its own copy of the mission's string table, when it has one, is read in place of the campaign's.
 // CUSTOM CAMPAIGN plays them in folder name order: the story mode start goes to the first, and a level's end goes to
@@ -9,7 +9,6 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -37,8 +36,8 @@ constexpr uint32_t kMissionTable = 0x10;
 std::string g_running;  // the custom level loading or running, empty for a campaign level
 uint32_t g_script = 0;  // the own script's text
 uint32_t g_script_bytes = 0;
+// its Mission.lua ran as its mission's script, as a level made from an editor template's does
 bool g_own_ran = false;
-std::set<std::string> g_base_packs;  // the base levels' packs opened for custom levels  // its Mission.lua ran as its mission's script, as a level made from an editor template's does
 uint32_t g_text = 0;
 // CUSTOM CAMPAIGN's first level, until the story mode start takes it; set on the menu thread
 std::mutex g_start_lock;
@@ -82,18 +81,6 @@ bool RunOwnScript(PPCContext& ctx, uint32_t scripts) {
     bool ran = CallGuest(ctx, SYM_Lua_DoBuffer, {R32(scripts), g_script, bytes, kScriptBufferName}) == 0;
     LOGR("custom levels: %s's Mission.lua %s", g_running.c_str(), ran ? "ran" : "failed");
     return ran;
-}
-
-// a base level's pack, opened once and kept: a pack keeps its path, so each gets its own block
-void OpenBasePack(PPCContext& ctx, const std::string& level) {
-    if (!g_base_packs.insert(level).second) return;
-    std::string path = "Levels\\" + level + "\\" + level + ".dat";
-    uint32_t text = mem::AllocSystem(uint32_t(path.size() + 1));
-    if (!text) return;
-    for (size_t i = 0; i <= path.size(); i++) W8(text + uint32_t(i), uint8_t(path.c_str()[i]));
-    if (!CallGuest(ctx, SYM_PackManager_Open, {R32(SYM_Packs_pointer), text, 0, 0, 0, 0})) {
-        LOGE("custom levels: %s could not be opened", path.c_str());
-    }
 }
 
 std::string CampaignOf(const std::string& level) {
@@ -186,8 +173,8 @@ PPC_EXTERN_FUNC(GUEST_ORIG(XmlFile_Load));
 PPC_EXTERN_FUNC(GUEST_ORIG(File_CreateHandle));
 PPC_EXTERN_FUNC(GUEST_ORIG(File_Exists));
 
-// a level's pack opens (r4 its folder, r5 1 for a user map); a custom level's own, which holds its sectors, with its
-// base level's kept open beside it for the assets
+// a level's pack opens (r4 its folder, r5 1 for a user map); a custom level's own holds its sectors and its base
+// level's assets
 PPC_FUNC(GUEST(Streaming_OpenLevelPack)) {
     std::string level = ReadCString(uint32_t(ctx.r[4]));
     std::string campaign = uint32_t(ctx.r[5]) ? std::string() : CampaignOf(level);
@@ -195,7 +182,6 @@ PPC_FUNC(GUEST(Streaming_OpenLevelPack)) {
     g_own_ran = false;
     if (!campaign.empty()) {
         fcip::EnsureLevelPack(level);
-        OpenBasePack(ctx, campaign);
     }
     GUEST_ORIG(Streaming_OpenLevelPack)(ctx, base);
 }

@@ -11,10 +11,12 @@
 #include <fstream>
 #include <iterator>
 #include <string_view>
+#include <unordered_set>
 
 #include "app/app.h"
 #include "core/log.h"
 #include "image_symbols.h"
+#include "kernel/kernel.h"
 
 namespace fs = std::filesystem;
 
@@ -27,6 +29,10 @@ constexpr const char* kCustomFolder = kEditor ? "saved" : "play";
 // a level pack's FAT: "DAT2", the count, then offset, stored size, size and CRC each, by CRC; stored equal to size is
 // raw data
 constexpr uint32_t kPackMagic = 0x32544144;
+constexpr size_t kFatHeaderBytes = 8;
+constexpr size_t kFatEntryBytes = 16;
+constexpr const char* kEditorTemplatesPack = "MET_Dependency";  // the editor templates' shared assets
+constexpr const char* kEditorTemplatePrefix = "met_";
 constexpr uint32_t kPolynomial = 0xEDB88320;  // zlib's CRC32, which the packs key their files by (823CB118)
 
 std::string CampaignOf(const fs::path& level_data) {
@@ -63,10 +69,46 @@ void PutLe32(std::vector<uint8_t>& out, uint32_t v) {
     for (int i = 0; i < 4; i++) out.push_back(uint8_t(v >> (i * 8)));
 }
 
+uint32_t GetLe32(const uint8_t* p) {
+    return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
+}
+
 struct PackedFile {
     uint32_t crc;
     fs::path path;
 };
+
+struct PackEntry {
+    uint32_t offset;
+    uint32_t stored;
+    uint32_t size;
+    uint32_t crc;
+};
+
+// a base level's pack: its data file and the entries the custom level takes from it
+struct BasePack {
+    std::string dat;
+    std::vector<PackEntry> entries;
+};
+
+std::vector<PackEntry> FatEntries(const std::vector<uint8_t>& fat) {
+    if (fat.size() < kFatHeaderBytes || GetLe32(fat.data()) != kPackMagic) return {};
+    size_t count = std::min<size_t>(GetLe32(fat.data() + 4), (fat.size() - kFatHeaderBytes) / kFatEntryBytes);
+    std::vector<PackEntry> entries;
+    for (size_t i = 0; i < count; i++) {
+        const uint8_t* e = fat.data() + kFatHeaderBytes + i * kFatEntryBytes;
+        entries.push_back({GetLe32(e), GetLe32(e + 4), GetLe32(e + 8), GetLe32(e + 12)});
+    }
+    return entries;
+}
+
+// the entry count a pack's FAT holds, none when it has no FAT
+size_t FatCount(const fs::path& fat) {
+    uint8_t header[kFatHeaderBytes] = {};
+    std::ifstream in(fat, std::ios::binary);
+    if (!in.read(reinterpret_cast<char*>(header), kFatHeaderBytes)) return 0;
+    return GetLe32(header + 4);
+}
 
 // the folder's files, keyed as the game names them, \levels\<level>\<file> in lower case; stale is set when one is
 // newer than the pack
@@ -83,8 +125,33 @@ std::vector<PackedFile> PackedFiles(const std::string& level, const fs::path& fa
         files.push_back({Crc32(Lower("\\levels\\" + level + "\\" + name)), e.path()});
         if (!stale && e.last_write_time(ec) > packed) stale = true;
     }
-    std::sort(files.begin(), files.end(), [](const PackedFile& a, const PackedFile& b) { return a.crc < b.crc; });
     return files;
+}
+
+// FCIP.exe streams a level's files only from the level's own pack (823EDCC8 finds no read handle for another pack),
+// so a custom level's pack also holds what its base level's pack has, and for a level made from an editor template
+// the templates' shared pack, each file it does not have itself
+std::vector<BasePack> BasePacks(const std::string& base, const std::vector<PackedFile>& files) {
+    if (kEditor || base.empty()) return {};
+    std::vector<std::string> levels = {base};
+    if (Lower(base).starts_with(kEditorTemplatePrefix)) levels.push_back(kEditorTemplatesPack);
+    std::unordered_set<uint32_t> taken;
+    for (const PackedFile& f : files) taken.insert(f.crc);
+    std::vector<BasePack> packs;
+    for (const std::string& level : levels) {
+        std::string path = "game:\\Levels\\" + level + "\\" + level;
+        std::vector<uint8_t> fat;
+        if (!kernel::ReadGameFile(path + ".fat", fat)) {
+            LOGE("custom levels: %s.fat could not be read", path.c_str());
+            continue;
+        }
+        BasePack pack{path + ".dat", {}};
+        for (const PackEntry& e : FatEntries(fat)) {
+            if (taken.insert(e.crc).second) pack.entries.push_back(e);
+        }
+        packs.push_back(std::move(pack));
+    }
+    return packs;
 }
 
 }  // namespace
@@ -97,10 +164,12 @@ void EnsureLevelPack(const std::string& level) {
     fs::path dat = folder / (level + ".dat");
     bool stale = false;
     std::vector<PackedFile> files = PackedFiles(level, fat, dat, stale);
+    std::vector<BasePack> bases = BasePacks(CampaignOf(folder / "LevelData.xml"), files);
+    size_t count = files.size();
+    for (const BasePack& b : bases) count += b.entries.size();
+    if (!stale) stale = FatCount(fat) != count;
     if (!stale || files.empty()) return;
-    std::vector<uint8_t> table;
-    PutLe32(table, kPackMagic);
-    PutLe32(table, uint32_t(files.size()));
+    std::vector<PackEntry> entries;
     std::ofstream out(dat, std::ios::binary);
     uint32_t offset = 0;
     for (const PackedFile& f : files) {
@@ -108,13 +177,30 @@ void EnsureLevelPack(const std::string& level) {
         std::vector<char> data(std::istreambuf_iterator<char>(in), {});
         out.write(data.data(), std::streamsize(data.size()));
         uint32_t size = uint32_t(data.size());
-        for (uint32_t v : {offset, size, size, f.crc}) PutLe32(table, v);
+        entries.push_back({offset, size, size, f.crc});
         offset += size;
     }
+    for (const BasePack& b : bases) {
+        std::vector<uint8_t> data;
+        if (!kernel::ReadGameFile(b.dat, data)) LOGE("custom levels: %s could not be read", b.dat.c_str());
+        for (const PackEntry& e : b.entries) {
+            if (uint64_t(e.offset) + e.stored > data.size()) continue;
+            out.write(reinterpret_cast<const char*>(data.data() + e.offset), std::streamsize(e.stored));
+            entries.push_back({offset, e.stored, e.size, e.crc});
+            offset += e.stored;
+        }
+    }
     out.close();
+    std::sort(entries.begin(), entries.end(), [](const PackEntry& a, const PackEntry& b) { return a.crc < b.crc; });
+    std::vector<uint8_t> table;
+    PutLe32(table, kPackMagic);
+    PutLe32(table, uint32_t(entries.size()));
+    for (const PackEntry& e : entries) {
+        for (uint32_t v : {e.offset, e.stored, e.size, e.crc}) PutLe32(table, v);
+    }
     const char* bytes = reinterpret_cast<const char*>(table.data());
     std::ofstream(fat, std::ios::binary).write(bytes, std::streamsize(table.size()));
-    LOGR("custom levels: %s packed, %zu files, %u bytes", level.c_str(), files.size(), offset);
+    LOGR("custom levels: %s packed, %zu files, %u bytes", level.c_str(), entries.size(), offset);
 }
 
 fs::path CustomLevelsFolder() { return app::ExeDir() / "levels" / kCustomFolder; }
