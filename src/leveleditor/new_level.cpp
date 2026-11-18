@@ -264,20 +264,29 @@ Bytes TerrainFile(const Template& t) {
     return b;
 }
 
-// the template's LevelData.xml at the campaign's size, naming the template its assets come from
-std::string LevelDataText(std::string text, const std::string& base) {
+// an attribute's value in the element starting at begin replaced, false when it has none
+bool SetAttribute(std::string& text, size_t begin, const std::string& key, const std::string& value) {
+    size_t close = text.find('>', begin);
+    std::string open = " " + key + "=\"";
+    size_t at = text.find(open, begin);
+    if (at == std::string::npos || at > close) return false;
+    at += open.size();
+    text.replace(at, text.find('"', at) - at, value);
+    return true;
+}
+
+// the template's LevelData.xml at the campaign's size, named for the level and naming the template its assets come
+// from, its missions the one Mission0 (82138EB0 finds the mission StartLevel names here, else takes the first)
+std::string LevelDataText(std::string text, const std::string& name, const std::string& base) {
     size_t info = text.find("<LevelInfo");
-    size_t close = info == std::string::npos ? info : text.find("/>", info);
-    if (close == std::string::npos) return {};
-    std::string size_key = " HeightmapSize=\"";
-    size_t size = text.find(size_key, info);
-    if (size != std::string::npos && size < close) {
-        size += size_key.size();
-        size_t end = text.find('"', size);
-        text.replace(size, end - size, std::to_string(kHeightmapSize));
-        close = text.find("/>", info);
-    }
-    text.insert(close, "CampaignLevel=\"" + base + "\" ");
+    std::string missions = Element(text, "Missions");
+    if (info == std::string::npos || missions.empty()) return {};
+    SetAttribute(text, info, "HeightmapSize", std::to_string(kHeightmapSize));
+    SetAttribute(text, info, "Name", name);
+    text.insert(text.find("/>", info), "CampaignLevel=\"" + base + "\" ");
+    std::string own = "<Missions>\n\t\t<Mission Name=\"Mission0\" File=\"" + std::string(kCampaignMission) +
+                      "\" />\n\t</Missions>";
+    text.replace(text.find(missions), missions.size(), own);
     return text;
 }
 
@@ -363,7 +372,7 @@ std::vector<fcip::editor::LevelFile> fcip::editor::NewLevelFiles(const std::stri
     for (const std::string& level : CampaignOrder()) {
         campaign.push_back(Text(LevelFileOf(read, level, kCampaignMission)));
     }
-    std::string level_data = LevelDataText(data, base);
+    std::string level_data = LevelDataText(data, name, base);
     if (level_data.empty() || mission.empty() || campaign.front().empty() || !ReadTemplate(read, base, t)) return {};
 
     std::vector<LevelFile> files;
