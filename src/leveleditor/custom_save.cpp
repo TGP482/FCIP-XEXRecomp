@@ -26,6 +26,8 @@
 #include "kernel/memory.h"
 #include "leveleditor/campaign_levels.h"
 #include "leveleditor/guest.h"
+#include "leveleditor/level_data.h"
+#include "leveleditor/level_rules.h"
 #include "leveleditor/mission.h"
 #include "leveleditor/mission_text.h"
 #include "leveleditor/mode.h"
@@ -271,11 +273,12 @@ void CopyCampaignFiles(PPCContext& ctx) {
     WriteDependencyLists(ctx, level, LevelFolder(), MapName());
 }
 
-// an entity's type as the campaign's missions place it: its archetype, else its class and model
+// an entity's type as the campaign's missions place it: its archetype, else its class, model and particle effect
 std::string EntityType(const std::string& entity) {
     std::string archetype = KeyOf(entity, " tplCreatureType=\"");
     if (!archetype.empty()) return archetype;
-    return KeyOf(entity, " EntityClass=\"") + "|" + KeyOf(entity, " object_Model=\"");
+    return KeyOf(entity, " EntityClass=\"") + "|" + KeyOf(entity, " object_Model=\"") + "|" +
+           KeyOf(entity, " effectParticleEffect=\"");
 }
 
 struct PlacedEntity {
@@ -369,6 +372,18 @@ std::vector<std::string> EntryEffects(const std::string& entry) {
         out.push_back(KeyOf(entry.substr(at), " Name=\""));
     }
     return out;
+}
+
+// every objective's marker and, when the Objectives tab names one, the extraction's end trigger in the saved mission,
+// with the rules file that watches them
+void WriteObjectiveRules() {
+    fs::path folder = LevelFolder();
+    std::vector<uint8_t> saved = HostFile(folder / kMissionFile);
+    ObjectiveRules rules = AddObjectiveRules({saved.begin(), saved.end()}, KeptLevelInfo("Extraction"), BaseLevel());
+    WriteHostFile(kMissionFile, rules.mission.data(), rules.mission.size());
+    std::error_code ec;
+    if (rules.script.empty()) fs::remove(folder / fcip::kRulesFile, ec);
+    else WriteHostFile(fcip::kRulesFile, rules.script.data(), rules.script.size());
 }
 
 // the game loads an entity's models from the dependency list entry keyed by crc32("\\" + its lowercase name)
@@ -694,6 +709,7 @@ void fcip::editor::SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     WriteMovie(ctx);
     WriteLevelData(ctx);
     WriteMission(ctx);
+    WriteObjectiveRules();
     AddPlacedDependencies(ctx);
     StringTableFile table = SavedStringTable();
     if (Renamed()) {

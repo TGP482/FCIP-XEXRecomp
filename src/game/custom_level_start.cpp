@@ -6,6 +6,7 @@
 // CUSTOM CAMPAIGN plays them in folder name order: the story mode start goes to the first, and a level's end goes to
 // the next.
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <mutex>
@@ -22,6 +23,8 @@
 using namespace kernel;
 
 namespace {
+
+namespace fs = std::filesystem;
 
 constexpr const char* kMissionTools = "\\SCRIPTS\\MissionTools.lua";
 constexpr const char* kCustomMission = "Mission0";  // the mission the level editor saves
@@ -67,10 +70,10 @@ std::string GuestString(uint32_t str) {
     return ReadCString(text);
 }
 
-// the running custom level's Mission.lua, read from its folder: the game's script loader first opens
-// <path>_compiled, which stops the game when a loose file is missing (823B4788)
-bool RunOwnScript(PPCContext& ctx, uint32_t scripts) {
-    std::ifstream in(fcip::CustomLevelsFolder() / g_running / "Mission.lua", std::ios::binary);
+// a script of the running custom level, read from its folder: the game's script loader first opens <path>_compiled,
+// which stops the game when a loose file is missing (823B4788)
+bool RunLevelScript(PPCContext& ctx, uint32_t scripts, const char* file) {
+    std::ifstream in(fcip::CustomLevelsFolder() / g_running / file, std::ios::binary);
     std::string text(std::istreambuf_iterator<char>(in), {});
     uint32_t bytes = uint32_t(text.size());
     if (bytes > g_script_bytes) {
@@ -83,7 +86,17 @@ bool RunOwnScript(PPCContext& ctx, uint32_t scripts) {
     // as Script_ExecuteFile runs a file: load the chunk, then call it with no arguments and every result kept
     bool ran = CallGuest(ctx, SYM_Lua_LoadBuffer, {state, g_script, bytes, kScriptBufferName}) == 0 &&
                CallGuest(ctx, SYM_Lua_PCall, {state, 0, kAllResults}) == 0;
-    LOGR("custom levels: %s's Mission.lua %s", g_running.c_str(), ran ? "ran" : "failed");
+    LOGR("custom levels: %s's %s %s", g_running.c_str(), file, ran ? "ran" : "failed");
+    return ran;
+}
+
+// its Mission.lua, then the editor's rules when it has them
+bool RunOwnScript(PPCContext& ctx, uint32_t scripts) {
+    bool ran = RunLevelScript(ctx, scripts, "Mission.lua");
+    std::error_code ec;
+    if (fs::exists(fcip::CustomLevelsFolder() / g_running / fcip::kRulesFile, ec)) {
+        RunLevelScript(ctx, scripts, fcip::kRulesFile);
+    }
     return ran;
 }
 

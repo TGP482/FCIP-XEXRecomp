@@ -16,6 +16,9 @@ inline constexpr const char* kCampaignLevels[] = {
     "23_DUNEC", "24_SHANTYDAY", "26_SHANTYNIGHT", "28_JUNGLE", "29_FOREST", "30_MOUNTAIN",
 };
 
+// the objectives watch and extraction the level editor writes beside a custom level's Mission.lua, run after it
+inline constexpr const char* kRulesFile = "LevelRules.lua";
+
 // zlib's CRC32, which the packs key their files by (823CB118) and dependency lists their entries
 uint32_t Crc32(const std::string& text);
 

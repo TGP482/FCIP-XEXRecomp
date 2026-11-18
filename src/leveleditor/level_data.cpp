@@ -68,6 +68,7 @@ using Edit = std::function<void(PPCContext&)>;
 struct Snapshot {
     bool kept = false;  // a LevelData with SurfaceTypes is kept
     std::string water;
+    std::vector<XmlAttribute> info;
     std::vector<std::vector<XmlAttribute>> surfaces;  // in SurfaceTypes order, the engine's layer numbers
     uint32_t generation = 0;
 };
@@ -227,7 +228,8 @@ Snapshot ReadLevelData() {
     Snapshot s;
     uint32_t surfaces = SurfacesNode();
     s.kept = surfaces != 0;
-    s.water = Find(Attributes(InfoNode()), kWaterLevel);
+    s.info = Attributes(InfoNode());
+    s.water = Find(s.info, kWaterLevel);
     for (uint32_t i = 0; surfaces && i < ChildCount(surfaces); i++) {
         s.surfaces.push_back(Attributes(ChildAt(surfaces, i)));
     }
@@ -240,6 +242,11 @@ void Queue(Edit edit) {
 }
 
 // Panel, window thread
+
+void RefreshView() {
+    std::lock_guard lock(g_lock);
+    if (g_snapshot.generation != g_view.generation) g_view = g_snapshot;
+}
 
 void QueueValue(int surface, const char* key, std::string value) {
     Queue([=](PPCContext& ctx) { SetValue(ctx, surface, key, value, true); });
@@ -316,11 +323,19 @@ void fcip::editor::UpdateLevelData(PPCContext& ctx) {
     g_snapshot = std::move(s);
 }
 
+std::string fcip::editor::LevelInfoValue(const std::string& key) {
+    RefreshView();
+    return Find(g_view.info, key);
+}
+
+void fcip::editor::SetLevelInfoValue(const std::string& key, const std::string& value) {
+    Queue([=](PPCContext& ctx) { SetValue(ctx, -1, key, value, true); });
+}
+
+std::string fcip::editor::KeptLevelInfo(const std::string& key) { return Find(Attributes(InfoNode()), key); }
+
 void fcip::editor::DrawLevelPanel() {
-    {
-        std::lock_guard lock(g_lock);
-        if (g_snapshot.generation != g_view.generation) g_view = g_snapshot;
-    }
+    RefreshView();
     ImGui::TextUnformatted("LEVEL");
     ImGui::PushStyleColor(ImGuiCol_Text, fcip::kDim);
     ImGui::TextUnformatted("LevelData.xml, saved with the level");

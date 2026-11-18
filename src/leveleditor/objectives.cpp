@@ -2,7 +2,9 @@
 // TableIndex orders it in the objectives list, selStatus is where it starts (Absent, Open, Current, Closed),
 // WaypointTag and CompletionTag name its text in the objectives, Radius and bTriggeredOnEnter complete it when the
 // player gets there. Edits go to the entity as the Properties tab's do, each one step of undo. The text the tags name
-// is the mission's string table's (mission_text.cpp).
+// is the mission's string table's (mission_text.cpp). The extraction point is the objective the level ends at once
+// every other one is done; the save gives each objective its marker and the extraction its end trigger and watch
+// (custom_save.cpp).
 #include "leveleditor/objectives.h"
 
 #include <algorithm>
@@ -14,6 +16,7 @@
 
 #include "common/panel_colors.h"
 #include "leveleditor/fields.h"
+#include "leveleditor/level_data.h"
 #include "leveleditor/markers.h"
 #include "leveleditor/mission_text.h"
 #include "leveleditor/object_panel.h"
@@ -44,7 +47,24 @@ constexpr TagText kTexts[] = {
     {"CompletionTag", "Completions", "Completion text"},
 };
 
+constexpr const char* kExtraction = "Extraction";  // LevelInfo: the extraction waypoint's name
+constexpr const char* kNoExtraction = "None";
+
 int IndexOf(const ViewEntity& e) { return std::atoi(PropertyOf(e, "TableIndex").c_str()); }
+
+void ExtractionCombo(const std::vector<const ViewEntity*>& waypoints) {
+    std::string chosen = LevelInfoValue(kExtraction);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Extraction point");
+    ImGui::SameLine(ImGui::GetFontSize() * 12);
+    ImGui::SetNextItemWidth(-1);
+    if (!ImGui::BeginCombo("##extraction", chosen.empty() ? kNoExtraction : chosen.c_str())) return;
+    if (ImGui::Selectable(kNoExtraction, chosen.empty())) SetLevelInfoValue(kExtraction, "");
+    for (const ViewEntity* e : waypoints) {
+        if (ImGui::Selectable(e->name.c_str(), chosen == e->name)) SetLevelInfoValue(kExtraction, e->name);
+    }
+    ImGui::EndCombo();
+}
 
 // the script reads selStatus; its enumStatus is the choice list itself
 void StatusCombo(const ViewEntity& e) {
@@ -106,7 +126,12 @@ void fcip::editor::DrawObjectivesPanel() {
         if (e.cls == "Waypoint" && !e.properties.empty()) waypoints.push_back(&e);
     }
     std::sort(waypoints.begin(), waypoints.end(), [](auto a, auto b) { return IndexOf(*a) < IndexOf(*b); });
-    if (waypoints.empty()) ImGui::TextUnformatted("This level has no objectives.");
+    if (waypoints.empty()) {
+        ImGui::TextUnformatted("This level has no objectives.");
+    } else {
+        ExtractionCombo(waypoints);
+        ImGui::Separator();
+    }
     ImGui::BeginChild("##objectives");
     for (const ViewEntity* e : waypoints) DrawObjective(*e);
     ImGui::EndChild();
