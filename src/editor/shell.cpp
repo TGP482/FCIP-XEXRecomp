@@ -119,7 +119,7 @@ void DrawOpenLevel() {
     std::vector<fcip::CustomLevel> custom = fcip::FindCustomLevels();
     if (!ImGui::BeginMenu("Open Custom Level", !custom.empty())) return;
     for (const fcip::CustomLevel& level : custom) {
-        if (ImGui::MenuItem(level.name.c_str(), level.campaign.c_str())) OpenCustomLevel(level);
+        if (ImGui::MenuItem(level.name.c_str(), level.base.c_str())) OpenCustomLevel(level);
     }
     ImGui::EndMenu();
 }

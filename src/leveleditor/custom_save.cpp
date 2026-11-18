@@ -1,14 +1,14 @@
-// ige.xex, the solo level editor: a campaign level saves as a custom level, its own folder levels\<name>\ beside the
-// executable, which is laid over game:\Levels. The editor's own save (82109BF8) puts a map into a user map, a 4 MB blob with room
-// for 255 files, which a campaign level's 550 files and 40 MB do not fit. Its writers make real files when no pack
+// ige.xex, the solo level editor: a campaign level, or a level made from an editor template, saves as a custom level,
+// its own folder levels\<name>\ beside the executable, which is laid over game:\Levels. The editor's own save
+// (82109BF8) puts a map into a user map, a 4 MB blob with room for 255 files, which a campaign level's 550 files and
+// 40 MB do not fit. Its writers make real files when no pack
 // takes them (File_Open 8234EF80), so the save runs them with the engine's level path on the custom level: terrain,
 // sectors, tools, ziplines and mounted weapons. The rest are written here: the campaign's level files the editor does
 // not write, its dependency lists with the editor templates' added, its sequences as edited, its LevelData.xml naming
 // the campaign level, its mission's string table when its text was edited, the mission with the editor's
-// entities and AI objects, the AI navigation cut for its areas, the paint layers, and a first Mission.lua that runs
-// after the campaign's mission script.
+// entities and AI objects, the AI navigation cut for its areas (and its brushes while it has no graphs), the paint
+// layers, and a first Mission.lua that runs after the campaign's mission script.
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -28,6 +28,7 @@
 #include "leveleditor/mode.h"
 #include "leveleditor/nav_graph.h"
 #include "leveleditor/sequences.h"
+#include "leveleditor/static_geometry.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -107,14 +108,6 @@ bool EnsureScratch() {
 bool Saving() { return g_solo && !BaseLevel().empty(); }
 
 uint32_t Text(uint32_t at, const std::string& text) { return WriteText(g_scratch + at, text, kScratchPathBytes); }
-
-bool IsCampaignLevel(const std::string& name) {
-    auto same = [](char a, char b) { return std::toupper(uint8_t(a)) == std::toupper(uint8_t(b)); };
-    for (std::string level : kCampaignLevels) {
-        if (std::equal(name.begin(), name.end(), level.begin(), level.end(), same)) return true;
-    }
-    return false;
-}
 
 // the map's name as the save page took it, the custom level's folder name
 std::string MapName() {
@@ -342,7 +335,10 @@ void WriteEditorFiles(PPCContext& ctx, uint32_t manager) {
     CallGuest(ctx, SYM_MountedWeapon_Save, {mounted});
 }
 
-void SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
+}  // namespace
+
+void fcip::editor::SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
+    if (!EnsureScratch()) return;
     std::error_code ec;
     fs::create_directories(LevelFolder() / "sdat", ec);
     uint32_t engine = R32(SYM_C3DEngine_pointer);
@@ -367,8 +363,6 @@ void SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     LOGR("level editor: %s saved as %s", BaseLevel().c_str(), LevelFolder().string().c_str());
 }
 
-}  // namespace
-
 std::filesystem::path fcip::editor::OwnScriptPath() { return LevelFolder() / kScriptName; }
 
 // the AI navigation cut again for the level's areas as they are now
@@ -380,6 +374,13 @@ std::vector<NavFile> fcip::editor::RebuildNavGraphs(PPCContext& ctx) {
     AddAreas(*ReadLoadedAiObjects(), &loaded_areas, &in.loaded_forbidden);
     for (const NavArea& a : loaded_areas) in.loaded_areas.push_back(a.name);
     AddAreas(*ReadAiObjects(), &in.areas, &in.forbidden);
+    // a level with no graphs yet, a new one, has no static geometry cut: its brushes are cut as obstacles
+    if (in.loaded_graphs.empty()) {
+        for (const BrushFootprint& b : BrushFootprints()) {
+            in.forbidden.push_back({{b.min_x, b.min_y, 0}, {b.max_x, b.min_y, 0}, {b.max_x, b.max_y, 0},
+                                    {b.min_x, b.max_y, 0}});
+        }
+    }
     return BuildNavGraphs(in, [&](float x, float y) { return TerrainHeightAt(ctx, x, y); });
 }
 
@@ -393,7 +394,7 @@ PPC_EXTERN_FUNC(__imp__sub_82109BF8);
 // put back first, so entities save where they stand
 PPC_FUNC(sub_82109BF8) {
     if (g_solo) StopPreview(ctx);
-    if (!Saving() || !EnsureScratch()) return __imp__sub_82109BF8(ctx, base);
+    if (!Saving()) return __imp__sub_82109BF8(ctx, base);
     SaveCustomLevel(ctx, uint32_t(ctx.r[3]));
     ctx.r[3] = 1;
 }

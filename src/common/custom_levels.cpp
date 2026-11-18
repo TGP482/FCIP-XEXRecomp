@@ -1,9 +1,10 @@
-// custom levels: a folder in levels\ beside the exe is one when its LevelData.xml names the campaign level it was made
-// from (LevelInfo CampaignLevel), as the level editor saves them; a copy of its mission's string table there replaces
-// the campaign's
+// custom levels: a folder in levels\ beside the exe is one when its LevelData.xml names the level it was made from
+// (LevelInfo CampaignLevel), a campaign level or an editor template, as the level editor saves them; a copy of its
+// mission's string table there replaces the campaign's
 #include "common/custom_levels.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -36,11 +37,21 @@ std::vector<CustomLevel> FindCustomLevels() {
     std::error_code ec;
     for (const fs::directory_entry& e : fs::directory_iterator(app::ExeDir() / "levels", ec)) {
         if (!e.is_directory(ec)) continue;
-        std::string campaign = CampaignOf(e.path() / "LevelData.xml");
-        if (!campaign.empty()) levels.push_back({e.path().filename().string(), campaign});
+        std::string base = CampaignOf(e.path() / "LevelData.xml");
+        if (!base.empty()) levels.push_back({e.path().filename().string(), base});
     }
     std::sort(levels.begin(), levels.end(), [](const CustomLevel& a, const CustomLevel& b) { return a.name < b.name; });
     return levels;
+}
+
+bool EvolutionLevel(const std::string& level) { return !level.empty() && (level[0] == '2' || level[0] == '3'); }
+
+bool IsOwnScript(const std::string& level, const std::string& path) {
+    auto lower = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+        return s;
+    };
+    return !level.empty() && lower(path).ends_with(lower("levels\\" + level + "\\Mission.lua"));
 }
 
 fs::path OwnStringTable(const std::string& level, const std::string& file) {

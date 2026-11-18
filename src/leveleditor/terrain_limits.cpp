@@ -5,7 +5,8 @@
 // undo stack, whose records were sized for that level. A campaign level's sectors keep their own colour maps and
 // surface types: a terrain edit rebuilds a sector from the editor's three map textures by height (820D5A08, 820D5EF8),
 // which a campaign level has none of, so only its painted texels change their surface type. Paint lays any of the
-// level's own surface types (LevelData SurfaceTypes) in place of the map editor's sand, grass and cliff.
+// level's own surface types (LevelData SurfaceTypes) in place of the map editor's sand, grass and cliff. A level made
+// from an editor template paints and rebuilds its sectors as the map editor's do.
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -65,7 +66,7 @@ uint32_t PaintLayers() {
 
 uint32_t LayersEnd(uint64_t table) { return uint32_t(table) + SectorCount() * 4; }
 
-bool CampaignTerrain() { return fcip::editor::g_solo && !fcip::editor::BaseLevel().empty(); }
+bool CampaignTerrain() { return fcip::editor::g_solo && fcip::editor::CampaignBase(); }
 
 // 820D5EF8 for a campaign level: each painted texel's number becomes its surface type, the rest keep theirs
 void PaintSurfaceTypes(PPCContext& ctx, uint32_t sector) {

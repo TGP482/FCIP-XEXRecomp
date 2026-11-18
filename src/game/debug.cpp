@@ -27,7 +27,7 @@ constexpr uint32_t kStorySlot = 0x30;   // save manager: the running story, null
 constexpr uint32_t kProfile = 8;        // user manager: the player's profile
 constexpr uint32_t kProfileActive = 0x254;  // set once START picks a pad
 constexpr uint32_t kCommandBytes = 96;
-// NewStory's campaign, Instincts for levels 0x and 1x, Evolution for 2x and 3x, and its no saving flag
+// NewStory's campaign, Evolution for 2x and 3x levels, else Instincts, and its no saving flag
 constexpr uint32_t kInstincts = 0;
 constexpr uint32_t kEvolution = 1;
 constexpr uint32_t kNoSaving = 1;
@@ -58,7 +58,7 @@ bool g_instant = false;  // the level change skips the loading screen's two seco
 // a custom level's campaign level, empty for a campaign level
 std::string CampaignOf(const std::string& level) {
     for (const fcip::CustomLevel& c : fcip::FindCustomLevels()) {
-        if (c.name == level) return c.campaign;
+        if (c.name == level) return c.base;
     }
     return {};
 }
@@ -100,7 +100,7 @@ void NoteLevelStart(PPCContext& ctx, const std::string& command) {
     std::string level = command.substr(kStartLevel.size(), command.find(' ', kStartLevel.size()) - kStartLevel.size());
     std::string campaign_level = CampaignOf(level);
     if (campaign_level.empty()) campaign_level = level;
-    uint32_t campaign = campaign_level[0] >= '2' ? kEvolution : kInstincts;
+    uint32_t campaign = fcip::EvolutionLevel(campaign_level) ? kEvolution : kInstincts;
     CallGuest(ctx, SYM_SaveManager_NewStory, {manager, campaign, kNoSaving});
 }
 

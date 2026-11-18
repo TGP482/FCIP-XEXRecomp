@@ -121,6 +121,16 @@ std::shared_ptr<const StaticBrushes> ReadBrushes(uint32_t terrain) {
     return out;
 }
 
+}  // namespace
+
+std::vector<BrushFootprint> fcip::editor::BrushFootprints() {
+    std::vector<BrushFootprint> out;
+    for (const StaticBrush& b : *ReadBrushes(Terrain())) out.push_back({b.min[0], b.min[1], b.max[0], b.max[1]});
+    return out;
+}
+
+namespace {
+
 // the brush takes the matrix as the sector load sets it; one step of undo
 void SetMatrix(PPCContext& ctx, uint32_t node, const std::array<float, kMatrixFloats>& matrix, bool undoable) {
     if (!g_scratch) g_scratch = mem::AllocSystem(kMatrixFloats * 4);

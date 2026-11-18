@@ -12,6 +12,7 @@
 #include <string>
 
 #include "app/app.h"
+#include "common/custom_levels.h"
 #include "common/widgets.h"
 #include "core/log.h"
 #include "game/custom_campaign.h"
@@ -75,8 +76,7 @@ uint32_t CustomCampaignButton(uint32_t self) {
     std::string campaign = fcip::BeginCustomCampaign();
     if (campaign.empty()) return 0;
     uint32_t page = Read32(Read32(self + kPages) + 4);
-    // Evolution's levels are 2x and 3x
-    return FindWidget(page, campaign[0] >= '2' ? kCrcExpansion : kCrcStoryMode);
+    return FindWidget(page, fcip::EvolutionLevel(campaign) ? kCrcExpansion : kCrcStoryMode);
 }
 
 }  // namespace

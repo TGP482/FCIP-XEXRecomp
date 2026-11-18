@@ -1,8 +1,9 @@
 // default.xex: custom levels start as campaign levels do. A custom level is a folder in levels\ beside the exe laid
-// over game:\Levels, with loose files and no pack of its own: its campaign level's pack opens in its place for the
-// assets, and its Mission.lua runs after MissionTools.lua as it does in the level editor, its own copy of the mission's
-// string table, when it has one, read in place of the campaign's. CUSTOM CAMPAIGN plays them
-// in folder name order: the story mode start goes to the first, and a level's end goes to the next.
+// over game:\Levels, with loose files and no pack of its own: its base level's pack (a campaign level's or an editor
+// template's) opens in its place for the assets, and its Mission.lua runs after MissionTools.lua as it does in the
+// level editor, unless it is the mission's own script, as a level made from an editor template's is; its own copy of
+// the mission's string table, when it has one, is read in place of the campaign's. CUSTOM CAMPAIGN plays them in
+// folder name order: the story mode start goes to the first, and a level's end goes to the next.
 #include <algorithm>
 #include <mutex>
 #include <string>
@@ -29,6 +30,7 @@ constexpr uint32_t kMissionTable = 0x10;
 
 // guest main thread
 std::string g_running;  // the custom level loading or running, empty for a campaign level
+bool g_own_ran = false;  // its Mission.lua ran as its mission's script, as a level made from an editor template's does
 uint32_t g_text = 0;
 // CUSTOM CAMPAIGN's first level, until the story mode start takes it; set on the menu thread
 std::mutex g_start_lock;
@@ -59,7 +61,7 @@ std::string GuestString(uint32_t str) {
 
 std::string CampaignOf(const std::string& level) {
     for (const fcip::CustomLevel& c : fcip::FindCustomLevels()) {
-        if (c.name == level) return c.campaign;
+        if (c.name == level) return c.base;
     }
     return {};
 }
@@ -95,7 +97,7 @@ std::string BeginCustomCampaign() {
     std::lock_guard lock(g_start_lock);
     g_start = levels.front().name;
     LOGR("custom campaign: starting at %s", g_start.c_str());
-    return levels.front().campaign;
+    return levels.front().base;
 }
 
 void CancelCustomCampaign() { TakeStart(); }
@@ -145,16 +147,20 @@ PPC_FUNC(GUEST(Streaming_OpenLevelPack)) {
     std::string level = ReadCString(uint32_t(ctx.r[4]));
     std::string campaign = uint32_t(ctx.r[5]) ? std::string() : CampaignOf(level);
     g_running = campaign.empty() ? std::string() : level;
+    g_own_ran = false;
     if (!campaign.empty()) ctx.r[4] = GuestText(campaign);
     GUEST_ORIG(Streaming_OpenLevelPack)(ctx, base);
 }
 
-// a script file runs (r3 the script system, r4 its path); a custom level's own script runs after MissionTools.lua
+// a script file runs (r3 the script system, r4 its path); a custom level's own script runs after MissionTools.lua,
+// unless it ran as the mission's script
 PPC_FUNC(GUEST(Script_ExecuteFile)) {
-    bool tools = !g_running.empty() && ReadCString(uint32_t(ctx.r[4])) == kMissionTools;
+    std::string path = ReadCString(uint32_t(ctx.r[4]));
+    bool tools = !g_running.empty() && path == kMissionTools;
+    if (fcip::IsOwnScript(g_running, path)) g_own_ran = true;
     uint32_t scripts = uint32_t(ctx.r[3]);
     GUEST_ORIG(Script_ExecuteFile)(ctx, base);
-    if (!tools) return;
+    if (!tools || g_own_ran) return;
     uint64_t result = ctx.r[3];
     ctx.r[3] = scripts;
     ctx.r[4] = GuestText("\\Levels\\" + g_running + "\\Mission.lua");

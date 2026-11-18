@@ -1,8 +1,8 @@
 // ige.xex: the Add Object tool's budgets follow the level's sectors. Each category caps its objects at a constant sized
 // for the map editor's 4x4 sector templates (vehicles 12, weapons and items 50, brushes 300, trees 800 ...), both when
 // an object is placed and when a level's entities become editor objects (820F70F0). A campaign level has 16x16
-// sectors, so every cap grows by the level's sectors over a template's ([[hook]]s in config/leveleditor.toml). A new
-// level from a template keeps its 4x4 sectors but gets a campaign level's caps.
+// sectors, so every cap grows by the level's sectors over a template's ([[hook]]s in config/leveleditor.toml), as does
+// a new level, made at a campaign level's 16x16 (new_level.cpp).
 #include <algorithm>
 #include <cstdint>
 

@@ -672,7 +672,7 @@ const char* BrushName(int brush) { return kBrushes[std::clamp(brush, 0, kBrushCo
 
 // the map editor's three, or a campaign level's own
 std::vector<std::string> PaintTextures() {
-    if (!g_solo || BaseLevel().empty()) return {std::begin(kTextureNames), std::end(kTextureNames)};
+    if (!g_solo || !CampaignBase()) return {std::begin(kTextureNames), std::end(kTextureNames)};
     uint32_t engine = R32(SYM_C3DEngine_pointer);
     uint32_t terrain = engine ? R32(engine + kEngineTerrain) : 0;
     std::vector<std::string> names;
