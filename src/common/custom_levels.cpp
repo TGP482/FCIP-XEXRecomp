@@ -7,6 +7,7 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -34,6 +35,9 @@ constexpr size_t kFatEntryBytes = 16;
 constexpr const char* kEditorTemplatesPack = "MET_Dependency";  // the editor templates' shared assets
 constexpr const char* kEditorTemplatePrefix = "met_";
 constexpr uint32_t kPolynomial = 0xEDB88320;  // zlib's CRC32, which the packs key their files by (823CB118)
+// a dependency list's files: <File CRC="n", n the CRC of the file's path, the key its pack holds it by
+constexpr const char* kDependencyLists[] = {"_DepLoad.xml", "_DepLoadParticles.xml"};
+constexpr const char* kFileCrcKey = "<File CRC=\"";
 
 std::string CampaignOf(const fs::path& level_data) {
     std::ifstream in(level_data, std::ios::binary);
@@ -48,21 +52,6 @@ std::string CampaignOf(const fs::path& level_data) {
 std::string Lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
     return s;
-}
-
-uint32_t Crc32(const std::string& text) {
-    static const std::array<uint32_t, 256> table = [] {
-        std::array<uint32_t, 256> t{};
-        for (uint32_t i = 0; i < 256; i++) {
-            uint32_t c = i;
-            for (int k = 0; k < 8; k++) c = c & 1 ? kPolynomial ^ (c >> 1) : c >> 1;
-            t[i] = c;
-        }
-        return t;
-    }();
-    uint32_t crc = 0xFFFFFFFF;
-    for (unsigned char c : text) crc = table[(crc ^ c) & 0xFF] ^ (crc >> 8);
-    return ~crc;
 }
 
 void PutLe32(std::vector<uint8_t>& out, uint32_t v) {
@@ -122,34 +111,59 @@ std::vector<PackedFile> PackedFiles(const std::string& level, const fs::path& fa
         if (!e.is_regular_file(ec) || e.path() == fat || e.path() == dat) continue;
         std::string name = fs::relative(e.path(), folder, ec).string();
         std::replace(name.begin(), name.end(), '/', '\\');
-        files.push_back({Crc32(Lower("\\levels\\" + level + "\\" + name)), e.path()});
+        files.push_back({fcip::Crc32(Lower("\\levels\\" + level + "\\" + name)), e.path()});
         if (!stale && e.last_write_time(ec) > packed) stale = true;
     }
     return files;
 }
 
+// the files the custom level's dependency lists name, by CRC
+std::unordered_set<uint32_t> DependencyFiles(const fs::path& folder, const std::string& level) {
+    std::unordered_set<uint32_t> crcs;
+    size_t key = std::char_traits<char>::length(kFileCrcKey);
+    for (const char* suffix : kDependencyLists) {
+        std::ifstream in(folder / (level + suffix), std::ios::binary);
+        std::string text(std::istreambuf_iterator<char>(in), {});
+        for (size_t at = text.find(kFileCrcKey); at != std::string::npos; at = text.find(kFileCrcKey, at + key)) {
+            crcs.insert(uint32_t(std::strtoul(text.c_str() + at + key, nullptr, 10)));
+        }
+    }
+    return crcs;
+}
+
+// a level's pack entries the custom level does not have yet, every one or only those wanted
+bool TakeFrom(const std::string& level, const std::unordered_set<uint32_t>* wanted, std::unordered_set<uint32_t>& taken,
+              std::vector<BasePack>& packs) {
+    std::string path = "game:\\Levels\\" + level + "\\" + level;
+    std::vector<uint8_t> fat;
+    if (!kernel::ReadGameFile(path + ".fat", fat)) return false;
+    BasePack pack{path + ".dat", {}};
+    for (const PackEntry& e : FatEntries(fat)) {
+        if (wanted && !wanted->count(e.crc)) continue;
+        if (taken.insert(e.crc).second) pack.entries.push_back(e);
+    }
+    if (!pack.entries.empty()) packs.push_back(std::move(pack));
+    return true;
+}
+
 // FCIP.exe streams a level's files only from the level's own pack (823EDCC8 finds no read handle for another pack),
 // so a custom level's pack also holds what its base level's pack has, and for a level made from an editor template
-// the templates' shared pack, each file it does not have itself
-std::vector<BasePack> BasePacks(const std::string& base, const std::vector<PackedFile>& files) {
+// the templates' shared pack, each file it does not have itself; then the files its dependency lists name from the
+// campaign level holding them, for objects the editor placed from other levels
+std::vector<BasePack> BasePacks(const std::string& level, const std::string& base,
+                                const std::vector<PackedFile>& files) {
     if (kEditor || base.empty()) return {};
     std::vector<std::string> levels = {base};
     if (Lower(base).starts_with(kEditorTemplatePrefix)) levels.push_back(kEditorTemplatesPack);
     std::unordered_set<uint32_t> taken;
     for (const PackedFile& f : files) taken.insert(f.crc);
     std::vector<BasePack> packs;
-    for (const std::string& level : levels) {
-        std::string path = "game:\\Levels\\" + level + "\\" + level;
-        std::vector<uint8_t> fat;
-        if (!kernel::ReadGameFile(path + ".fat", fat)) {
-            LOGE("custom levels: %s.fat could not be read", path.c_str());
-            continue;
-        }
-        BasePack pack{path + ".dat", {}};
-        for (const PackEntry& e : FatEntries(fat)) {
-            if (taken.insert(e.crc).second) pack.entries.push_back(e);
-        }
-        packs.push_back(std::move(pack));
+    for (const std::string& from : levels) {
+        if (!TakeFrom(from, nullptr, taken, packs)) LOGE("custom levels: %s.fat could not be read", from.c_str());
+    }
+    std::unordered_set<uint32_t> wanted = DependencyFiles(fcip::CustomLevelFolder(level), level);
+    for (const char* campaign : fcip::kCampaignLevels) {
+        if (Lower(campaign) != Lower(base)) TakeFrom(campaign, &wanted, taken, packs);
     }
     return packs;
 }
@@ -158,13 +172,28 @@ std::vector<BasePack> BasePacks(const std::string& base, const std::vector<Packe
 
 namespace fcip {
 
+uint32_t Crc32(const std::string& text) {
+    static const std::array<uint32_t, 256> table = [] {
+        std::array<uint32_t, 256> t{};
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++) c = c & 1 ? kPolynomial ^ (c >> 1) : c >> 1;
+            t[i] = c;
+        }
+        return t;
+    }();
+    uint32_t crc = 0xFFFFFFFF;
+    for (unsigned char c : text) crc = table[(crc ^ c) & 0xFF] ^ (crc >> 8);
+    return ~crc;
+}
+
 void EnsureLevelPack(const std::string& level) {
     fs::path folder = CustomLevelFolder(level);
     fs::path fat = folder / (level + ".fat");
     fs::path dat = folder / (level + ".dat");
     bool stale = false;
     std::vector<PackedFile> files = PackedFiles(level, fat, dat, stale);
-    std::vector<BasePack> bases = BasePacks(CampaignOf(folder / "LevelData.xml"), files);
+    std::vector<BasePack> bases = BasePacks(level, CampaignOf(folder / "LevelData.xml"), files);
     size_t count = files.size();
     for (const BasePack& b : bases) count += b.entries.size();
     if (!stale) stale = FatCount(fat) != count;

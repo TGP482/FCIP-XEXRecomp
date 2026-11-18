@@ -10,11 +10,13 @@
 // layers, and a first Mission.lua that runs after the campaign's mission script. Save As copies the folder the level
 // saved to under the name typed first; a new level saves only through it.
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -40,7 +42,7 @@ namespace {
 namespace fs = std::filesystem;
 
 // the campaign level's files the editor's save does not write, copied from its pack
-constexpr const char* kCopiedFiles[] = {"Brush.lst", "vegbank.dat", "moviedata.xml"};
+constexpr const char* kCopiedFiles[] = {"Brush.lst", "vegbank.dat", "moviedata.xml", "DPVS.dat"};
 // the dependency lists, named after the level, each entry keyed by an attribute: a dependency by CRC (8239D908), a
 // particle effect by Name
 struct DependencyList {
@@ -267,6 +269,166 @@ void CopyCampaignFiles(PPCContext& ctx) {
         for (const std::string& file : SpriteFiles(vegbank)) CopyFile(ctx, level, file, file);
     }
     WriteDependencyLists(ctx, level, LevelFolder(), MapName());
+}
+
+// an entity's type as the campaign's missions place it: its archetype, else its class and model
+std::string EntityType(const std::string& entity) {
+    std::string archetype = KeyOf(entity, " tplCreatureType=\"");
+    if (!archetype.empty()) return archetype;
+    return KeyOf(entity, " EntityClass=\"") + "|" + KeyOf(entity, " object_Model=\"");
+}
+
+struct PlacedEntity {
+    std::string name;
+    std::string type;
+};
+
+// a mission's entities, each from its "<Entity" to its "/>" or "</Entity>"
+std::vector<PlacedEntity> MissionEntities(const std::string& mission) {
+    constexpr const char* kOpen = "<Entity ";
+    constexpr const char* kClose = "</Entity>";
+    std::vector<PlacedEntity> out;
+    for (size_t at = mission.find(kOpen); at != std::string::npos; at = mission.find(kOpen, at + 1)) {
+        size_t tag = mission.find('>', at);
+        if (tag == std::string::npos) break;
+        size_t end = mission[tag - 1] == '/' ? tag : mission.find(kClose, tag);
+        if (end == std::string::npos) break;
+        std::string entity = mission.substr(at, end - at);
+        out.push_back({KeyOf(entity, " Name=\""), EntityType(entity)});
+    }
+    return out;
+}
+
+// a dependency list's entries by their key's value, each its lines up to the next entry or the root's end
+std::map<std::string, std::string> ListEntries(const std::vector<uint8_t>& list, const std::string& key) {
+    std::map<std::string, std::string> entries;
+    std::string* entry = nullptr;
+    for (const std::string& line : Lines(list)) {
+        if (OpensEntry(line)) entry = &entries[KeyOf(line, key)];
+        else if (line.compare(0, 1, "<") == 0) entry = nullptr;
+        if (entry) *entry += line;
+    }
+    return entries;
+}
+
+// an entry's first line with one attribute's value replaced
+void SetEntryKey(std::string& entry, const std::string& key, const std::string& value) {
+    size_t at = entry.find(key);
+    if (at == std::string::npos || at > entry.find('\n')) return;
+    at += key.size();
+    entry.replace(at, entry.find('"', at) - at, value);
+}
+
+std::string Lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return s;
+}
+
+std::vector<uint8_t> HostFile(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), {}};
+}
+
+void AppendEntries(std::vector<uint8_t>& list, const std::string& added) {
+    std::string text(list.begin(), list.end());
+    size_t close = text.rfind("</");
+    if (close == std::string::npos || added.empty()) return;
+    text.insert(close, added);
+    list.assign(text.begin(), text.end());
+}
+
+// a campaign level's mission, its entities by type, and its dependency lists, read once per save
+struct CampaignSource {
+    std::string level;
+    std::map<std::string, std::string> names;  // type, the first entity of it
+    std::map<std::string, std::string> entries;
+    std::map<std::string, std::string> particles;
+};
+
+CampaignSource ReadSource(PPCContext& ctx, const std::string& level) {
+    CampaignSource source{level, {}, {}, {}};
+    std::vector<uint8_t> mission;
+    if (!ReadGameFile(ctx, "levels\\" + level + "\\" + kMissionFile, mission)) return source;
+    for (const PlacedEntity& e : MissionEntities({mission.begin(), mission.end()})) {
+        source.names.emplace(e.type, e.name);
+    }
+    std::vector<uint8_t> list;
+    std::string lists = "levels\\" + level + "\\" + level;
+    if (ReadGameFile(ctx, lists + kDependencyLists[0].suffix, list)) {
+        source.entries = ListEntries(list, " Name=\"");
+    }
+    if (ReadGameFile(ctx, lists + kDependencyLists[1].suffix, list)) source.particles = ListEntries(list, " Name=\"");
+    return source;
+}
+
+// the particle effects an entry loads, by name
+std::vector<std::string> EntryEffects(const std::string& entry) {
+    constexpr const char* kEffect = " Type=\"10\" Name=\"";
+    std::vector<std::string> out;
+    for (size_t at = entry.find(kEffect); at != std::string::npos; at = entry.find(kEffect, at + 1)) {
+        out.push_back(KeyOf(entry.substr(at), " Name=\""));
+    }
+    return out;
+}
+
+// the game loads an entity's models from the dependency list entry keyed by crc32("\\" + its lowercase name)
+// (8239D908), so every entity placed in the editor gets the entry of a campaign entity of its type, renamed, and the
+// particle entries it names; FCIP.exe packs the files they list from whichever campaign level holds them
+void AddPlacedDependencies(PPCContext& ctx) {
+    fs::path folder = LevelFolder();
+    fs::path own_path = folder / (MapName() + kDependencyLists[0].suffix);
+    fs::path particles_path = folder / (MapName() + kDependencyLists[1].suffix);
+    std::vector<uint8_t> own = HostFile(own_path);
+    std::vector<uint8_t> particles = HostFile(particles_path);
+    std::set<std::string> listed;
+    for (const std::string& line : Lines(own)) {
+        if (OpensEntry(line)) listed.insert(KeyOf(line, kDependencyLists[0].key));
+    }
+    std::set<std::string> effects;
+    for (const std::string& line : Lines(particles)) {
+        if (OpensEntry(line)) effects.insert(KeyOf(line, kDependencyLists[1].key));
+    }
+    std::vector<std::string> levels = {BaseLevel()};
+    for (const char* level : kCampaignLevels) {
+        if (level != BaseLevel()) levels.push_back(level);
+    }
+    std::vector<CampaignSource> sources;
+    std::string added;
+    std::string added_effects;
+    uint32_t placed = 0;
+    uint32_t unknown = 0;
+    std::vector<uint8_t> mission = HostFile(folder / kMissionFile);
+    for (const PlacedEntity& e : MissionEntities({mission.begin(), mission.end()})) {
+        std::string crc = std::to_string(fcip::Crc32("\\" + Lower(e.name)));
+        if (e.name.empty() || listed.count(crc)) continue;
+        const CampaignSource* from = nullptr;
+        for (size_t i = 0; !from && i < levels.size(); i++) {
+            if (i == sources.size()) sources.push_back(ReadSource(ctx, levels[i]));
+            auto named = sources[i].names.find(e.type);
+            if (named != sources[i].names.end() && sources[i].entries.count(named->second)) from = &sources[i];
+        }
+        if (!from) {
+            unknown++;
+            continue;
+        }
+        std::string entry = from->entries.at(from->names.at(e.type));
+        SetEntryKey(entry, " Name=\"", e.name);
+        SetEntryKey(entry, kDependencyLists[0].key, crc);
+        added += entry;
+        listed.insert(crc);
+        placed++;
+        for (const std::string& effect : EntryEffects(entry)) {
+            auto particle = from->particles.find(effect);
+            if (particle != from->particles.end() && effects.insert(effect).second) added_effects += particle->second;
+        }
+    }
+    AppendEntries(own, added);
+    AppendEntries(particles, added_effects);
+    for (const auto& [path, list] : {std::pair(own_path, &own), std::pair(particles_path, &particles)}) {
+        std::ofstream(path, std::ios::binary)
+            .write(reinterpret_cast<const char*>(list->data()), std::streamsize(list->size()));
+    }
+    LOGR("level editor: %u placed entities given dependencies, %u of a type no campaign level places", placed, unknown);
 }
 
 // the sequences as edited, over the campaign's copy
@@ -532,6 +694,7 @@ void fcip::editor::SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     WriteMovie(ctx);
     WriteLevelData(ctx);
     WriteMission(ctx);
+    AddPlacedDependencies(ctx);
     StringTableFile table = SavedStringTable();
     if (Renamed()) {
         RenameOwnReferences();

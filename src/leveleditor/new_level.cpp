@@ -27,7 +27,7 @@ using Bytes = std::vector<uint8_t>;
 constexpr const char* kTemplateMission = "Mission_Daytime.xml";  // the mission 821124B0 starts a template with
 constexpr const char* kCampaignMission = "Mission_Mission0.xml";
 constexpr const char* kSoloSource = "01_BEACH";  // the campaign level whose player pack and weapons a new level takes
-constexpr const char* kCopiedFiles[] = {"Brush.lst", "vegbank.dat", "moviedata.xml", "GraphManager.bai"};
+constexpr const char* kCopiedFiles[] = {"Brush.lst", "vegbank.dat", "moviedata.xml", "GraphManager.bai", "DPVS.dat"};
 
 constexpr uint32_t kSectorMetres = 64;
 constexpr uint32_t kHeightmapSize = 512;

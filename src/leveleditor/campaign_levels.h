@@ -11,12 +11,7 @@ struct PPCContext;
 
 namespace fcip::editor {
 
-// both campaigns, by their folder under assets\levels
-inline constexpr const char* kCampaignLevels[] = {
-    "00_TRAINING", "01_BEACH", "02_NATIVE", "03_RIVER", "04_RAIN_FOREST", "05_MINES", "06_CLIFFS",
-    "07_SUB-AQUATIC_FACILITY", "10_DEAD_MARSHES", "11_WASTELAND", "13_BLACK_FOREST", "21_DUNEA", "22_DUNEB",
-    "23_DUNEC", "24_SHANTYDAY", "26_SHANTYNIGHT", "28_JUNGLE", "29_FOREST", "30_MOUNTAIN",
-};
+using fcip::kCampaignLevels;
 
 // window thread; an open map is left first, through the editor's exit
 void OpenCampaignLevel(int index);

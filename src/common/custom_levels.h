@@ -2,11 +2,22 @@
 // editor template; the level editor saves them in levels\saved beside the exe and FCIP.exe plays the ones in
 // levels\play, as the texture dumper and the texture replacement keep their own folders
 #pragma once
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
 
 namespace fcip {
+
+// both campaigns, by their folder under assets\levels
+inline constexpr const char* kCampaignLevels[] = {
+    "00_TRAINING", "01_BEACH", "02_NATIVE", "03_RIVER", "04_RAIN_FOREST", "05_MINES", "06_CLIFFS",
+    "07_SUB-AQUATIC_FACILITY", "10_DEAD_MARSHES", "11_WASTELAND", "13_BLACK_FOREST", "21_DUNEA", "22_DUNEB",
+    "23_DUNEC", "24_SHANTYDAY", "26_SHANTYNIGHT", "28_JUNGLE", "29_FOREST", "30_MOUNTAIN",
+};
+
+// zlib's CRC32, which the packs key their files by (823CB118) and dependency lists their entries
+uint32_t Crc32(const std::string& text);
 
 struct CustomLevel {
     std::string name;      // its folder, the level name the game starts
