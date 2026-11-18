@@ -159,7 +159,7 @@ std::string MapName() {
     return IsCampaignLevel(name) ? name + kCustomSuffix : name;
 }
 
-fs::path LevelFolder() { return fcip::CustomLevelsFolder() / MapName(); }
+fs::path LevelFolder() { return fcip::CustomLevelFolder(MapName()); }
 
 void WriteHostFile(const std::string& name, const void* data, size_t size) {
     std::ofstream(LevelFolder() / name, std::ios::binary).write(static_cast<const char*>(data), std::streamsize(size));
@@ -396,7 +396,7 @@ bool ReadLevelFile(PPCContext& ctx, const std::string& name, std::vector<uint8_t
 // the save goes to the folder the level loaded from, which already holds what it has not changed
 bool SavingInPlace() {
     std::error_code ec;
-    return fs::equivalent(fcip::CustomLevelsFolder() / StartedLevel(), LevelFolder(), ec);
+    return fs::equivalent(fcip::CustomLevelFolder(StartedLevel()), LevelFolder(), ec);
 }
 
 uint32_t Sector(uint32_t index) {

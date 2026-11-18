@@ -5,7 +5,7 @@
 // laid over game:\Levels, opens the same way with the campaign level's pack for its assets, its own Mission.lua run
 // after the campaign's mission script and again whenever that file changes, and its own copy of the mission's string
 // table, when it has one, read in place of the campaign's. CREATE A NEW LEVEL makes a custom level from the editor
-// template picked (new_level.cpp) in a working folder no list shows and opens it the same way with the template's
+// template picked (new_level.cpp) in levels\new, which no list shows, and opens it the same way with the template's
 // pack; it saves only once Save As names it. Its Mission.lua is its mission's script. A map keeps its mission too, so
 // it gets the same mission objects.
 #include "leveleditor/campaign_levels.h"
@@ -263,19 +263,18 @@ void OpenBasePack(PPCContext& ctx, const std::string& base) {
     OpenLevelPack(ctx, kEditorTemplatesPack);
 }
 
-// a new level's working folder; the ones earlier levels left go, but for the level being left
+// a new level's folder among the new levels; the ones earlier levels left go, but for the level being left
 std::string FreeLevelName() {
     std::error_code ec;
     std::vector<fs::path> left;
-    for (const fs::directory_entry& e : fs::directory_iterator(fcip::CustomLevelsFolder(), ec)) {
-        std::string name = e.path().filename().string();
-        if (name.starts_with(fcip::kUnsavedLevelPrefix) && name != g_custom_name) left.push_back(e.path());
+    for (const fs::directory_entry& e : fs::directory_iterator(fcip::NewLevelsFolder(), ec)) {
+        if (e.path().filename().string() != g_custom_name) left.push_back(e.path());
     }
     for (const fs::path& path : left) fs::remove_all(path, ec);
     for (;; g_next_new++) {
         char name[32];
         std::snprintf(name, sizeof(name), "%s%02d", fcip::kUnsavedLevelPrefix, g_next_new);
-        if (!fs::exists(fcip::CustomLevelsFolder() / name, ec)) return name;
+        if (!fs::exists(fcip::CustomLevelFolder(name), ec)) return name;
     }
 }
 
@@ -291,7 +290,7 @@ Request CreateNewLevel(PPCContext& ctx, uint32_t manager) {
         LOGE("level editor: %s has no level files to make a new level from", base.c_str());
         return {};
     }
-    fs::path folder = fcip::CustomLevelsFolder() / name;
+    fs::path folder = fcip::CustomLevelFolder(name);
     std::error_code ec;
     fs::create_directories(folder / "sdat", ec);
     for (const LevelFile& f : files) {

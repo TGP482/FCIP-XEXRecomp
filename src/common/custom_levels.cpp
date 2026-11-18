@@ -71,7 +71,7 @@ struct PackedFile {
 // the folder's files, keyed as the game names them, \levels\<level>\<file> in lower case; stale is set when one is
 // newer than the pack
 std::vector<PackedFile> PackedFiles(const std::string& level, const fs::path& fat, const fs::path& dat, bool& stale) {
-    fs::path folder = fcip::CustomLevelsFolder() / level;
+    fs::path folder = fcip::CustomLevelFolder(level);
     std::error_code ec;
     fs::file_time_type packed = fs::last_write_time(fat, ec);
     stale = bool(ec);
@@ -92,7 +92,7 @@ std::vector<PackedFile> PackedFiles(const std::string& level, const fs::path& fa
 namespace fcip {
 
 void EnsureLevelPack(const std::string& level) {
-    fs::path folder = CustomLevelsFolder() / level;
+    fs::path folder = CustomLevelFolder(level);
     fs::path fat = folder / (level + ".fat");
     fs::path dat = folder / (level + ".dat");
     bool stale = false;
@@ -119,11 +119,18 @@ void EnsureLevelPack(const std::string& level) {
 
 fs::path CustomLevelsFolder() { return app::ExeDir() / "levels" / kCustomFolder; }
 
+fs::path NewLevelsFolder() { return app::ExeDir() / "levels" / "new"; }
+
+fs::path CustomLevelFolder(const std::string& level) {
+    bool unsaved = Lower(level).starts_with(Lower(kUnsavedLevelPrefix));
+    return (unsaved ? NewLevelsFolder() : CustomLevelsFolder()) / level;
+}
+
 std::vector<CustomLevel> FindCustomLevels() {
     std::vector<CustomLevel> levels;
     std::error_code ec;
     for (const fs::directory_entry& e : fs::directory_iterator(CustomLevelsFolder(), ec)) {
-        if (!e.is_directory(ec) || e.path().filename().string().starts_with(kUnsavedLevelPrefix)) continue;
+        if (!e.is_directory(ec)) continue;
         std::string base = CampaignOf(e.path() / "LevelData.xml");
         if (!base.empty()) levels.push_back({e.path().filename().string(), base});
     }
@@ -150,13 +157,13 @@ fs::path CustomLevelFile(std::string path) {
     size_t end = path.find('\\', kLevelsLength);
     if (!lower.starts_with("levels\\") || end == std::string::npos) return {};
     std::error_code ec;
-    fs::path folder = CustomLevelsFolder() / path.substr(kLevelsLength, end - kLevelsLength);
+    fs::path folder = CustomLevelFolder(path.substr(kLevelsLength, end - kLevelsLength));
     return fs::is_directory(folder, ec) ? folder / path.substr(end + 1) : fs::path();
 }
 
 fs::path OwnStringTable(const std::string& level, const std::string& file) {
     std::error_code ec;
-    fs::path path = CustomLevelsFolder() / level / file;
+    fs::path path = CustomLevelFolder(level) / file;
     return !level.empty() && !file.empty() && fs::is_regular_file(path, ec) ? path : fs::path();
 }
 

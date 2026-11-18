@@ -14,8 +14,10 @@ struct CustomLevel {
 };
 
 std::filesystem::path CustomLevelsFolder();  // this exe's: levels\saved or levels\play
-// a new level's working folder in levels\saved until Save As names it, never listed
-inline constexpr const char* kUnsavedLevelPrefix = "UNSAVED_";
+// the level editor's new levels until Save As names them, levels\new, emptied as the editor starts
+std::filesystem::path NewLevelsFolder();
+inline constexpr const char* kUnsavedLevelPrefix = "UNSAVED_";  // a new level's name there
+std::filesystem::path CustomLevelFolder(const std::string& level);  // in either folder
 std::vector<CustomLevel> FindCustomLevels();  // any thread, in folder name order
 // the game streams a level's sectors by the CRC of their path, which only a pack's FAT answers, so a custom level's
 // folder is packed into <level>.dat and <level>.fat, the pack the level start opens; made again when a file is newer
