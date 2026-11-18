@@ -21,8 +21,8 @@ inline constexpr const char* kCampaignLevels[] = {
 // window thread; an open map is left first, through the editor's exit
 void OpenCampaignLevel(int index);
 void OpenCustomLevel(const CustomLevel& level);
-void ForgetLevelRequest();    // the exit was cancelled
-std::string CampaignLevel();  // the campaign level open or the custom level open was made from, empty for a map
+void ForgetLevelRequest();  // the exit was cancelled
+std::string BaseLevel();    // the campaign level open or the level the custom level open was made from, empty for a map
 std::filesystem::path OwnScriptPath();  // a custom level's script, levels\<name>\Mission.lua beside the executable
 // editor thread: a game file read through the packs, false when there is none (custom_save.cpp)
 bool ReadPackFile(PPCContext& ctx, const std::string& file, std::vector<uint8_t>& out);

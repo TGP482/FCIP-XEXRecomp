@@ -65,7 +65,7 @@ uint32_t PaintLayers() {
 
 uint32_t LayersEnd(uint64_t table) { return uint32_t(table) + SectorCount() * 4; }
 
-bool CampaignTerrain() { return fcip::editor::g_solo && !fcip::editor::CampaignLevel().empty(); }
+bool CampaignTerrain() { return fcip::editor::g_solo && !fcip::editor::BaseLevel().empty(); }
 
 // 820D5EF8 for a campaign level: each painted texel's number becomes its surface type, the rest keep theirs
 void PaintSurfaceTypes(PPCContext& ctx, uint32_t sector) {

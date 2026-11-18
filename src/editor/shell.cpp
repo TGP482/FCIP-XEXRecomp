@@ -617,7 +617,7 @@ std::wstring g_title;
 std::wstring Title() {
     if (!MapOpen()) return app::kGame.title;
     std::string name = MapName();
-    if (name.empty()) name = CampaignLevel();
+    if (name.empty()) name = BaseLevel();
     std::wstring map(name.begin(), name.end());
     if (map.empty()) map = editor::g_solo ? L"Untitled Level" : L"Untitled Map";
     if (MapChanged()) map += L"*";

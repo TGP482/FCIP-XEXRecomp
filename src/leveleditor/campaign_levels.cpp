@@ -105,20 +105,19 @@ constexpr uint32_t kScratchBytes = 0x100;
 constexpr uint32_t kLivingCylinderSurface = 0x718;
 constexpr uint32_t kDefaultSurface = 0;
 
-constexpr int kNone = -1;
 constexpr uint32_t kMb = 1024 * 1024;
 
-// a level to open: a campaign level, or a custom level and the campaign level it was made from
+// a level to open: a campaign level, or a custom level and the level it was made from
 struct Request {
-    int campaign = kNone;
+    std::string base;
     std::string custom;
 };
 
 std::mutex g_lock;
-Request g_requested;               // from the menu
-std::atomic<int> g_open{kNone};    // the campaign level open, or the one the custom level open was made from
-std::string g_custom_name;         // the custom level open
-Request g_starting;                // editor thread, requested of the editor's update
+Request g_requested;        // from the menu
+std::string g_base_level;   // the level open's base level, empty for a map; under g_lock
+std::string g_custom_name;  // the custom level open
+Request g_starting;         // editor thread, requested of the editor's update
 std::atomic<bool> g_loading{false};
 bool g_custom = false;  // editor thread: a custom level is open
 uint32_t g_scratch = 0;
@@ -277,8 +276,8 @@ void UpdateRequest(PPCContext& ctx, uint32_t manager) {
         std::lock_guard lock(g_lock);
         request = std::exchange(g_requested, Request{});
     }
-    if (request.campaign == kNone || !EnsureScratch()) return;
-    std::string level = request.custom.empty() ? kCampaignLevels[request.campaign] : request.custom;
+    if (request.base.empty() || !EnsureScratch()) return;
+    std::string level = request.custom.empty() ? request.base : request.custom;
     uint32_t name = WriteText(g_scratch + kScratchLevel, level, kScratchNameBytes);
     CallGuest(ctx, SYM_String_Assign, {manager + kLevelRequest, name});
     W8(manager + kLevelRequested, 1);
@@ -286,14 +285,9 @@ void UpdateRequest(PPCContext& ctx, uint32_t manager) {
 }
 
 // the level folder the game started: the custom level's, or the campaign level's
-std::string StartedLevel() { return g_custom ? g_custom_name : kCampaignLevels[g_open]; }
+std::string StartedLevel() { return g_custom ? g_custom_name : BaseLevel(); }
 
-int CampaignIndex(const std::string& level) {
-    for (int i = 0; i < int(std::size(kCampaignLevels)); i++) {
-        if (level == kCampaignLevels[i]) return i;
-    }
-    return kNone;
-}
+bool MapStarted() { return BaseLevel().empty(); }
 
 }  // namespace
 
@@ -303,18 +297,17 @@ void OpenCampaignLevel(int index) {
     if (index < 0 || index >= int(std::size(kCampaignLevels))) return;
     {
         std::lock_guard lock(g_lock);
-        g_requested = {index, {}};
+        g_requested = {kCampaignLevels[index], {}};
     }
     CloseLevelList();
     if (MapOpen()) ExitToMapManager();
 }
 
 void OpenCustomLevel(const CustomLevel& level) {
-    int campaign = CampaignIndex(level.campaign);
-    if (campaign == kNone) return;
+    if (level.campaign.empty()) return;
     {
         std::lock_guard lock(g_lock);
-        g_requested = {campaign, level.name};
+        g_requested = {level.campaign, level.name};
     }
     CloseLevelList();
     if (MapOpen()) ExitToMapManager();
@@ -325,9 +318,9 @@ void ForgetLevelRequest() {
     g_requested = {};
 }
 
-std::string CampaignLevel() {
-    int level = g_open;
-    return level == kNone ? std::string() : kCampaignLevels[level];
+std::string BaseLevel() {
+    std::lock_guard lock(g_lock);
+    return g_base_level;
 }
 
 }  // namespace fcip::editor
@@ -374,11 +367,14 @@ PPC_FUNC(sub_821124B0) {
     ForgetPlayTest();
     ForgetMission(ctx);
     Request start = std::exchange(g_starting, Request{});
-    g_open = start.campaign;
+    {
+        std::lock_guard lock(g_lock);
+        g_base_level = start.base;
+    }
     g_custom = !start.custom.empty();
     g_custom_name = start.custom;
     g_scripts = 0;
-    if (g_open == kNone) return __imp__sub_821124B0(ctx, base);
+    if (start.base.empty()) return __imp__sub_821124B0(ctx, base);
     StartCampaignLevel(ctx, manager, StartedLevel());
 }
 
@@ -407,7 +403,7 @@ PPC_FUNC(sub_82138CD8) {
 // a level's mission objects into the AI system (r5 the mission's XmlNodeRef); the mission is kept, a campaign level's
 // as it loads, a map's (its template's, or its own once saved) the first time
 PPC_FUNC(sub_8229CC08) {
-    bool map = fcip::editor::g_solo && g_open == kNone && !KeptMission();
+    bool map = fcip::editor::g_solo && MapStarted() && !KeptMission();
     if (g_loading || map) KeepMission(ctx, R32(uint32_t(ctx.r[5])));
     __imp__sub_8229CC08(ctx, base);
 }
@@ -417,12 +413,12 @@ PPC_FUNC(sub_8229CC08) {
 PPC_FUNC(sub_82106960) {
     uint32_t mission = R32(uint32_t(ctx.r[4]));
     __imp__sub_82106960(ctx, base);
-    if (fcip::editor::g_solo && g_open == kNone) AddKeptMission(ctx, mission);
+    if (fcip::editor::g_solo && MapStarted()) AddKeptMission(ctx, mission);
 }
 
 // a map template's time of day preset; a campaign level keeps its mission's environment
 PPC_FUNC(sub_820E0240) {
-    if (fcip::editor::g_solo && g_open != kNone) return;
+    if (fcip::editor::g_solo && !MapStarted()) return;
     __imp__sub_820E0240(ctx, base);
 }
 

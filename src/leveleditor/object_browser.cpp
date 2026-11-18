@@ -122,7 +122,7 @@ void fcip::editor::DrawLevelObjects() {
     for (int c = 0; c < kFirstLaterCategory; c++) GameCategory(s, catalogue, c);
     for (int v = 0; v < kViewCategoryCount; v++) LevelCategory(s, catalogue, v, kept);
     for (int c = kFirstLaterCategory; c < kCategoryCount; c++) {
-        if (c != kRespawnCategory || CampaignLevel().empty()) GameCategory(s, catalogue, c);
+        if (c != kRespawnCategory || BaseLevel().empty()) GameCategory(s, catalogue, c);
     }
     ImGui::EndChild();
 }

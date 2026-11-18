@@ -104,7 +104,7 @@ bool EnsureScratch() {
     return g_scratch != 0;
 }
 
-bool Saving() { return g_solo && !CampaignLevel().empty(); }
+bool Saving() { return g_solo && !BaseLevel().empty(); }
 
 uint32_t Text(uint32_t at, const std::string& text) { return WriteText(g_scratch + at, text, kScratchPathBytes); }
 
@@ -126,7 +126,7 @@ std::string MapName() {
         bool keep = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
         name += keep ? char(c) : '_';
     }
-    if (name.empty()) name = CampaignLevel();
+    if (name.empty()) name = BaseLevel();
     return IsCampaignLevel(name) ? name + kCustomSuffix : name;
 }
 
@@ -239,7 +239,7 @@ void WriteDependencyLists(PPCContext& ctx, const std::string& level) {
 }
 
 void CopyCampaignFiles(PPCContext& ctx) {
-    std::string level = CampaignLevel();
+    std::string level = BaseLevel();
     for (const char* file : kCopiedFiles) CopyFile(ctx, level, file, file);
     WriteDependencyLists(ctx, level);
 }
@@ -293,7 +293,7 @@ void WriteLevelData(PPCContext& ctx) {
     }
     if (info) {
         uint32_t key = Text(kScratchKey, kCampaignLevelKey);
-        CallGuest(ctx, Method(info, kNodeSetAttr), {info, key, Text(kScratchPath, CampaignLevel())});
+        CallGuest(ctx, Method(info, kNodeSetAttr), {info, key, Text(kScratchPath, BaseLevel())});
     }
     WriteXml(ctx, kLevelData, data);
 }
@@ -364,7 +364,7 @@ void SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     EnsureScript();
     W8(packs + kPacksWriting, writing);
     WriteText(engine + kEngineLevelPath, level_path, kLevelPathBytes);
-    LOGR("level editor: %s saved as %s", CampaignLevel().c_str(), LevelFolder().string().c_str());
+    LOGR("level editor: %s saved as %s", BaseLevel().c_str(), LevelFolder().string().c_str());
 }
 
 }  // namespace
