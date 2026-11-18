@@ -28,6 +28,7 @@ constexpr const char* kCustomMission = "Mission0";  // the mission the level edi
 constexpr const char* kLastLevelEnd = "FadeOutEndMapReboot";
 constexpr uint32_t kTextBytes = 0x80;
 constexpr uint32_t kScriptBufferName = 0x82074180;  // "__script_buffer__", the chunk name 823CB380 runs text under
+constexpr uint32_t kAllResults = 0xFFFFFFFF;  // LUA_MULTRET
 // the script's Language object: its language manager, then the mission table's name (std::string)
 constexpr uint32_t kLanguageManager = 0x0C;
 constexpr uint32_t kMissionTable = 0x10;
@@ -78,7 +79,10 @@ bool RunOwnScript(PPCContext& ctx, uint32_t scripts) {
     }
     if (!bytes || !g_script) return false;
     for (uint32_t i = 0; i < bytes; i++) W8(g_script + i, uint8_t(text[i]));
-    bool ran = CallGuest(ctx, SYM_Lua_DoBuffer, {R32(scripts), g_script, bytes, kScriptBufferName}) == 0;
+    uint32_t state = R32(scripts);
+    // as Script_ExecuteFile runs a file: load the chunk, then call it with no arguments and every result kept
+    bool ran = CallGuest(ctx, SYM_Lua_LoadBuffer, {state, g_script, bytes, kScriptBufferName}) == 0 &&
+               CallGuest(ctx, SYM_Lua_PCall, {state, 0, kAllResults}) == 0;
     LOGR("custom levels: %s's Mission.lua %s", g_running.c_str(), ran ? "ran" : "failed");
     return ran;
 }

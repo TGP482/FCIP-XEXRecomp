@@ -162,7 +162,10 @@ std::string MapName() {
 fs::path LevelFolder() { return fcip::CustomLevelFolder(MapName()); }
 
 void WriteHostFile(const std::string& name, const void* data, size_t size) {
-    std::ofstream(LevelFolder() / name, std::ios::binary).write(static_cast<const char*>(data), std::streamsize(size));
+    fs::path path = LevelFolder() / name;
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    std::ofstream(path, std::ios::binary).write(static_cast<const char*>(data), std::streamsize(size));
 }
 
 void WriteXml(PPCContext& ctx, const std::string& name, uint32_t node) {
@@ -259,6 +262,10 @@ std::vector<uint8_t> MergeLists(const std::vector<uint8_t>& level, const std::ve
 void CopyCampaignFiles(PPCContext& ctx) {
     std::string level = BaseLevel();
     for (const char* file : kCopiedFiles) CopyFile(ctx, level, file, file);
+    std::vector<uint8_t> vegbank;
+    if (ReadGameFile(ctx, "levels\\" + level + "\\vegbank.dat", vegbank)) {
+        for (const std::string& file : SpriteFiles(vegbank)) CopyFile(ctx, level, file, file);
+    }
     WriteDependencyLists(ctx, level, LevelFolder(), MapName());
 }
 

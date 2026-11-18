@@ -36,9 +36,23 @@ constexpr uint32_t kSide = kSectorsPerSide * kSectorMetres + 1;  // terrain.sdat
 // sd%d.sdat: the sector's number (low 16 bits) and its brushes
 constexpr uint32_t kSectorNumber = 0x0C;
 constexpr uint32_t kSectorBrushes = 0x14;
-// ShortRange%d.sdat: the sector's origin
+// ShortRange%d.sdat: the sector's origin, then past its objects "FLAO", a byte a sector saying what streams from this
+// one, some fields, and the collision walls 823747E0 makes: a count, then x1, y1, x2, y2, bottom, top, bottom, top
 constexpr uint32_t kShortRangeX = 0x04;
 constexpr uint32_t kShortRangeY = 0x08;
+constexpr char kStreamMark[] = "FLAO";
+constexpr size_t kMarkBytes = 4;
+constexpr size_t kStreamTableBytes = 0x100;
+constexpr size_t kWallCount = 0x21;  // from the table's end
+constexpr size_t kWallBytes = 32;
+constexpr size_t kWallBottom = 16;
+constexpr size_t kWallTop = 20;
+constexpr uint8_t kStreamDrawn = 0x7F;
+constexpr uint8_t kStreamLoaded = 0x08;
+constexpr uint32_t kDrawnRing = 3;  // sectors around one drawn from it
+constexpr uint32_t kLoadedRing = 5;
+// vegbank.dat: the far vegetation sprites 8236C0D0 loads, sprites\sprite%03d.xbt each
+constexpr size_t kSpriteCount = 0x10;
 // terrain.sdat: a little endian header, then big endian 1, the side and the vertices as the terrain keeps them
 constexpr uint32_t kTerrainMagic = 0x54524E4B;
 constexpr uint32_t kTerrainHeaderBytes = 0x14;
@@ -84,6 +98,12 @@ void PutBe32(Bytes& b, uint32_t v) {
 void SetLe16(Bytes& b, size_t at, uint32_t v) {
     b[at] = uint8_t(v);
     b[at + 1] = uint8_t(v >> 8);
+}
+float LeFloat(const Bytes& b, size_t at) {
+    uint32_t v = Le32(b, at);
+    float f;
+    std::memcpy(&f, &v, 4);
+    return f;
 }
 void SetLeFloat(Bytes& b, size_t at, float f) {
     uint32_t v;
@@ -181,7 +201,19 @@ struct Template {
     Bytes terrain;
     std::vector<Sector> sector;
     uint32_t seabed = 0;
+    bool walls = false;  // its edge has collision walls, from wall_bottom to wall_top
+    float wall_bottom = 0;
+    float wall_top = 0;
 };
+
+// a ShortRange file's wall count, npos when the file does not hold its table and walls
+size_t WallCountAt(const Bytes& b) {
+    auto mark = std::find_end(b.begin(), b.end(), kStreamMark, kStreamMark + kMarkBytes);
+    if (mark == b.end()) return std::string::npos;
+    size_t at = size_t(mark - b.begin()) + kMarkBytes + kStreamTableBytes + kWallCount;
+    if (at + 4 > b.size() || at + 4 + Le32(b, at) * kWallBytes > b.size()) return std::string::npos;
+    return at;
+}
 
 bool ReadTemplate(const ReadGameFile& read, const std::string& base, Template& t) {
     t.terrain = LevelFileOf(read, base, "sdat\\terrain.sdat");
@@ -196,8 +228,13 @@ bool ReadTemplate(const ReadGameFile& read, const std::string& base, Template& t
             t.sector[i][f] = LevelFileOf(read, base, Format(kSectorFiles[f], i));
             if (t.sector[i][f].empty()) return false;
         }
-        if (t.sector[i][kSd].size() <= kSectorBrushes + 4 || t.sector[i][kShortRange].size() <= kShortRangeY + 4) {
-            return false;
+        const Bytes& short_range = t.sector[i][kShortRange];
+        size_t walls = WallCountAt(short_range);
+        if (t.sector[i][kSd].size() <= kSectorBrushes + 4 || walls == std::string::npos) return false;
+        if (!t.walls && Le32(short_range, walls) != 0) {
+            t.walls = true;
+            t.wall_bottom = LeFloat(short_range, walls + 4 + kWallBottom);
+            t.wall_top = LeFloat(short_range, walls + 4 + kWallTop);
         }
     }
     // its empty seabed: no brushes and the fewest short range objects
@@ -214,6 +251,63 @@ bool ReadTemplate(const ReadGameFile& read, const std::string& base, Template& t
 // the new sector at x, y is one of the template's own
 bool OwnSector(const Template& t, uint32_t x, uint32_t y) { return x < t.sectors && y < t.sectors; }
 
+uint8_t StreamState(uint32_t ring) {
+    if (ring <= kDrawnRing) return kStreamDrawn;
+    if (ring <= kLoadedRing) return kStreamLoaded;
+    return 0;
+}
+
+uint32_t Apart(uint32_t a, uint32_t b) { return a > b ? a - b : b - a; }
+
+struct Wall {
+    float x1;
+    float y1;
+    float x2;
+    float y2;
+};
+
+// the walls along the map's edge where the sector at x, y meets it, as the template's along its own
+std::vector<Wall> EdgeWalls(uint32_t x, uint32_t y) {
+    float x0 = float(x * kSectorMetres);
+    float y0 = float(y * kSectorMetres);
+    float x1 = x0 + kSectorMetres;
+    float y1 = y0 + kSectorMetres;
+    float low = kAreaInset;
+    float high = float(kSide - 1) - kAreaInset;
+    uint32_t last = kSectorsPerSide - 1;
+    std::vector<Wall> walls;
+    if (y == 0) walls.push_back({x0, low, x1, low});
+    if (y == last) walls.push_back({x0, high, x1, high});
+    if (x == 0) walls.push_back({low, y0, low, y1});
+    if (x == last) walls.push_back({high, y0, high, y1});
+    return walls;
+}
+
+// the sector's ShortRange file with what streams from it and its walls for its spot in the new level: a copied seabed
+// keeps the seabed's, and the template's own were made for its 4x4 sectors
+Bytes PlacedShortRange(const Bytes& file, uint32_t x, uint32_t y, const Template& t) {
+    size_t count = WallCountAt(file);
+    size_t table = count - kWallCount - kStreamTableBytes;
+    size_t rest = count + 4 + Le32(file, count) * kWallBytes;
+    Bytes out(file.begin(), file.begin() + table);
+    for (uint32_t i = 0; i < kStreamTableBytes; i++) {
+        uint32_t ring = std::max(Apart(i % kSectorsPerSide, x), Apart(i / kSectorsPerSide, y));
+        out.push_back(StreamState(ring));
+    }
+    out.insert(out.end(), file.begin() + table + kStreamTableBytes, file.begin() + count);
+    std::vector<Wall> walls = t.walls ? EdgeWalls(x, y) : std::vector<Wall>();
+    PutLe32(out, uint32_t(walls.size()));
+    for (const Wall& w : walls) {
+        for (float f : {w.x1, w.y1, w.x2, w.y2, t.wall_bottom, t.wall_top, t.wall_bottom, t.wall_top}) {
+            uint32_t v;
+            std::memcpy(&v, &f, 4);
+            PutLe32(out, v);
+        }
+    }
+    out.insert(out.end(), file.begin() + rest, file.end());
+    return out;
+}
+
 void AddSectors(const Template& t, std::vector<LevelFile>& files) {
     for (uint32_t y = 0; y < kSectorsPerSide; y++) {
         for (uint32_t x = 0; x < kSectorsPerSide; x++) {
@@ -223,6 +317,7 @@ void AddSectors(const Template& t, std::vector<LevelFile>& files) {
             SetLe16(s[kSd], kSectorNumber, number);
             SetLeFloat(s[kShortRange], kShortRangeX, float(x * kSectorMetres));
             SetLeFloat(s[kShortRange], kShortRangeY, float(y * kSectorMetres));
+            s[kShortRange] = PlacedShortRange(s[kShortRange], x, y, t);
             for (size_t f = 0; f < s.size(); f++) {
                 files.push_back({Format(kSectorFiles[f], number), std::move(s[f])});
             }
@@ -363,6 +458,13 @@ std::string StringTableText() {
 
 }  // namespace
 
+std::vector<std::string> fcip::editor::SpriteFiles(const std::vector<uint8_t>& vegbank) {
+    if (vegbank.size() < kSpriteCount + 4) return {};
+    std::vector<std::string> files{"sprites\\clusters.xbt"};
+    for (uint32_t i = 0; i < Le32(vegbank, kSpriteCount); i++) files.push_back(Format("sprites\\sprite%03u.xbt", i));
+    return files;
+}
+
 std::vector<fcip::editor::LevelFile> fcip::editor::NewLevelFiles(const std::string& name, const std::string& base,
                                                                 const ReadGameFile& read) {
     Template t;
@@ -381,6 +483,10 @@ std::vector<fcip::editor::LevelFile> fcip::editor::NewLevelFiles(const std::stri
     files.push_back({"Mission.lua", Data(ScriptText(name, base))});
     files.push_back({name + ".xml", Data(StringTableText())});
     for (const char* file : kCopiedFiles) {
+        Bytes copy = LevelFileOf(read, base, file);
+        if (!copy.empty()) files.push_back({file, std::move(copy)});
+    }
+    for (const std::string& file : SpriteFiles(LevelFileOf(read, base, "vegbank.dat"))) {
         Bytes copy = LevelFileOf(read, base, file);
         if (!copy.empty()) files.push_back({file, std::move(copy)});
     }

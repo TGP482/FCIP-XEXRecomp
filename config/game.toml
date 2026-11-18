@@ -166,18 +166,18 @@ LoadingScreen_Wait = 0x82156AB0
 Player_SetProperty = 0x8210A788
 SaveManager_NewStory = 0x8222AE98
 
-# custom levels (custom_level_start.cpp): a level's pack opened for it, a script file or text run, the mission's string
-# table
+# custom levels (custom_level_start.cpp): a level's pack opened, a script file run or text loaded and run, the
+# mission's string table
 Streaming_OpenLevelPack = 0x823EEE18          # (streaming, level folder, from user content)
 Script_ExecuteFile = 0x823CB380               # (script system, path, 0, 0)
-Lua_DoBuffer = 0x823DF778                     # (Lua state, text, size, chunk name) 0 when it ran
+Lua_LoadBuffer = 0x823DF778                   # (Lua state, text, size, chunk name) 0 when the chunk is pushed
+Lua_PCall = 0x823DF1C8                        # (Lua state, arguments, results) calls what lies under them, 0 if it ran
 Language_LoadMissionStringTable = 0x820F8140  # (Language script object, Lua state)
 Language_LoadTable = 0x82133090               # (language manager, std::string name) LANGUAGES/<language>/<name>
 String_AssignText = 0x820C0E30                # (std::string, text, length)
 XmlFile_Load = 0x823FC7E8                     # (XML file, path)
 File_CreateHandle = 0x823F66A0                # (path, mode, stop the game on a failure)
 File_Exists = 0x823F20F8                      # (packs, path) in a pack, else as named
-PackManager_Open = 0x823F1858                 # (packs, path, 0, 0, 0, 0) a pack kept open
 
 # CryAnimation, MORE: a model's animation step
 Animation_Step = 0x82461648
@@ -227,9 +227,6 @@ ObjManager_pointer = 0x82913474
 RenderTargets_Depth = 0x829160DC
 Renderer_pointer = 0x829127E8
 Terrain_SectorsPerSide = 0x828B400C
-
-# CrySystem: the pack manager (custom_level_start.cpp)
-Packs_pointer = 0x829128B0
 
 # CryGame, the debug page: the save and user managers
 SaveManager_pointer = 0x8293A79C

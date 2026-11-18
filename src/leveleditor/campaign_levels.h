@@ -38,6 +38,8 @@ std::string SaveAsProblem(const std::string& name);
 void SaveLevelAs(const std::string& name);
 void AskSaveAs();    // editor thread, a save of an unsaved level: the shell opens Save As
 bool SaveAsAsked();  // once per ask
+// the far vegetation sprites a level's vegbank.dat names, as level files (new_level.cpp)
+std::vector<std::string> SpriteFiles(const std::vector<uint8_t>& vegbank);
 // its dependency lists, <name>_DepLoad.xml and <name>_DepLoadParticles.xml, into folder
 void WriteDependencyLists(PPCContext& ctx, const std::string& base, const std::filesystem::path& folder,
                           const std::string& name);

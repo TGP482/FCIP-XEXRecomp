@@ -292,8 +292,8 @@ Request CreateNewLevel(PPCContext& ctx, uint32_t manager) {
     }
     fs::path folder = fcip::CustomLevelFolder(name);
     std::error_code ec;
-    fs::create_directories(folder / "sdat", ec);
     for (const LevelFile& f : files) {
+        fs::create_directories((folder / f.name).parent_path(), ec);
         std::ofstream(folder / f.name, std::ios::binary)
             .write(reinterpret_cast<const char*>(f.data.data()), std::streamsize(f.data.size()));
     }
