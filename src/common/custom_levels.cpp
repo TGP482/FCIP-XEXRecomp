@@ -123,7 +123,7 @@ std::vector<CustomLevel> FindCustomLevels() {
     std::vector<CustomLevel> levels;
     std::error_code ec;
     for (const fs::directory_entry& e : fs::directory_iterator(CustomLevelsFolder(), ec)) {
-        if (!e.is_directory(ec)) continue;
+        if (!e.is_directory(ec) || e.path().filename().string().starts_with(kUnsavedLevelPrefix)) continue;
         std::string base = CampaignOf(e.path() / "LevelData.xml");
         if (!base.empty()) levels.push_back({e.path().filename().string(), base});
     }

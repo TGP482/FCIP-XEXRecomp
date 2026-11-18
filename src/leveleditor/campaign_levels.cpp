@@ -5,9 +5,9 @@
 // laid over game:\Levels, opens the same way with the campaign level's pack for its assets, its own Mission.lua run
 // after the campaign's mission script and again whenever that file changes, and its own copy of the mission's string
 // table, when it has one, read in place of the campaign's. CREATE A NEW LEVEL makes a custom level from the editor
-// template picked (new_level.cpp) and opens it the same way with the template's pack, saving it once its first frame
-// has read it; its Mission.lua is its mission's script. A map keeps its mission too, so it gets the same mission
-// objects.
+// template picked (new_level.cpp) in a working folder no list shows and opens it the same way with the template's
+// pack; it saves only once Save As names it. Its Mission.lua is its mission's script. A map keeps its mission too, so
+// it gets the same mission objects.
 #include "leveleditor/campaign_levels.h"
 
 #include <algorithm>
@@ -115,8 +115,8 @@ constexpr uint32_t kLivingCylinderSurface = 0x718;
 constexpr uint32_t kDefaultSurface = 0;
 
 constexpr uint32_t kMb = 1024 * 1024;
-constexpr const char* kNewLevelName = "NEW_LEVEL_%02d";
 constexpr const char* kEditorTemplatesPack = "MET_Dependency";
+constexpr const char* kEditorTemplatePrefix = "MET_";  // the editor templates' folders, laid under custom levels
 
 // a level to open: a campaign level, or a custom level and the level it was made from
 struct Request {
@@ -137,7 +137,10 @@ uint32_t g_scripts = 0;
 std::filesystem::file_time_type g_script_time;
 uint32_t g_script_buffer = 0;
 uint32_t g_script_buffer_bytes = 0;
-bool g_save_new = false;  // a new level is saved once its first frame has read it
+std::atomic<bool> g_unsaved{false};  // a new level Save As has not named yet
+std::atomic<bool> g_save_as_asked{false};
+std::string g_save_as;  // the name Save As took, under g_lock
+int g_next_new = 1;     // working folders are not used twice in a session, a pack keeps its path
 std::set<std::string> g_base_packs;  // the editor templates' packs opened for levels made from them
 
 bool EnsureScratch() {
@@ -260,17 +263,24 @@ void OpenBasePack(PPCContext& ctx, const std::string& base) {
     OpenLevelPack(ctx, kEditorTemplatesPack);
 }
 
+// a new level's working folder; the ones earlier levels left go, but for the level being left
 std::string FreeLevelName() {
     std::error_code ec;
-    for (int n = 1;; n++) {
+    std::vector<fs::path> left;
+    for (const fs::directory_entry& e : fs::directory_iterator(fcip::CustomLevelsFolder(), ec)) {
+        std::string name = e.path().filename().string();
+        if (name.starts_with(fcip::kUnsavedLevelPrefix) && name != g_custom_name) left.push_back(e.path());
+    }
+    for (const fs::path& path : left) fs::remove_all(path, ec);
+    for (;; g_next_new++) {
         char name[32];
-        std::snprintf(name, sizeof(name), kNewLevelName, n);
+        std::snprintf(name, sizeof(name), "%s%02d", fcip::kUnsavedLevelPrefix, g_next_new);
         if (!fs::exists(fcip::CustomLevelsFolder() / name, ec)) return name;
     }
 }
 
 // CREATE A NEW LEVEL from the template the editor's create page started (manager +0x38): a custom level folder made
-// from it, opened and saved like any other; nothing when the template's files are missing
+// from it, opened like any other; nothing when the template's files are missing
 Request CreateNewLevel(PPCContext& ctx, uint32_t manager) {
     std::string base = GuestString(manager + kLevelRequest);
     OpenBasePack(ctx, base);
@@ -367,6 +377,11 @@ void UpdateRequest(PPCContext& ctx, uint32_t manager) {
 
 bool MapStarted() { return BaseLevel().empty(); }
 
+std::string TakeSaveAs() {
+    std::lock_guard lock(g_lock);
+    return std::exchange(g_save_as, std::string());
+}
+
 }  // namespace
 
 namespace fcip::editor {
@@ -413,6 +428,29 @@ bool IsCampaignLevel(const std::string& name) {
 
 bool CampaignBase() { return IsCampaignLevel(BaseLevel()); }
 
+bool LevelUnsaved() { return g_unsaved; }
+
+std::string SaveAsProblem(const std::string& name) {
+    auto starts = [&](const std::string& prefix) {
+        return name.size() >= prefix.size() &&
+               std::equal(prefix.begin(), prefix.end(), name.begin(),
+                          [](char a, char b) { return std::toupper(uint8_t(a)) == std::toupper(uint8_t(b)); });
+    };
+    if (name.empty()) return "Type a name";
+    if (IsCampaignLevel(name)) return "A campaign level has this name";
+    if (starts(kEditorTemplatePrefix) || starts(fcip::kUnsavedLevelPrefix)) return "The editor's own levels start so";
+    return {};
+}
+
+void SaveLevelAs(const std::string& name) {
+    std::lock_guard lock(g_lock);
+    g_save_as = name;
+}
+
+void AskSaveAs() { g_save_as_asked = true; }
+
+bool SaveAsAsked() { return g_save_as_asked.exchange(false); }
+
 }  // namespace fcip::editor
 
 PPC_EXTERN_FUNC(__imp__sub_82112AD0);
@@ -444,7 +482,11 @@ PPC_FUNC(sub_82112AD0) {
         UpdateStaticGeometry(ctx);
         UpdateSequences(ctx);
         ReloadOwnScript(ctx);
-        if (std::exchange(g_save_new, false)) SaveCustomLevel(ctx, uint32_t(ctx.r[3]));
+        std::string save_as = TakeSaveAs();
+        if (!save_as.empty() && !BaseLevel().empty()) {
+            SaveCustomLevelAs(ctx, save_as);
+            g_unsaved = false;
+        }
         if (ShellUp()) UpdateMarkers(ctx);
     }
     __imp__sub_82112AD0(ctx, base);
@@ -462,6 +504,9 @@ PPC_FUNC(sub_821124B0) {
     Request start = std::exchange(g_starting, Request{});
     bool made = start.base.empty() && R8(manager + kFromTemplate);
     if (made) start = CreateNewLevel(ctx, manager);
+    g_unsaved = made && !start.base.empty();
+    g_save_as_asked = false;
+    TakeSaveAs();
     {
         std::lock_guard lock(g_lock);
         g_base_level = start.base;
@@ -471,7 +516,6 @@ PPC_FUNC(sub_821124B0) {
     g_scripts = 0;
     if (start.base.empty()) return __imp__sub_821124B0(ctx, base);
     StartCampaignLevel(ctx, manager, StartedLevel());
-    g_save_new = made;
 }
 
 // a dependency list loads (r3 the manager, r4 its path); a campaign level gets its own on top of the editor's

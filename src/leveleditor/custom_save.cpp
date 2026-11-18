@@ -7,7 +7,8 @@
 // not write, its dependency lists with the editor templates' added, its sequences as edited, its LevelData.xml naming
 // the campaign level, its mission's string table when its text was edited, the mission with the editor's
 // entities and AI objects, the AI navigation cut for its areas (and its brushes while it has no graphs), the paint
-// layers, and a first Mission.lua that runs after the campaign's mission script.
+// layers, and a first Mission.lua that runs after the campaign's mission script. Save As copies the folder the level
+// saved to under the name typed first; a new level saves only through it.
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -63,6 +64,9 @@ constexpr const char* kScriptName = "Mission.lua";
 constexpr const char* kPaintFile = "textureinfo.ige";
 constexpr const char* kCustomSuffix = "_Custom";  // a custom level never takes a campaign level's folder
 
+// the object the editor's save takes (820C3968): the manager +0x58; the map changed flag it then clears
+constexpr uint32_t kSaveObject = 0x58;
+constexpr uint32_t kMapChanged = 0x8296B266;
 // the mission object the save writes (82106B00 r3)
 constexpr uint32_t kMissionObject = 0x8296CBC0;
 // the editor's interface manager: the map's name, UTF-16
@@ -341,6 +345,49 @@ void EnsureScript() {
     LOGR("level editor: %s written", path.string().c_str());
 }
 
+// a text in a file replaced throughout, the file untouched when it has none
+void ReplaceInFile(const fs::path& path, const std::string& from, const std::string& to) {
+    std::ifstream in(path, std::ios::binary);
+    std::string text(std::istreambuf_iterator<char>(in), {});
+    in.close();
+    bool found = false;
+    for (size_t at = 0; (at = text.find(from, at)) != std::string::npos; at += to.size()) {
+        text.replace(at, from.size(), to);
+        found = true;
+    }
+    if (found) std::ofstream(path, std::ios::binary) << text;
+}
+
+// a custom level saved under another name: what it loaded still names the folder it started from, its mission's
+// script, LevelData's Name and its string table; a campaign level's name the campaign's own
+bool Renamed() { return StartedLevel() != BaseLevel() && StartedLevel() != MapName(); }
+
+void RenameOwnReferences() {
+    std::string from = StartedLevel();
+    std::string to = MapName();
+    ReplaceInFile(LevelFolder() / kMissionFile, "\\Levels\\" + from + "\\", "\\Levels\\" + to + "\\");
+    ReplaceInFile(LevelFolder() / kLevelData, "Name=\"" + from + "\"", "Name=\"" + to + "\"");
+}
+
+// Save As: the files of the folder the level saved to, under the new name; its pack is made again for it, and its
+// script loads the string table named after it
+void CopyOwnFiles(const fs::path& from, const std::string& old) {
+    std::string name = MapName();
+    fs::path to = LevelFolder();
+    std::error_code ec;
+    for (const fs::directory_entry& e : fs::recursive_directory_iterator(from, ec)) {
+        if (!e.is_regular_file(ec)) continue;
+        fs::path rel = fs::relative(e.path(), from, ec);
+        std::string file = rel.filename().string();
+        if (file == old + ".dat" || file == old + ".fat") continue;
+        if (rel.parent_path().empty() && file.starts_with(old)) file = name + file.substr(old.size());
+        fs::path out = to / rel.parent_path() / file;
+        fs::create_directories(out.parent_path(), ec);
+        fs::copy_file(e.path(), out, fs::copy_options::overwrite_existing, ec);
+    }
+    ReplaceInFile(to / kScriptName, "\"" + old + ".xml\"", "\"" + name + ".xml\"");
+}
+
 // a file of the level as it loaded, from its pack or its folder
 bool ReadLevelFile(PPCContext& ctx, const std::string& name, std::vector<uint8_t>& out) {
     return ReadGameFile(ctx, "levels\\" + StartedLevel() + "\\" + name, out);
@@ -479,6 +526,10 @@ void fcip::editor::SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     WriteLevelData(ctx);
     WriteMission(ctx);
     StringTableFile table = SavedStringTable();
+    if (Renamed()) {
+        RenameOwnReferences();
+        if (table.name == StartedLevel() + ".xml") table.name = MapName() + ".xml";
+    }
     if (!table.name.empty()) WriteHostFile(table.name, table.text.data(), table.text.size());
     WriteNavigation(ctx);
     std::vector<uint8_t> terrain;
@@ -495,6 +546,20 @@ void fcip::editor::SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     Restore(g_mounted);
     Restore(g_ziplines);
     LOGR("level editor: %s saved as %s", BaseLevel().c_str(), LevelFolder().string().c_str());
+}
+
+void fcip::editor::SaveCustomLevelAs(PPCContext& ctx, const std::string& name) {
+    StopPreview(ctx);
+    std::string old = MapName();
+    fs::path from = LevelFolder();
+    uint32_t manager = R32(SYM_Editor_Manager_pointer);
+    uint32_t n = uint32_t(std::min<size_t>(name.size(), kMapNameChars - 1));
+    for (uint32_t i = 0; i < n; i++) W16(manager + kMapName + i * 2, uint8_t(name[i]));
+    W16(manager + kMapName + n * 2, 0);
+    std::error_code ec;
+    if (fs::is_directory(from, ec) && !fs::equivalent(from, LevelFolder(), ec)) CopyOwnFiles(from, old);
+    SaveCustomLevel(ctx, manager + kSaveObject);
+    W8(kMapChanged, 0);
 }
 
 std::filesystem::path fcip::editor::OwnScriptPath() { return LevelFolder() / kScriptName; }
@@ -555,6 +620,12 @@ PPC_FUNC(sub_82353C18) {
 PPC_FUNC(sub_82109BF8) {
     if (g_solo) StopPreview(ctx);
     if (!Saving()) return __imp__sub_82109BF8(ctx, base);
+    // a new level saves once Save As names it, which this save opens
+    if (LevelUnsaved()) {
+        AskSaveAs();
+        ctx.r[3] = 1;
+        return;
+    }
     SaveCustomLevel(ctx, uint32_t(ctx.r[3]));
     ctx.r[3] = 1;
 }

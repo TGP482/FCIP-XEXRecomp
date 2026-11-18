@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -68,8 +69,8 @@ constexpr const wchar_t* kGameName = L"Far Cry Instincts: Predator";
 constexpr std::pair<const char*, const char*> kControls[] = {
     {"Look", "Right mouse drag"},     {"Move", "W A S D"},           {"Zoom", "Mouse wheel"},
     {"Use the tool", "Left click"},   {"Pick a tool", "1 to 4"},     {"Undo", "Ctrl+Z"},
-    {"Delete object", "Del"},         {"Save", "Ctrl+S"},            {"Play test", "F5"},
-    {"Settings", "F10"},
+    {"Delete object", "Del"},         {"Save", "Ctrl+S"},            {"Save As", "Ctrl+Shift+S"},
+    {"Play test", "F5"},              {"Settings", "F10"},
 };
 
 constexpr ImGuiWindowFlags kFixed = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
@@ -105,6 +106,8 @@ bool g_show_controls = false;
 char g_search[64] = "";
 bool g_looking = false;   // the right button went down on the view
 bool g_applying = false;  // the left button went down on the view
+bool g_save_as_open = false;
+char g_save_as_name[32] = "";  // the map name's 32 characters, its end among them
 
 // Menus and toolbar
 
@@ -165,6 +168,60 @@ bool DrawLevelList() {
     return true;
 }
 
+bool SaveAsAllowed() { return editor::g_solo && !BaseLevel().empty(); }
+
+void OpenSaveAs() {
+    g_save_as_open = true;
+    g_save_as_name[0] = 0;
+}
+
+// a level not yet named saves through Save As
+void SaveLevel() {
+    if (editor::g_solo && LevelUnsaved()) OpenSaveAs();
+    else Save();
+}
+
+// the characters a level's folder and the map name keep
+int NameChar(ImGuiInputTextCallbackData* data) {
+    ImWchar c = data->EventChar;
+    bool keep = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
+    return keep ? 0 : 1;
+}
+
+// the level saved into levels\saved under the name typed
+void DrawSaveAs() {
+    if (SaveAsAsked()) OpenSaveAs();
+    if (!g_save_as_open) return;
+    float em = ImGui::GetFontSize();
+    ImVec2 size = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(size.x * 0.5f, size.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(em * 20.0f, 0.0f), ImGuiCond_Appearing);
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse;
+    if (ImGui::Begin("Save As", &g_save_as_open, kFlags)) {
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        constexpr ImGuiInputTextFlags kNameFlags =
+            ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue;
+        bool enter = ImGui::InputText("Name", g_save_as_name, sizeof(g_save_as_name), kNameFlags, NameChar);
+        std::string name = g_save_as_name;
+        std::string problem = SaveAsProblem(name);
+        std::error_code ec;
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        if (!problem.empty()) ImGui::TextUnformatted(problem.c_str());
+        else if (std::filesystem::exists(CustomLevelsFolder() / name, ec)) ImGui::Text("Saves over %s", name.c_str());
+        else ImGui::Text("Saved in levels\\saved\\%s", name.c_str());
+        ImGui::PopStyleColor();
+        ImGui::BeginDisabled(!problem.empty());
+        if (ImGui::Button("Save") || (enter && problem.empty())) {
+            SaveLevelAs(name);
+            g_save_as_open = false;
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) g_save_as_open = false;
+    }
+    ImGui::End();
+}
+
 // the Edit Object tool's: a mission object picked in the solo editor, else its selection
 void DeleteObject() {
     if (Read().tool != kEditObject) return;
@@ -179,7 +236,8 @@ void DrawMenuBar(const State& s) {
         if (ImGui::MenuItem(editor::g_solo ? "New Level..." : "New Map...")) ExitToMapManager();
         if (ImGui::MenuItem(editor::g_solo ? "Open Saved Level..." : "Open Map...")) ExitToMapManager();
         if (editor::g_solo) DrawOpenLevel();
-        if (ImGui::MenuItem("Save", "Ctrl+S")) Save();
+        if (ImGui::MenuItem("Save", "Ctrl+S", false, !(editor::g_solo && LevelUnsaved()))) Save();
+        if (editor::g_solo && ImGui::MenuItem("Save As...", "Ctrl+Shift+S", false, SaveAsAllowed())) OpenSaveAs();
         ImGui::Separator();
         if (ImGui::MenuItem(editor::g_solo ? "Exit to Level Manager" : "Exit to Map Manager")) ExitToMapManager();
         ImGui::EndMenu();
@@ -616,8 +674,9 @@ std::wstring g_title;
 
 std::wstring Title() {
     if (!MapOpen()) return app::kGame.title;
-    std::string name = MapName();
-    if (name.empty()) name = BaseLevel();
+    bool unsaved = editor::g_solo && LevelUnsaved();
+    std::string name = unsaved ? std::string() : MapName();
+    if (name.empty() && !unsaved) name = BaseLevel();
     std::wstring map(name.begin(), name.end());
     if (map.empty()) map = editor::g_solo ? L"Untitled Level" : L"Untitled Map";
     if (MapChanged()) map += L"*";
@@ -707,6 +766,7 @@ bool DrawShell(double fps) {
         SetViewBox({});
         SetViewInput({});
         g_editor_typing = false;
+        g_save_as_open = false;
         return editor::g_solo && !MapOpen() && LevelListUp() && DrawLevelList();
     }
     State s = Read();
@@ -732,6 +792,7 @@ bool DrawShell(double fps) {
     if (g_show_status) DrawStatus(bottom, size.x, fps, s);
     if (editor::g_solo) editor::DrawMarkers();
     if (editor::g_solo) editor::DrawLinkWindow();
+    if (editor::g_solo) DrawSaveAs();
     DrawControls();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(int(std::size(kPanelColors) + std::size(kShellColors)));
@@ -739,8 +800,8 @@ bool DrawShell(double fps) {
     return !console || ImGui::GetIO().WantCaptureMouse;
 }
 
-// the level list takes the keys while up, Esc closes it; Ctrl+Z undoes, Ctrl+S saves a map, Del deletes, 1 to 4 pick
-// the tools, F5 play tests
+// the level list takes the keys while up, Esc closes it; Ctrl+Z undoes, Ctrl+S saves a map, Ctrl+Shift+S saves a
+// level as, Del deletes, 1 to 4 pick the tools, F5 play tests
 bool EditorKey(uintptr_t wp) {
     if (editor::g_solo && !MapOpen() && LevelListUp()) {
         if (wp == VK_ESCAPE) CloseLevelList();
@@ -758,7 +819,8 @@ bool EditorKey(uintptr_t wp) {
         return true;
     }
     if (ctrl && wp == 'S') {
-        Save();
+        if (GetKeyState(VK_SHIFT) < 0 && SaveAsAllowed()) OpenSaveAs();
+        else SaveLevel();
         return true;
     }
     if (wp == VK_DELETE) {
