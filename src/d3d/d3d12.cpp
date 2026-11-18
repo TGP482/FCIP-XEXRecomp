@@ -124,6 +124,8 @@ constexpr uint32_t kCausticsRtv = kCloudRtv + 1;       // the caustics' light
 constexpr uint32_t kRtvSlots = kCausticsRtv + 1;
 constexpr DXGI_FORMAT kAlbedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kGiFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+// a full float: the water's draws fade the light by the floor's distance less theirs, which half floats step through
+constexpr DXGI_FORMAT kCausticsFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
 constexpr float kNoMotion = 32768;  // the drawn motion's clear: no draw wrote the pixel
 constexpr uint64_t kSceneTarget = 1ull << 62;  // targets_ key bit of a target at the scene's scale, before FSR
 constexpr DXGI_FORMAT kUpscaledFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -1257,17 +1259,20 @@ float4 cloud_apply(float4 pos : SV_Position) : SV_Target {
 }
 )";
 
-// Caustics: the sunlight a tropical sea's waves gather into bright ribbons on whatever lies under them. Two sheets of
-// drifting cells glow along the edges between them, bent into curves, the finer one turned and quicker, laid on the
-// sea's plane along the sun. opt.x: 1 with the sun map bound; fog.xyz toward the sun in the world, fog.w
-// the seconds; terrain[0], terrain[1] and height take view space to the world's x, y and height over the sea
+// Caustics: the sunlight a tropical sea's waves gather into thin bright ribbons on whatever lies under them. Two sheets
+// of drifting cells glow along the edges between them, bent into curves, the finer one turned, quicker and fainter, in
+// slow patches of brighter and duller light, laid on the sea's plane along the sun; deeper water spreads them wider.
+// opt.x: 1 with the sun map bound; fog.xyz toward the sun in the world, fog.w the seconds; terrain[0], terrain[1] and
+// height take view space to the world's x, y and height over the sea
 const char* kCausticsHlsl = R"(
 Texture2D<float> sunmap : register(t2);
-static const float kCell = 1.6;        // world units between the coarse sheet's ribbons
-static const float kFine = 0.6;        // the finer sheet's cells, of the coarse one's
-static const float kRibbon = 0.12;     // a ribbon's width, of a cell
-static const float kStrength = 1.1;    // light a ribbon adds, of the sun's
-static const float3 kSea = float3(0.85, 1, 0.95);  // the sun's colour through clear shallow water
+static const float kCell = 1.2;        // world units between the coarse sheet's ribbons
+static const float kFine = 0.55;       // the finer sheet's cells, of the coarse one's
+static const float kRibbon = 0.07;     // a ribbon's width, of a cell
+static const float kDeepBlur = 0.05;   // world units a ribbon widens per unit of water over it
+static const float kPatch = 0.09;      // the brighter and duller patches, per world unit
+static const float kStrength = 0.5;    // light a ribbon adds, of the sun's
+static const float3 kSea = float3(0.9, 1, 0.97);  // the sun's colour through clear shallow water
 // a cell's point, wandering about its centre
 float2 CellPoint(int2 cell, float seconds) {
     uint h = uint(cell.x) * 0x8DA6B343u ^ uint(cell.y) * 0xD8163841u;
@@ -1282,7 +1287,7 @@ float2 Warp(float2 q, float seconds) {
     float2 b = sin(q.yx * float2(2.71, 2.29) + a * 1.7 + seconds * float2(-0.67, 0.59));
     return q + 0.32 * a + 0.16 * b;
 }
-// 1 on the edges between the nearest cells' points, blur cells wide or more spread thinner
+// 1 on the edges between the nearest cells' points falling off sharply, blur cells wide or more spread thinner
 float Sheet(float2 q, float seconds, float blur) {
     int2 base = int2(floor(q));
     float nearest = 9;
@@ -1295,15 +1300,16 @@ float Sheet(float2 q, float seconds, float blur) {
         }
     }
     float width = kRibbon + blur;
-    float glow = smoothstep(0, 1, saturate(1 - (second - nearest) / width));
-    return glow * glow * kRibbon / width;
+    float glow = saturate(1 - (second - nearest) / width);
+    return glow * glow * glow * kRibbon / width;
 }
-// both sheets, brightest where their ribbons cross
+// both sheets, brightest where their ribbons cross, dimmed in slow drifting patches
 float Ribbons(float2 q, float seconds, float blur) {
     float coarse = Sheet(Warp(q / kCell, seconds), seconds, blur / kCell);
     float2 turned = float2(q.x * 0.8 - q.y * 0.6, q.x * 0.6 + q.y * 0.8) / (kCell * kFine) + 17.3;
     float fine = Sheet(Warp(turned, seconds * 1.3), seconds * 1.3, blur / (kCell * kFine));
-    return saturate(0.6 * coarse + 0.4 * fine + coarse * fine);
+    float patch = 0.6 + 0.4 * sin(dot(Warp(q * kPatch, seconds * 0.25), float2(1.9, 1.4)));
+    return patch * saturate(0.75 * coarse + 0.25 * fine + 0.5 * coarse * fine);
 }
 // the light on the pixel at pos, c its view space point, a share of its own colour
 float3 CausticsLight(float2 pos, float3 c) {
@@ -1311,7 +1317,7 @@ float3 CausticsLight(float2 pos, float3 c) {
     float3 world = float3(dot(at, terrain[0]), dot(at, terrain[1]), dot(at, height));
     // the sheets lie on the sea's plane and fall along the sun
     float2 q = world.xy - world.z * fog.xy / max(fog.z, 0.2);
-    float blur = length(fwidth(q));
+    float blur = length(fwidth(q)) + kDeepBlur * max(-world.z, 0);
     float3 n = Normal(pos, c);
     // a pixel with sky on both sides each way has no normal: taken as facing the camera
     if (!all(isfinite(n))) n = -normalize(c);
@@ -3757,7 +3763,7 @@ uint32_t D3D12Backend::BindTextures(const State& s, const ShaderInfo& info, Shad
         RayViews(table + first, rays);
     }
     if (fog) ShaderView(fog, kGiFormat, table + first + fcip::kFogSlot);
-    if (caustics) ShaderView(caustics, kGiFormat, table + first + fcip::kCausticsSlot);
+    if (caustics) ShaderView(caustics, kCausticsFormat, table + first + fcip::kCausticsSlot);
     samplers = EnsureSamplers(descs);
     kept.info = &info;
     std::copy(sun, sun + fcip::kSunMaps, kept.sun);
@@ -4862,7 +4868,7 @@ void D3D12Backend::Caustics(const State& s, const OcclusionArgs& a) {
         Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
         OcclusionPass(under, *ds, c, rect);
     } else {
-        AoPass light{.entry = "caustics_light", .out = kGiFormat, .rtv = Rtv(kCausticsRtv), .sun = sun,
+        AoPass light{.entry = "caustics_light", .out = kCausticsFormat, .rtv = Rtv(kCausticsRtv), .sun = sun,
                      .caustics = true};
         Transition(caustics_.Get(), caustics_state_, D3D12_RESOURCE_STATE_RENDER_TARGET);
         caustics_lit_ = OcclusionPass(light, *ds, c, rect);
@@ -4877,7 +4883,7 @@ bool D3D12Backend::EnsureCausticsTarget(uint32_t w, uint32_t h) {
     if (caustics_) Release(std::move(caustics_));
     caustics_w_ = caustics_h_ = 0;
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
-    D3D12_RESOURCE_DESC d = TextureDesc(kGiFormat, w, h);
+    D3D12_RESOURCE_DESC d = TextureDesc(kCausticsFormat, w, h);
     d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     caustics_state_ = D3D12_RESOURCE_STATE_RENDER_TARGET;
     HRESULT hr = dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, caustics_state_, nullptr,

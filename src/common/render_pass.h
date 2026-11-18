@@ -14,6 +14,8 @@ constexpr uint32_t kPassReflection = 1;  // types 0 and 1 draw the water's refle
 
 // the type of the pass being submitted on this thread, 0 outside one
 uint32_t SubmittedPass();
+// the pass being submitted sees from under the water
+bool SubmittedUnderWater();
 // title thread: the shadow update's run for the volumetric fog, which every object casts into
 bool FogMapRun();
 

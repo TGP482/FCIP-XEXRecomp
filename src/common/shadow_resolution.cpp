@@ -57,6 +57,7 @@ constexpr uint32_t kPassWidth = 0x1C;
 constexpr uint32_t kPassHeight = 0x20;
 constexpr uint32_t kPassType = 0x10;
 constexpr uint32_t kPassWaterHeight = 0x30;  // the height a reflection clips at
+constexpr uint32_t kPassFlags = 0x48;        // bit 0: the eye under the water, 82367D68 swaps the quad layers by it
 constexpr uint32_t kFetchAddress = 4;  // fetch constant dword 1: the base from bit 12
 constexpr uint32_t kFetchSize = 8;     // fetch constant dword 2: width - 1 and height - 1, 13 bits each
 // CCamera: position, view axes, far plane and its copy, the orthographic projection's size
@@ -95,6 +96,7 @@ thread_local uint32_t t_side = 0;
 thread_local uint32_t t_backed = 0;
 thread_local uint32_t t_handle = 0;
 thread_local uint32_t t_pass_type = 0;  // the pass being submitted
+thread_local bool t_under_water = false;
 #if HAS_Device_pointer
 thread_local bool t_scene = false;  // the camera's pass FSR upscales, until its end resolve
 #endif
@@ -444,7 +446,9 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
     uint32_t pass = uint32_t(ctx.r[4]);
     bool ok = pass >= 0x10000u && pass < 0xC0000000u;
     uint32_t outer = t_pass_type;
+    bool outer_under = t_under_water;
     t_pass_type = ok ? R32(pass + kPassType) : 0;
+    t_under_water = ok && (R32(pass + kPassFlags) & 1);
     if (ok && t_pass_type <= fcip::kPassReflection) g_water = GF(pass + kPassWaterHeight);
     if (ok && t_pass_type == fcip::kPassShadow && t_sun && t_map == kFarMap) LatchSunClip(R32(pass));
     if (ok && t_pass_type == fcip::kPassCamera) LatchViewClip(R32(pass));
@@ -466,6 +470,7 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
     GUEST_ORIG(Shadow_Pass)(ctx, base);
 #endif
     t_pass_type = outer;
+    t_under_water = outer_under;
     if (side) {
         W32(pass + kPassWidth, w);
         W32(pass + kPassHeight, h);
@@ -536,6 +541,8 @@ void RunCascade(PPCContext& ctx, uint8_t* base, int map) {
 }  // namespace
 
 uint32_t fcip::SubmittedPass() { return t_pass_type; }
+
+bool fcip::SubmittedUnderWater() { return t_under_water; }
 
 bool fcip::FogMapRun() { return t_map == kFogMap; }
 

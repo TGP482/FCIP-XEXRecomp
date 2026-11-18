@@ -430,12 +430,9 @@ bool HoldsWater(uint32_t list) {
 
 // before the camera's list: the caustics go in when it holds water or the camera is under the sea
 void StartCaustics(uint32_t list) {
-    float world[16];
-    if (!ViewToWorld(world)) return;
-    float sea = GF(R32(SYM_Device_pointer) + kDevVsConstants + kVsWaterLevel * 16);
     t_caustics.ocean = PipelineNamed(kOceanName);
     t_caustics.lake = PipelineNamed(kLakeName);
-    t_caustics.under = world[14] < sea;
+    t_caustics.under = fcip::SubmittedUnderWater();
     bool water = HoldsWater(list);
     if (t_caustics.under || water) t_caustics.list = list;
     static int logged = -1;
