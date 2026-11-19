@@ -547,7 +547,7 @@ bool RayLit(RaytracingAccelerationStructure scene, float3 p, float3 dir, float t
     ray.TMin = tmin;
     ray.TMax = 1e30;
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
-    q.TraceRayInline(scene, kDiagMode == 2 ? RAY_FLAG_CULL_NON_OPAQUE : RAY_FLAG_NONE, 0xFF, ray);  // diag
+    q.TraceRayInline(scene, RAY_FLAG_NONE, 0xFF, ray);
     while (q.Proceed()) {
         uint caster = q.CandidateInstanceID() + q.CandidateGeometryIndex();
         float2 bary = q.CandidateTriangleBarycentrics();
@@ -558,24 +558,24 @@ bool RayLit(RaytracingAccelerationStructure scene, float3 p, float3 dir, float t
 
 // the share of the light a point sees, from rays spread over the light: spread > 0 a cone over the sun's disc, uv per
 // unit of depth toward it, so penumbrae widen with the distance to what casts them; < 0 parallel rays over a disc of
-// that radius in uv. The disc is turned per pixel; when the first four rays agree the rest are skipped
+// that radius in uv. The disc is turned per pixel; when the first four rays agree, or kRayRefine is off, the rest are
+// skipped
 float RayShare(RaytracingAccelerationStructure scene, float3 p, float tmin, float spread) {
 #ifdef HELPER_LANES
     if (IsHelperLane()) return 1;
 #endif
-    if (kDiagMode == 3) return 1;  // diag
     float turn = 6.2831853 * frac(52.9829189 * frac(dot(g_frag, float2(0.06711056, 0.00583715))));
     float lit = 0;
-    for (int i = 0; i < 16; i++) {
-        // golden angle turns, the same area per ray; radii in steps of 5 so the first four span the disc
+    for (int i = 0; i < 8; i++) {
+        // golden angle turns, the same area per ray; radii in steps of 3 so the first four span the disc
         float angle = i * 2.39996323 + turn;
-        float2 o = sqrt(((i * 5) % 16 + 0.5) / 16) * float2(cos(angle), sin(angle));
+        float2 o = sqrt(((i * 3) % 8 + 0.5) / 8) * float2(cos(angle), sin(angle));
         float3 at = spread < 0 ? float3(p.xy - o * spread, p.z) : p;
         float3 dir = float3(spread > 0 ? o * spread : 0, 1);
         lit += RayLit(scene, at, dir, tmin) ? 1 : 0;
-        if (i == 3 && (kDiagMode == 1 || lit == 0 || lit == 4)) return lit / 4;  // diag
+        if (i == 3 && (!kRayRefine || lit == 0 || lit == 4)) return lit / 4;
     }
-    return lit / 16;
+    return lit / 8;
 }
 )";
 
@@ -1269,7 +1269,7 @@ void CommitAlu() {
             s += F("RaytracingAccelerationStructure t_ray%u : register(t%u);\n", i, fcip::kRayFirstSlot + 2 + i);
         }
         s += fcip::kCasterHitHlsl;
-        s += F("static const uint kDiagMode = %u;\n", opt_.tex_flags[26]);  // diag
+        s += F("static const bool kRayRefine = %s;\n", opt_.tex_flags[fcip::kRayCoarseOut] ? "false" : "true");
         s += kRayShadowPrelude;
     }
     if (Albedo()) s += "static float4 g_albedo = 0;\nstatic bool g_albedo_set = false;\n";
@@ -1316,7 +1316,8 @@ float4 HostClip(float4 pos) {
 }
 
 struct VOut {
-    float4 pos : SV_Position;
+    // the same at every pipeline the shader goes in, which a depth pass tested equal needs
+    precise float4 pos : SV_Position;
     float4 o[16] : TEXCOORD0;
     float4 cur : TEXCOORD16;
     float4 prev : TEXCOORD17;
@@ -1352,7 +1353,8 @@ std::string Translator::Entry() const {
         if (opt_.motion) return MotionEntry();
         return R"(
 struct VOut {
-    float4 pos : SV_Position;
+    // the same at every pipeline the shader goes in, which a depth pass tested equal needs
+    precise float4 pos : SV_Position;
     float4 o[16] : TEXCOORD0;
     float4 clip0 : SV_ClipDistance0;
     float2 clip1 : SV_ClipDistance1;

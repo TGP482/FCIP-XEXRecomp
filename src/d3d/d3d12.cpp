@@ -79,9 +79,6 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 constexpr int kFrames = 2;
-// diag: GPU time by kind of work, a timestamp where the kind changes
-constexpr uint32_t kStamps = 4096;
-enum : uint8_t { kStampOther, kStampTraced, kStampShadowMap, kStampScene, kStampTracedAlpha, kStampEnd };
 constexpr uint64_t kUploadSize = 96ull << 20;  // per frame
 constexpr uint32_t kViewsPerFrame = 1u << 18;
 constexpr uint32_t kSamplerCount = 2048;
@@ -2030,9 +2027,6 @@ private:
     void StreamOutCasters(CasterDraw caster, const DrawConstants& c);
     void DropCasters(const Target* t);
     void BuildRayShadow(const Target& src, const ResolveArgs& r);
-    void Stamp(uint8_t kind);  // diag
-    void EndStamps();          // diag
-    void ReadStamps();         // diag
     bool BuildCasterScene(const std::vector<CasterDraw>& draws, bool opaque, ComPtr<ID3D12Resource>& bottom_out,
                           ComPtr<ID3D12Resource>& top_out);
     void DivideCasters(const std::vector<CasterDraw>& draws, const ResolveArgs& r);
@@ -2237,21 +2231,6 @@ private:
     };
     std::unordered_map<uint32_t, RayShadow> ray_shadows_;  // by map address
     bool fog_map_ = false;  // between kClearFogMap and kClearFogMapEnd
-    // diag
-    ComPtr<ID3D12QueryHeap> stamp_heap_;
-    ComPtr<ID3D12Resource> stamp_read_;
-    std::vector<uint8_t> stamp_kinds_[kFrames];
-    uint8_t stamp_kind_ = kStampEnd;
-    uint64_t stamp_hz_ = 0;
-    double stamp_ms_[kStampEnd] = {};
-    uint64_t stamp_records_ = 0;
-    uint32_t stamp_refused_ = 0;
-    uint32_t stamp_draws_[2] = {};
-    uint32_t stamp_depth_passes_ = 0;
-    uint32_t stamp_logs_ = 0;
-    uint32_t diag_mode_ = 0;  // 0 as built, 1 four rays at most, 2 alpha casters skipped, 3 no rays
-    uint32_t stamp_frames_ = 0;
-    std::chrono::steady_clock::time_point stamp_start_ = std::chrono::steady_clock::now();
     std::vector<CasterDraw> caster_draws_;
     std::vector<CasterDraw> caster_build_;
     uint64_t casters_used_ = 0;   // records this frame
@@ -2636,13 +2615,6 @@ void D3D12Backend::CreateFrames() {
     D3D12_RESOURCE_DESC rd = BufferDesc(kQueryCount * sizeof(uint64_t));
     dev_->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                                   IID_PPV_ARGS(&query_read_));
-    // diag
-    D3D12_QUERY_HEAP_DESC sd{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kStamps * kFrames, 0};
-    dev_->CreateQueryHeap(&sd, IID_PPV_ARGS(&stamp_heap_));
-    D3D12_RESOURCE_DESC sr = BufferDesc(kStamps * kFrames * sizeof(uint64_t));
-    dev_->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &sr, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                  IID_PPV_ARGS(&stamp_read_));
-    queue_->GetTimestampFrequency(&stamp_hz_);
 }
 
 std::filesystem::path PipelineCachePath() { return app::ExeDir() / "cache" / "pipelines.bin"; }
@@ -4404,15 +4376,8 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         KeepShadowTarget(*bound.ds);
         if (bound.rt) KeepShadowTarget(*bound.rt);
         shadow_drawn_ = true;
-        Stamp(kStampShadowMap);  // diag
-    } else {
-        uint8_t kind = kStampOther;  // diag
-        if (ray_scenes_[0]) kind = ps_opt.alpha_test ? kStampTracedAlpha : kStampTraced;  // diag
-        Stamp(kind);  // diag
-        if (ray_scenes_[0]) stamp_draws_[ps_opt.alpha_test ? 1 : 0]++;  // diag
     }
     if (depth_pass) {
-        stamp_depth_passes_++;  // diag
         cl_->SetPipelineState(depth_pass);
         cl_->DrawIndexedInstanced(count, 1, 0, a.base_vertex, 0);
         cl_->SetPipelineState(pso);
@@ -4454,7 +4419,6 @@ void D3D12Backend::CapIllumination(const State& s, const PipelineKey& k, const B
 // D3D Clear, within the scissor: a whole target clear also clears the targets its EDRAM range holds
 void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], float z, uint32_t stencil,
                          const Rect* rect) {
-    Stamp(kStampOther);  // diag
     if (flags & kClearOcclusion) {
         if (rect) Occlusion(s, UnpackOcclusion(color, z, stencil, *rect));
         return;
@@ -5770,7 +5734,6 @@ uint32_t D3D12Backend::CasterVertices(const State& s, const DrawArgs& a, const P
     if (caster_slots_ >= kCasterDraws || casters_used_ + vertices > kCasterRecords) {
         static bool logged = false;
         if (view && !std::exchange(logged, true)) LOGR("D3D12: global illumination scene full, draws past it left out");
-        if (shadow) stamp_refused_++;  // diag
         return 0;
     }
     caster.target = b.ds;
@@ -5900,11 +5863,9 @@ void D3D12Backend::BuildRayShadow(const Target& src, const ResolveArgs& r) {
         return true;
     });
     if (draws.empty() || casters_built_ + draws.size() > kCasterDraws) return;
-    Stamp(kStampScene);  // diag
     DivideCasters(draws, r);
     RayShadow& scene = ray_shadows_[r.dst_base];
     if (BuildCasterScene(draws, false, scene.bottom, scene.top)) scene.frame = frame_;
-    Stamp(kStampOther);  // diag
 }
 
 // the draws' divided casters built into one scene: the instance id is its first caster, a geometry per draw after it.
@@ -6064,67 +6025,11 @@ void D3D12Backend::RayShadows(const State& s, const ShaderInfo& info, ShaderOpti
         opt.tex_flags[i] |= uint8_t(fcip::kShadowRay | slot << fcip::kRaySlotShift);
     }
     if (!used) return;
-    opt.tex_flags[26] = uint8_t(diag_mode_);  // diag
+    // ultra's alpha tested receivers, the bushes among them, take no penumbra refinement
+    bool coarse = opt.alpha_test && fcip::Get().shadow_filter == fcip::kFilterRayUltra;
+    opt.tex_flags[fcip::kRayCoarseOut] = coarse ? 1 : 0;
     Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-}
-
-// diag: a timestamp where the kind of GPU work changes, the frame's last always fits
-void D3D12Backend::Stamp(uint8_t kind) {
-    std::vector<uint8_t>& kinds = stamp_kinds_[frame_ % kFrames];
-    size_t room = kind == kStampEnd ? kStamps : kStamps - 1;
-    if (!stamp_heap_ || kind == stamp_kind_ || kinds.size() >= room) return;
-    uint32_t at = uint32_t(frame_ % kFrames) * kStamps + uint32_t(kinds.size());
-    cl_->EndQuery(stamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, at);
-    kinds.push_back(kind);
-    stamp_kind_ = kind;
-}
-
-// diag
-void D3D12Backend::EndStamps() {
-    Stamp(kStampEnd);
-    const std::vector<uint8_t>& kinds = stamp_kinds_[frame_ % kFrames];
-    if (kinds.empty()) return;
-    uint32_t base = uint32_t(frame_ % kFrames) * kStamps;
-    cl_->ResolveQueryData(stamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, base, UINT(kinds.size()), stamp_read_.Get(),
-                          base * sizeof(uint64_t));
-}
-
-// diag: the frame this slot last recorded, its GPU done; logged once a second
-void D3D12Backend::ReadStamps() {
-    std::vector<uint8_t>& kinds = stamp_kinds_[frame_ % kFrames];
-    stamp_kind_ = kStampEnd;
-    uint32_t base = uint32_t(frame_ % kFrames) * kStamps;
-    D3D12_RANGE range{base * sizeof(uint64_t), (base + kinds.size()) * sizeof(uint64_t)};
-    uint64_t* t = nullptr;
-    if (kinds.size() > 1 && stamp_hz_ && SUCCEEDED(stamp_read_->Map(0, &range, reinterpret_cast<void**>(&t)))) {
-        double ms = 1000.0 / double(stamp_hz_);
-        for (size_t i = 0; i + 1 < kinds.size(); i++) {
-            if (kinds[i] < kStampEnd) stamp_ms_[kinds[i]] += double(t[base + i + 1] - t[base + i]) * ms;
-        }
-        D3D12_RANGE none{};
-        stamp_read_->Unmap(0, &none);
-        stamp_frames_++;
-    }
-    kinds.clear();
-    auto now = std::chrono::steady_clock::now();
-    if (now - stamp_start_ < std::chrono::seconds(1) || !stamp_frames_) return;
-    double n = stamp_frames_;
-    LOGR("gpu ms a frame: traced draws %.2f (%.0f), alpha tested traced draws %.2f (%.0f), shadow map draws %.2f, "
-         "shadow scene builds %.2f, other %.2f | %.0fk caster triangles, %u casters refused, filter %u",
-         stamp_ms_[kStampTraced] / n, stamp_draws_[0] / n, stamp_ms_[kStampTracedAlpha] / n, stamp_draws_[1] / n,
-         stamp_ms_[kStampShadowMap] / n, stamp_ms_[kStampScene] / n, stamp_ms_[kStampOther] / n,
-         double(stamp_records_) / 3 / n / 1000, stamp_refused_, fcip::Get().shadow_filter);
-    LOGR("gpu ms mode %u, %.0f depth passes", diag_mode_, stamp_depth_passes_ / n);
-    stamp_depth_passes_ = 0;
-    if (++stamp_logs_ % 4 == 0) diag_mode_ = (diag_mode_ + 1) % 4;
-    stamp_draws_[0] = 0;
-    stamp_draws_[1] = 0;
-    std::fill(std::begin(stamp_ms_), std::end(stamp_ms_), 0.0);
-    stamp_records_ = 0;
-    stamp_refused_ = 0;
-    stamp_frames_ = 0;
-    stamp_start_ = now;
 }
 
 // an alpha tested draw that traces shadows, depth tested and written without stencil, blending or alpha to coverage:
@@ -6195,7 +6100,6 @@ void D3D12Backend::CasterViews(uint32_t at) {
 
 // D3D Resolve: the target's rect to the texture at dst_base, held on the host and read in place of guest memory
 void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
-    Stamp(kStampOther);  // diag
     g_perf.resolves++;
     uint32_t height = std::max<uint32_t>(TargetHeight(s), uint32_t(r.rect.y2));
     Target* src = r.source < 4 ? ColorTarget(s, r.source, height) : DepthTarget(s, height);
@@ -6891,7 +6795,6 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     } else if (g_capture.exchange(false)) {
         StartCapture();
     }
-    EndStamps();  // diag
     UpdateHdrDisplay();
     if (GenerationWanted() != generation_wanted_) RecreateSwapChain();
     ResizeSwap();
@@ -6907,13 +6810,11 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     next.alloc->Reset();
     next.garbage.clear();
     next.used = 0;
-    ReadStamps();  // diag
     if (texturedumper::Update()) ReleasePackTextures();
     upload_epoch_++;
     next.views = 0;
     cl_->Reset(next.alloc.Get(), nullptr);
     Begin();
-    Stamp(kStampOther);  // diag
     if (uint32_t side = fcip::SunShadowSide(); side != shadow_side_) {
         last_shadow_side_ = shadow_side_;
         shadow_side_ = side;
@@ -6924,7 +6825,6 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     gi_.draws.clear();
     gi_.capture = false;
     gi_.mode = 0;
-    stamp_records_ += casters_used_;  // diag
     casters_used_ = 0;
     caster_slots_ = 0;
     casters_built_ = 0;

@@ -63,6 +63,8 @@ constexpr uint32_t kRayScenes = 4;      // shadow maps one draw traces at most
 constexpr uint32_t kRayFirstSlot = 25;  // pixel shader views: casters, their records, then the scenes through 30
 // set on a ray traced draw's depth pass, past the textures such a draw may have: its shader keeps only the alpha test
 constexpr uint32_t kDepthOut = 25;
+// set on a ray traced draw that takes four shadow rays a pixel, no penumbra refinement
+constexpr uint32_t kRayCoarseOut = 26;
 // global illumination: a colour texture, never a shadow map, whose first fetch is the albedo; set on kAlbedoOut it
 // writes the albedo target, which no draw reaches as a texture of its own
 constexpr uint8_t kAlbedoFetch = 64;
