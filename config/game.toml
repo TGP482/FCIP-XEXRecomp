@@ -353,8 +353,28 @@ at = 0x822D355C
 call = "ArrivalFrameTime"
 regs = ["f1"]
 
-# instruction hooks, defined in src/common/edram_restore.cpp
+# instruction hooks, defined in src/common/screen_quads.cpp
 [[hook]]  # the full screen quad's draw (EDRAM restore, fades): r6 its vertices, r23 set when it copies a texture
 at = 0x823AE5EC
 call = "RestoreQuad"
-regs = ["r1", "r6", "r23"]
+regs = ["r6", "r23"]
+
+[[hook]]  # a 2D image's vertices built on its stack, before they join the batch
+at = 0x82363754
+call = "ImageQuad"
+regs = ["r1"]
+
+[[hook]]  # the post effect copy's draw: r6 its vertices
+at = 0x8237BFA0
+call = "PostQuad"
+regs = ["r6"]
+
+[[hook]]  # the post effect blur's draw: r6 its vertices
+at = 0x8237BAB0
+call = "BlurQuad"
+regs = ["r6"]
+
+[[hook]]  # after it
+at = 0x8237BAB4
+call = "BlurQuadDone"
+regs = []

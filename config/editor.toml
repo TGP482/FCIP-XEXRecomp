@@ -211,8 +211,28 @@ call = "ShadowRadiusLight"
 at = 0x82355668
 call = "ShadowRadiusRange"
 
-# instruction hooks, defined in src/common/edram_restore.cpp
+# instruction hooks, defined in src/common/screen_quads.cpp
 [[hook]]  # the full screen quad's draw: r6 its vertices, r29 set when it copies a texture, r22 a second one
 at = 0x82372F4C
 call = "RestoreQuads"
-regs = ["r1", "r6", "r22", "r29"]
+regs = ["r6", "r22", "r29"]
+
+[[hook]]  # a 2D image's vertices built on its stack, before they join the batch
+at = 0x8235E354
+call = "ImageQuad"
+regs = ["r1"]
+
+[[hook]]  # the post effect copy's draw: r5 its vertices
+at = 0x82482290
+call = "EditorPostQuad"
+regs = ["r5"]
+
+[[hook]]  # the post effect blur's draw: r5 its vertices
+at = 0x82481DD4
+call = "EditorBlurQuad"
+regs = ["r5"]
+
+[[hook]]  # after it
+at = 0x82481DD8
+call = "BlurQuadDone"
+regs = []
