@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <numeric>
 #include <unordered_map>
 #include <vector>
@@ -100,9 +101,10 @@ struct Level {
     uint32_t indices[2] = {};
     uint32_t sorted = kNever;  // stamp of the last sort
     uint32_t now = 0;          // indices in use this frame
+    float views[2][2] = {};    // the view direction each index buffer is sorted for
     std::vector<uint16_t> blades;  // kept blades of a tile, template order
     std::vector<float> places;     // x, y of each block blade
-    std::vector<uint32_t> order;
+    std::vector<uint64_t> order;   // far first: a depth key above the blade index
     std::vector<Slot> slots;
     std::unordered_map<uint64_t, uint32_t> keys;
 
@@ -156,6 +158,7 @@ void DropLevel(PPCContext& ctx, Level& lv) {
     Release(ctx, lv.indices[1]);
     lv.tile_size = 0.0f;
     lv.sorted = kNever;
+    for (float* view : lv.views) view[0] = view[1] = std::numeric_limits<float>::quiet_NaN();
 }
 
 // a level load drops every block, a cache reset every block's contents
@@ -239,25 +242,41 @@ bool Ready(PPCContext& ctx, uint32_t renderer, uint32_t level, float tile_size) 
     return true;
 }
 
-// once a frame the block's blades sorted far to near along the view, as the renderer sorts a tile's
+// a depth as an integer that sorts far first: the float's bits in order, inverted
+uint32_t FarFirst(float depth) {
+    uint32_t u;
+    std::memcpy(&u, &depth, 4);
+    u = u >> 31 ? ~u : u | 0x80000000u;
+    return ~u;
+}
+
+// once a frame the block's blades sorted far to near along the view, as the renderer sorts a tile's; an index buffer
+// already sorted for this view is drawn again
 void SortBlades(PPCContext& ctx, uint32_t renderer, Level& lv, uint32_t camera) {
     uint32_t stamp = R32(renderer + kStamp);
     if (lv.sorted == stamp) return;
     lv.sorted = stamp;
-    lv.now ^= 1;
     float dx = GF(camera + 0x1C);
     float dy = GF(camera + 0x20);
+    auto holds = [&](uint32_t i) { return lv.views[i][0] == dx && lv.views[i][1] == dy; };
+    if (holds(lv.now)) return;
+    lv.now ^= 1;
+    if (holds(lv.now)) return;
+    lv.views[lv.now][0] = dx;
+    lv.views[lv.now][1] = dy;
     uint32_t count = lv.Count();
     lv.order.resize(count);
-    std::iota(lv.order.begin(), lv.order.end(), 0u);
-    auto depth = [&](uint32_t i) { return lv.places[i * 2] * dx + lv.places[i * 2 + 1] * dy; };
-    std::sort(lv.order.begin(), lv.order.end(), [&](uint32_t a, uint32_t b) { return depth(a) > depth(b); });
+    for (uint32_t i = 0; i < count; i++) {
+        float depth = lv.places[i * 2] * dx + lv.places[i * 2 + 1] * dy;
+        lv.order[i] = uint64_t(FarFirst(depth)) << 32 | i;
+    }
+    std::sort(lv.order.begin(), lv.order.end());
     uint32_t ib = lv.indices[lv.now];
     CallGuest(ctx, SYM_D3DDevice_SetIndices, {Device(), 0});
     uint32_t p = uint32_t(CallGuest(ctx, SYM_D3DIndexBuffer_Lock, {ib, 0, lv.IndexCount() * 2, 0}));
     // a strip of quads joined by repeating the last index and the next first
     for (uint32_t k = 0; k < count; k++) {
-        uint16_t first = uint16_t(lv.order[k] * 4);
+        uint16_t first = uint16_t(uint32_t(lv.order[k]) * 4);
         if (k) {
             W16(p, R16(p - 2));
             W16(p + 2, first);
