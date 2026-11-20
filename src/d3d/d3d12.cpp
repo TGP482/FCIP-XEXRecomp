@@ -3641,7 +3641,8 @@ bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOpti
     bool any = false;
     for (uint32_t i = 0; i < info.textures.size(); i++) {
         const TextureBinding& b = info.textures[i];
-        if (b.fetch != fcip::kSunFetch || b.dimension > 1) continue;
+        // light i binds its map at sampler 5 + i (82501C70), the sun at 8: vis areas read theirs through any of them
+        if (b.dimension > 1) continue;
         uint32_t fetch[6];
         ReadFetch(s, b.fetch, fetch);
         uint32_t base = xenos::DecodeTextureFetch(fetch).base;
