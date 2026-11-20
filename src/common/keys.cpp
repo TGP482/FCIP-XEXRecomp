@@ -56,6 +56,7 @@ constexpr ActionInfo kActions[kActionCount] = {
     {"PREVIOUS WEAPON", "previous_weapon", kWheelUp, 0},
     {"OBJECTIVES", "objectives", VK_TAB, 0},
     {"TOGGLE HUD", "toggle_hud", 0, 0},
+    {"TOGGLE TEXTURE REPLACEMENT", "toggle_textures", 0, 0},
     {"PAUSE MENU", "pause_menu", VK_ESCAPE, 0},
     {"SETTINGS PANEL", "settings_panel", VK_F10, 0},
     {"NOCLIP KEY", "noclip", VK_F1, 0},

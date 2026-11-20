@@ -49,12 +49,12 @@ std::atomic<bool> g_editor_mouse{false};  // the editor's desktop UI takes the m
 constexpr uint32_t kHostApplyDisplay = WM_APP + 1;  // main.cpp's kApplyDisplay
 
 constexpr uint32_t kAnisoValues[] = {0, 2, 4, 8, 16};
-const char* const kAnisoNames[] = {"OFF (DEFAULT)", "2x", "4x", "8x", "16x"};
+const char* const kAnisoNames[] = {"OFF", "2x", "4x", "8x", "16x"};
 constexpr uint32_t kMsaaValues[] = {0, 2, 4, 8};
-const char* const kMsaaNames[] = {"OFF", "2X MSAA (DEFAULT)", "4X MSAA", "8X MSAA"};
+const char* const kMsaaNames[] = {"OFF", "2X MSAA", "4X MSAA", "8X MSAA"};
 const char* const kDumpFormatNames[] = {"PNG", "DDS"};
-const char* const kColourBlindNames[] = {"OFF (DEFAULT)", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
-const char* const kAmbientOcclusionNames[] = {"OFF (DEFAULT)", "SSAO", "GTAO", "RTAO"};
+const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
+const char* const kAmbientOcclusionNames[] = {"OFF", "SSAO", "GTAO", "RTAO"};
 const char* const kShadowFilterNames[] = {"SHARP (DEFAULT)", "SOFT", "PCSS", "RAY TRACED", "RAY TRACED ULTRA"};
 const char* const kOceanReflectionNames[] = {"XBOX 360 (DEFAULT)", "ORIGINAL XBOX"};
 constexpr uint32_t kAudioOutputs[] = {audio::kOutputAuto, audio::kOutputMono, audio::kOutputStereo,
@@ -458,7 +458,7 @@ void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
 void StepFrameGeneration(int step, char (&text)[64]) {
     bool& on = Get().frame_generation;
     if (step) on = !on;
-    std::snprintf(text, sizeof(text), "%s%s", OnOff(on, false), fsr::StatusNote(fsr::GenerationStatus()));
+    std::snprintf(text, sizeof(text), "%s%s", OnOff(on), fsr::StatusNote(fsr::GenerationStatus()));
 }
 
 void StepGyroRow(int id, int step, char (&text)[64]) {
@@ -486,9 +486,8 @@ void StepInputRow(int id, int step, char (&text)[64]) {
     Settings& g = Get();
     if (bool* on = ToggleFlag(id)) {
         Flip(*on, step);
-        // mouse and keyboard rows have no base game value; the blur is the game's own
-        bool keyboard = id == kInvertX || id == kInvertY || id == kHoldAim || id == kHoldSprint;
-        std::snprintf(text, sizeof(text), "%s", keyboard ? OnOff(*on) : OnOff(*on, id == kBlur));
+        // only the blur is the game's own, the other toggles have no base game value
+        std::snprintf(text, sizeof(text), "%s", id == kBlur ? OnOff(*on, true) : OnOff(*on));
     } else if (float* sensitivity = SensitivityField(id)) {
         // 0.1 to 20.0 in steps of 0.1, shown as five times the stored value so the game's own reads 5.0
         int shown = std::clamp(int(std::lround(*sensitivity * 50.0f)), 1, 200);
@@ -496,7 +495,10 @@ void StepInputRow(int id, int step, char (&text)[64]) {
             shown = StepRange(shown, 1, 200, 1, step);
             *sensitivity = float(shown) / 50.0f;
         }
-        std::snprintf(text, sizeof(text), shown == 50 ? "%.1f (DEFAULT)" : "%.1f", float(shown) / 10.0f);
+        // mouse sensitivity has no base game value
+        bool mouse = id == kSensitivityX || id == kSensitivityY || id == kAimSensitivityX || id == kAimSensitivityY;
+        bool stock = shown == 50 && !mouse;
+        std::snprintf(text, sizeof(text), stock ? "%.1f (DEFAULT)" : "%.1f", float(shown) / 10.0f);
     } else if (id == kDrawDistance) {
         uint32_t v = kDistances[StepTable(kDistances, g.draw_distance, step)];
         std::snprintf(text, sizeof(text), v == 1 ? "DEFAULT" : "%ux", v);
@@ -535,12 +537,12 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             break;
         case kVsync:
             Flip(s.vsync, step);
-            std::snprintf(text, sizeof(text), "%s", OnOff(s.vsync, true));
+            std::snprintf(text, sizeof(text), "%s", OnOff(s.vsync));
             break;
         case kMaxFps: {
             uint32_t cap = kFpsCaps[StepTable(kFpsCaps, s.fps_cap, step)];
             if (cap == app::kFpsCapRefresh) std::snprintf(text, sizeof(text), "REFRESH RATE");
-            else if (cap) std::snprintf(text, sizeof(text), cap == 30 ? "%u (DEFAULT)" : "%u", cap);
+            else if (cap) std::snprintf(text, sizeof(text), "%u", cap);
             else std::snprintf(text, sizeof(text), "UNLIMITED");
             break;
         }
@@ -595,11 +597,11 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             break;
         case kTextureReplacement:
             Flip(s.custom_textures, step);
-            std::snprintf(text, sizeof(text), "%s", OnOff(s.custom_textures, false));
+            std::snprintf(text, sizeof(text), "%s", OnOff(s.custom_textures));
             break;
         case kTextureDumping:
             Flip(s.dump_textures, step);
-            std::snprintf(text, sizeof(text), "%s", OnOff(s.dump_textures, false));
+            std::snprintf(text, sizeof(text), "%s", OnOff(s.dump_textures));
             break;
         case kDumpFormat:
             if (step) s.texture_dump_format = uint32_t(StepIndex(int(s.texture_dump_format), step, 2));
@@ -997,6 +999,14 @@ void DrawPanel() {
     ImGui::PopStyleColor(int(std::size(kPanelColors)));
 }
 
+void ToggleTextureReplacement() {
+    std::lock_guard lock(app::UiLock());
+    app::Get().custom_textures = !app::Get().custom_textures;
+    Changed(false);
+}
+
+bool BoundTo(int action, uint8_t key) { return key && (key == keys::Key(action, 0) || key == keys::Key(action, 1)); }
+
 }  // namespace
 
 bool MenuOpen() {
@@ -1052,7 +1062,7 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
     bool key_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
     bool capturing = keys::Capturing();
     uint8_t key = keys::PositionKey(wp);
-    bool panel_key = key && (key == keys::Key(keys::kSettings, 0) || key == keys::Key(keys::kSettings, 1));
+    bool panel_key = BoundTo(keys::kSettings, key);
     bool editor_turn = !capturing && !(key_down && g_open);
     if (editor_turn && g_editor_message && g_editor_message(hwnd, msg, wp)) {
         *result = 0;
@@ -1060,6 +1070,12 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
     }
     if (key_down && !capturing && (panel_key || (wp == VK_ESCAPE && g_open))) {
         ToggleMenu();
+        *result = 0;
+        return true;
+    }
+    bool repeat = lp & (1 << 30);  // a held key's repeat
+    if (key_down && !capturing && !g_open && !repeat && BoundTo(keys::kToggleTextures, key)) {
+        ToggleTextureReplacement();
         *result = 0;
         return true;
     }

@@ -10,8 +10,8 @@ namespace fcip::keys {
 enum Action : int {
     kMoveForward, kMoveBack, kStrafeLeft, kStrafeRight, kWalk, kJump, kCrouch, kFire, kAim, kMelee, kReload,
     kInteract, kFeralRun, kFeralVision, kThrow, kGrenades, kWeapons, kBinoculars, kPistol, kRifle, kHeavy,
-    kNextWeapon, kPreviousWeapon, kObjectives, kToggleHud, kPause, kSettings, kNoclip, kLookUp, kLookDown, kLookLeft,
-    kLookRight, kActionCount
+    kNextWeapon, kPreviousWeapon, kObjectives, kToggleHud, kToggleTextures, kPause, kSettings, kNoclip, kLookUp, kLookDown,
+    kLookLeft, kLookRight, kActionCount
 };
 
 const char* Label(int action);
