@@ -76,8 +76,9 @@ constexpr uint32_t kRedPaintWidget = 0xA4E1836Eu;
 // the press start screen's black paint, RedBar.xbt turned and drawn black, unnamed
 constexpr uint32_t kBlackPaintWidgets[] = {0x8EFD67A5u, 0xBCE7140Du};
 // menu parts that stay about the middle: the help box (A_Help, A_InfoText), the controller map's label groups and its
-// page list
-constexpr uint32_t kStayWidgets[] = {0x46740CFEu, 0xAD70BF0Fu, 0x5DDFF3C6u, 0xC3577984u, 0x221F5C34u};
+// page list, the objective screen's header and list (ai_main, l_objectives)
+constexpr uint32_t kStayWidgets[] = {0x46740CFEu, 0xAD70BF0Fu, 0x5DDFF3C6u, 0xC3577984u, 0x221F5C34u,
+                                     0xBB798CDFu, 0x32F1CF1Eu};
 
 uint32_t Bits(float f) {
     uint32_t b;
