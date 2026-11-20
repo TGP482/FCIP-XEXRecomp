@@ -1,7 +1,7 @@
-// The EDRAM restore after the glow (default.xex 823AE398, ige.xex 82372C08) copies its textures back with a quad from
-// the viewport's corners whose texture coordinates start half a texel in: upscaled, the half pixel shift then leaves
-// the top row and left column of host pixels black, which the radial blur smears into bars. Moved half a pixel up and
-// left, coordinates with it, it covers every host pixel and samples the same texels.
+// The full screen quad (default.xex 823AE398, ige.xex 82372C08) that restores EDRAM after the glow or, untextured,
+// draws the level fades: from the viewport's corners, texture coordinates half a texel in. Upscaled, the half pixel
+// shift leaves the top row and left column of host pixels out. Moved half a pixel up and left, coordinates with it,
+// it covers every host pixel and samples the same texels.
 #include <bit>
 
 #include "xdk/hle.h"
@@ -53,17 +53,16 @@ void ShiftCoords(uint32_t vertices, uint32_t n, uint32_t desc) {
 
 }  // namespace
 
-// default.xex, before the restore's draw: r6 its vertices, r23 set when it copies a texture
+// default.xex, before the quad's draw: r6 its vertices, r23 set when it copies a texture
 void RestoreQuad(PPCContext& ctx, uint8_t*) {
-    if (!uint8_t(ctx.r[23])) return;
     ShiftCorners(uint32_t(ctx.r[6]));
-    ShiftCoords(uint32_t(ctx.r[6]), 0, uint32_t(ctx.r[1]) + kGameDesc);
+    if (uint8_t(ctx.r[23])) ShiftCoords(uint32_t(ctx.r[6]), 0, uint32_t(ctx.r[1]) + kGameDesc);
 }
 
 // ige.xex, the same: r29 set when it copies a texture, r22 when a second one too
 void RestoreQuads(PPCContext& ctx, uint8_t*) {
-    if (!uint8_t(ctx.r[29])) return;
     ShiftCorners(uint32_t(ctx.r[6]));
+    if (!uint8_t(ctx.r[29])) return;
     for (uint32_t n = 0; n < (uint8_t(ctx.r[22]) ? 2u : 1u); n++) {
         ShiftCoords(uint32_t(ctx.r[6]), n, uint32_t(ctx.r[1]) + kEditorDescs[n]);
     }

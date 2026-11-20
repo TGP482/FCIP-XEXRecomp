@@ -354,7 +354,7 @@ call = "ArrivalFrameTime"
 regs = ["f1"]
 
 # instruction hooks, defined in src/common/edram_restore.cpp
-[[hook]]  # the EDRAM restore's draw: r6 its vertices, r23 set when it copies a texture
+[[hook]]  # the full screen quad's draw (EDRAM restore, fades): r6 its vertices, r23 set when it copies a texture
 at = 0x823AE5EC
 call = "RestoreQuad"
 regs = ["r1", "r6", "r23"]

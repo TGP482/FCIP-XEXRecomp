@@ -212,7 +212,7 @@ at = 0x82355668
 call = "ShadowRadiusRange"
 
 # instruction hooks, defined in src/common/edram_restore.cpp
-[[hook]]  # the EDRAM restore's draw: r6 its vertices, r29 set when it copies a texture, r22 a second one
+[[hook]]  # the full screen quad's draw: r6 its vertices, r29 set when it copies a texture, r22 a second one
 at = 0x82372F4C
 call = "RestoreQuads"
 regs = ["r1", "r6", "r22", "r29"]
