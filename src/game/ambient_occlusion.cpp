@@ -26,7 +26,7 @@
 #include "common/settings.h"
 #include "core/log.h"
 #include "d3d/occlusion.h"
-#include "game/frame_time.h"
+#include "game/fpsfixes.h"
 #include "game/motion_vectors.h"
 #include "game/ocean_reflection.h"
 #include "game/scene.h"

@@ -303,7 +303,7 @@ regs = ["r5"]
 after = true
 
 
-# instruction hooks, defined in src/game/frame_time.cpp
+# instruction hooks, defined in src/game/fpsfixes.cpp
 [[hook]]  # f13 = frame time in milliseconds, the menu input's truncation
 at = 0x82130818
 call = "WholeFrameMsF13"
@@ -329,14 +329,12 @@ at = 0x822250F8
 call = "WholeFrameMsF10"
 regs = ["f10"]
 
-# instruction hooks, defined in src/game/step_up.cpp
 [[hook]]  # f12 = 0.075, the least rise per call of a living entity's shown height stepping up
 at = 0x8254D6B4
 call = "StepUpRate"
 regs = ["f12"]
 after = true
 
-# instruction hooks, defined in src/game/particles.cpp
 [[hook]]  # the continuous emitters' spawn call: r3 the emitter, f1 the frame time
 at = 0x825D88A4
 call = "ScaleEmitterCount"
@@ -347,11 +345,25 @@ at = 0x825D88A8
 call = "RestoreEmitterCount"
 regs = []
 
-# instruction hooks, defined in src/game/ai_arrival.cpp
 [[hook]]  # f1 = the frame time in the path point arrival test
 at = 0x822D355C
 call = "ArrivalFrameTime"
 regs = ["f1"]
+
+[[hook]]  # f13 = 6.0, the degrees the loading screen's spinner turns each draw
+at = 0x82156100
+call = "LoadingIconTurn"
+regs = ["f13"]
+
+[[hook]]  # f29 = p_waterbob_pitch, before the pitch adds sine times depth times it
+at = 0x8226F838
+call = "WaterBobPitch"
+regs = ["f29"]
+
+[[hook]]  # f28 = p_waterbob_roll, f30 = depth past p_waterbob_mindepth in 0..1, before the roll adds and scales
+at = 0x8226F84C
+call = "WaterBobRoll"
+regs = ["f28", "f30"]
 
 # instruction hooks, defined in src/common/screen_quads.cpp
 [[hook]]  # the full screen quad's draw (EDRAM restore, fades): r6 its vertices, r23 set when it copies a texture

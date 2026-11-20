@@ -1,4 +1,4 @@
-// the game's frame clock
+// frame rate fixes and the game's frame clock
 #pragma once
 
 namespace fcip {
