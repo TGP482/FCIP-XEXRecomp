@@ -45,6 +45,7 @@ std::atomic<int> g_wide{-1};  // the mode the device started in, -1 before
 thread_local float g_anchor = 0.5f;  // share of the spare width left of what is drawn
 thread_local bool g_text = false;    // a glyph is drawing
 thread_local bool g_paint = false;   // the red paint is drawing
+thread_local bool g_black = false;   // the black paint is drawing
 thread_local bool g_held = false;    // a menu part above has its place
 
 // a widget's quads in the layout's virtual x, gathered while it draws, and its glyphs alone
@@ -72,6 +73,8 @@ constexpr uint32_t kLeftWidgets[] = {0x17C753E5u, 0xA4F0EADFu, 0x4DA638F6u, 0xCF
 constexpr uint32_t kRightWidgets[] = {0x2909DFF7u, 0xB0008E4Du, 0xDC33DFAAu, 0x0A5255EEu};
 // the menus' red paint image, RedBar.xbt
 constexpr uint32_t kRedPaintWidget = 0xA4E1836Eu;
+// the press start screen's black paint, RedBar.xbt turned and drawn black, unnamed
+constexpr uint32_t kBlackPaintWidgets[] = {0x8EFD67A5u, 0xBCE7140Du};
 // menu parts that stay about the middle: the help box (A_Help, A_InfoText), the controller map's label groups and its
 // page list
 constexpr uint32_t kStayWidgets[] = {0x46740CFEu, 0xAD70BF0Fu, 0x5DDFF3C6u, 0xC3577984u, 0x221F5C34u};
@@ -293,11 +296,13 @@ PPC_FUNC(GUEST(UIWidget_Draw)) {
     if (In(name, kLeftWidgets) || In(name, kRightWidgets) || In(name, kStayWidgets)) g_held = true;
     if (!g_held) HoldInPlace(widget);
     g_paint = name == kRedPaintWidget;
+    g_black = In(name, kBlackPaintWidgets);
     g_open.push_back({widget});
     GUEST_ORIG(UIWidget_Draw)(ctx, base);
     Remember(g_open.back(), g_anchor);
     g_open.pop_back();
     g_paint = false;
+    g_black = false;
     g_held = outer_held;
     g_anchor = outer;
 }
@@ -359,6 +364,11 @@ PPC_FUNC(GUEST(UI_DrawQuad)) {
     uint32_t saved[4];
     for (int i = 0; i < 4; i++) saved[i] = R32(corner[i]);
     Gather(saved, width);
+    // turned across a page side, it stretches as on the console so both its ends stay past the screen edges
+    if (g_black) {
+        GUEST_ORIG(UI_DrawQuad)(ctx, base);
+        return;
+    }
     float anchor = g_paint ? PaintSide(saved, width) : g_anchor;
     for (int i = 0; i < 4; i++) W32(corner[i], Bits(Fit(Float(saved[i]), scale, anchor, width)));
     GUEST_ORIG(UI_DrawQuad)(ctx, base);
