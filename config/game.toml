@@ -263,34 +263,42 @@ call = "GrassTileRefilled"
 [[hook]]  # f24 = engine+0xB30 in the grass tile loop
 at = 0x825FF23C
 call = "GrassRadius"
+regs = ["f24"]
 
 [[hook]]  # after the sector ring test
 at = 0x825EB5B8
 call = "GrassSectorRing"
+regs = ["r11", "r20", "r21", "r25", "r27", "r28", "r29", "r30"]
 
 [[hook]]  # f0 = the sun shadow radius walk target
 at = 0x825D3ED8
 call = "ShadowRadiusTarget"
+regs = ["f0"]
 
 [[hook]]  # f8 = the sun light radius
 at = 0x825C5DD4
 call = "ShadowRadiusLight"
+regs = ["f8"]
 
 [[hook]]  # f1 = the radius tested against the distance
 at = 0x825FAFA8
 call = "ShadowRadiusRange"
+regs = ["f1"]
 
 [[hook]]  # r3 = a sector entity's render flags, the shadow pass's cast test
 at = 0x825D65D8
 call = "CastShadowMaps"
+regs = ["r3"]
 
 [[hook]]  # r3 = a sector render node's flags, the same test
 at = 0x825FADA8
 call = "CastShadowMaps"
+regs = ["r3"]
 
 [[hook]]  # r5 = a render item's shadow enabled bit, from its flags
 at = 0x82387C5C
 call = "ReceiveShadowMaps"
+regs = ["r5"]
 after = true
 
 
@@ -298,39 +306,48 @@ after = true
 [[hook]]  # f13 = frame time in milliseconds, the menu input's truncation
 at = 0x82130818
 call = "WholeFrameMsF13"
+regs = ["f13"]
 
 [[hook]]  # f10 = the same for each pad's input
 at = 0x8213084C
 call = "WholeFrameMsF10"
+regs = ["f10"]
 
 [[hook]]  # f13 = the same for the menu manager's first page update
 at = 0x82130D8C
 call = "WholeFrameMsF13"
+regs = ["f13"]
 
 [[hook]]  # f10 = the same for its second page update
 at = 0x82130DFC
 call = "WholeFrameMsF10"
+regs = ["f10"]
 
 [[hook]]  # f10 = the same for the UI update at the end of sub_822248F8
 at = 0x822250F8
 call = "WholeFrameMsF10"
+regs = ["f10"]
 
 # instruction hooks, defined in src/game/step_up.cpp
 [[hook]]  # f12 = 0.075, the least rise per call of a living entity's shown height stepping up
 at = 0x8254D6B4
 call = "StepUpRate"
+regs = ["f12"]
 after = true
 
 # instruction hooks, defined in src/game/particles.cpp
 [[hook]]  # the continuous emitters' spawn call: r3 the emitter, f1 the frame time
 at = 0x825D88A4
 call = "ScaleEmitterCount"
+regs = ["r3", "f1"]
 
 [[hook]]  # after it, also the out of view branch's target
 at = 0x825D88A8
 call = "RestoreEmitterCount"
+regs = []
 
 # instruction hooks, defined in src/game/ai_arrival.cpp
 [[hook]]  # f1 = the frame time in the path point arrival test
 at = 0x822D355C
 call = "ArrivalFrameTime"
+regs = ["f1"]
