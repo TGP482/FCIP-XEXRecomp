@@ -16,24 +16,20 @@ using namespace kernel;
 // off by up to a millisecond; it now reads the same clock unrounded. The menus and the UI step in whole milliseconds,
 // truncating each frame's time, so the part each frame drops is carried to the next.
 
-namespace {
-
 // the millisecond clock: base milliseconds, start ticks and ticks per second
 constexpr uint32_t kClockBaseMs = 0x0;
 constexpr uint32_t kClockStart = 0x10;
 constexpr uint32_t kClockFrequency = 0x18;
 constexpr uint32_t kTimerFrame = 0x68;  // the timer's frame time, double seconds
 
-float g_frame_ms = 0.0f;  // this frame's whole milliseconds for the menus and the UI
+static float g_frame_ms = 0.0f;  // this frame's whole milliseconds for the menus and the UI
 
-double GuestDouble(uint32_t va) {
+static double GuestDouble(uint32_t va) {
     uint64_t raw = R64(va);
     double value;
     std::memcpy(&value, &raw, 8);
     return value;
 }
-
-}  // namespace
 
 double fcip::FrameTime() { return GuestDouble(SYM_Timer + kTimerFrame); }
 
@@ -69,21 +65,17 @@ void WholeFrameMsF13(PPCContext& ctx, uint8_t*) { ctx.f[13] = g_frame_ms; }
 // A model's animation advances in whole 1/120 s steps, the rest carried to its next update. Above 120 fps frames then
 // alternate one step and none, so poses and root motion moved in jerks. Those frames now advance by their own time.
 
-namespace {
-
 constexpr float kStep = 1.0f / 120.0f;  // the MORE type's step, set by its constructor 82447C30
 // the model's animation: +0x18 its clock, whose +0x24 is the carried time; +0x20 set once this update stepped
 constexpr uint32_t kAnimationClock = 0x18;
 constexpr uint32_t kClockCarry = 0x24;
 constexpr uint32_t kAnimationStepped = 0x20;
 
-void WF(uint32_t va, float value) {
+static void WF(uint32_t va, float value) {
     uint32_t raw;
     std::memcpy(&raw, &value, 4);
     W32(va, raw);
 }
-
-}  // namespace
 
 PPC_EXTERN_FUNC(GUEST_ORIG(Animation_Step));
 
@@ -114,16 +106,12 @@ void StepUpRate(PPCContext& ctx, uint8_t*) { ctx.f[12] *= fcip::FrameTime() / fc
 // The 3D engine's continuous emitters spawn their particle count once a frame, so at high frame rates they made many
 // times the console's particles. Each frame's count now follows the frame time, the fraction carried per emitter.
 
-namespace {
-
 constexpr uint32_t kEmitterParams = 0x8;
 constexpr uint32_t kParamsCount = 0xD4;  // particles per spawn
 
-std::unordered_map<uint32_t, double> g_carry;  // per emitter
-uint32_t g_params = 0;  // whose count is changed for the spawn call
-uint32_t g_count = 0;
-
-}  // namespace
+static std::unordered_map<uint32_t, double> g_carry;  // per emitter
+static uint32_t g_params = 0;  // whose count is changed for the spawn call
+static uint32_t g_count = 0;
 
 // before the spawn call: r3 the emitter, f1 the frame time
 void ScaleEmitterCount(PPCContext& ctx, uint8_t*) {
@@ -155,21 +143,42 @@ void RestoreEmitterCount(PPCContext&, uint8_t*) {
 // f1 = the frame time just returned, before speed times 2
 void ArrivalFrameTime(PPCContext& ctx, uint8_t*) { ctx.f[1] = std::max(ctx.f[1], fcip::kConsoleFrame); }
 
-// Loading screen spinner
+// Loading screen
 
-// The loading screen's spinner turns 6 degrees each draw, which the console drew at 30 fps at most. At high frame
-// rates it spun as fast as the screen redrew. Each draw now turns by its share of a console frame of real time, as
-// the loading screen draws outside the game's frame clock.
+// The loading screen's spinner turns 6 degrees each draw, and its fade out drops the alpha by 10 each draw, which the
+// console drew at 30 fps at most. At high frame rates both ran as fast as the screen redrew. Each draw now moves by
+// its share of a console frame of real time, as the loading screen draws outside the game's frame clock.
 
-// f13 = 6.0, before the spinner's angle adds it
-void LoadingIconTurn(PPCContext& ctx, uint8_t*) {
-    using Clock = std::chrono::steady_clock;
-    static Clock::time_point last;
+using Clock = std::chrono::steady_clock;
+
+constexpr int32_t kFadeStart = 250;  // the fade's first alpha, set by 82156810
+constexpr int32_t kFadeStep = 10;
+
+// console frames of real time since the last draw; a draw slower than the console's frame still moves one whole
+// step, as it did there
+static double DrawFrames(Clock::time_point& last) {
     Clock::time_point now = Clock::now();
     double frames = std::chrono::duration<double>(now - last).count() / fcip::kConsoleFrame;
     last = now;
-    // a draw slower than the console's frame still turns one whole step, as it did there
-    ctx.f[13] = float(ctx.f[13] * std::min(frames, 1.0));
+    return std::min(frames, 1.0);
+}
+
+// f13 = 6.0, before the spinner's angle adds it
+void LoadingIconTurn(PPCContext& ctx, uint8_t*) {
+    static Clock::time_point last;
+    ctx.f[13] = float(ctx.f[13] * DrawFrames(last));
+}
+
+// r31 = the fade's alpha just stepped down by 10, after the draw at the alpha before
+void LoadingFadeStep(PPCContext& ctx, uint8_t*) {
+    static Clock::time_point last;
+    static double carry = 0.0;
+    int32_t before = int32_t(ctx.r[31]) + kFadeStep;
+    if (before == kFadeStart) carry = 0.0;
+    double step = kFadeStep * DrawFrames(last) + carry;
+    double whole = std::floor(step);
+    carry = step - whole;
+    ctx.r[31] = uint64_t(int64_t(before - int32_t(whole)));
 }
 
 // Underwater bob
@@ -178,11 +187,7 @@ void LoadingIconTurn(PPCContext& ctx, uint8_t*) {
 // the last update left, so the swing grew with the frame rate. Each update now adds its share of a console frame,
 // and the roll's pull back to level near the surface follows the frame time too.
 
-namespace {
-
-double ConsoleFrames() { return fcip::FrameTime() / fcip::kConsoleFrame; }
-
-}  // namespace
+static double ConsoleFrames() { return fcip::FrameTime() / fcip::kConsoleFrame; }
 
 // f29 = p_waterbob_pitch, before the pitch adds sine times depth times it
 void WaterBobPitch(PPCContext& ctx, uint8_t*) { ctx.f[29] = float(ctx.f[29] * ConsoleFrames()); }

@@ -355,6 +355,12 @@ at = 0x82156100
 call = "LoadingIconTurn"
 regs = ["f13"]
 
+[[hook]]  # r31 = the loading screen fade out's alpha, just stepped down by 10 after its draw
+at = 0x821568A4
+call = "LoadingFadeStep"
+regs = ["r31"]
+after = true
+
 [[hook]]  # f29 = p_waterbob_pitch, before the pitch adds sine times depth times it
 at = 0x8226F838
 call = "WaterBobPitch"
