@@ -1,6 +1,7 @@
-// The field of view: the camera takes the user's true horizontal angle, zoom kept in tan space against the stock 90,
-// and above 16:9 the view keeps its 16:9 height and widens. The weapon and arms get their own projection from the
-// camera's second angle, scaled the same way by the viewmodel setting. Cutscenes keep their own angles.
+// The field of view: the camera takes the user's true horizontal angle, zoom kept in tan space against the stock 90
+// (above 90 the zoom levels keep their stock angles), and above 16:9 the view keeps its 16:9 height and widens. The
+// weapon and arms get their own projection from the camera's second angle, scaled the same way by the viewmodel
+// setting. Cutscenes keep their own angles.
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -21,6 +22,14 @@ constexpr uint32_t kCameraFov = 0x3C;
 constexpr uint32_t kCameraViewmodelFov = 0x40;  // vertical radians, the near projection at +0x2BC
 constexpr uint32_t kCameraAspect = 0x1B4;
 constexpr uint32_t kPlayerCutscene = 0xBA3;  // set by BeginCutScene, cleared by EndCutScene
+constexpr uint32_t kPlayerZoom = 0x884;
+// CZoom: active u8 +4, level count +0xC, magnification per level +0x10, first zoomed level +0x7C; the camera angle
+// lerps to 90 / magnification
+constexpr uint32_t kZoomOn = 0x04;
+constexpr uint32_t kZoomLevels = 0x0C;
+constexpr uint32_t kZoomMagnification = 0x10;
+constexpr uint32_t kZoomFirstLevel = 0x7C;
+constexpr double kStockFov = 1.5707963267948966;
 constexpr double kWide = 16.0 / 9.0;
 // COcean::Update sizes its projected grid from the stock m_fov, which spans about 1.2x the true view in tan space;
 // the choppy grid edge needs that margin
@@ -35,13 +44,40 @@ void WF(uint32_t addr, float value) {
     W32(addr, raw);
 }
 
+bool GuestOk(uint32_t addr) { return addr >= 0x10000u && addr < 0xC0000000u; }
+
 // the game's angle with the user's angle in degrees applied; false in cutscenes
 bool UserFov(double fov, double setting, double& out) {
     uint32_t player = fcip::LocalPlayer();
-    if (player >= 0x10000u && player < 0xC0000000u && R8(player + kPlayerCutscene)) return false;
+    if (GuestOk(player) && R8(player + kPlayerCutscene)) return false;
     if (!(fov > 0.0 && fov < 3.14)) return false;
     double user = setting * (3.14159265358979 / 180.0);
     out = 2.0 * std::atan(std::tan(fov * 0.5) * std::tan(user * 0.5));
+    return true;
+}
+
+// the first zoom level's angle while the local player is zoomed, else 0
+double FirstZoomFov() {
+    uint32_t player = fcip::LocalPlayer();
+    uint32_t zoom = GuestOk(player) ? R32(player + kPlayerZoom) : 0;
+    if (!GuestOk(zoom) || !R8(zoom + kZoomOn)) return 0.0;
+    uint32_t level = R32(zoom + kZoomFirstLevel);
+    if (level >= R32(zoom + kZoomLevels)) return 0.0;
+    float magnification = GF(zoom + kZoomMagnification + level * 4);
+    return magnification > 1.0f ? kStockFov / magnification : 0.0;
+}
+
+// the camera's angle; above 90 the zoom levels keep their stock angles and the zoom blends into the user's angle
+// between the first level and the unzoomed view
+bool ViewFov(double fov, double& out) {
+    double setting = fcip::Get().fov;
+    if (!UserFov(fov, setting, out)) return false;
+    double first = setting > 90.0 ? FirstZoomFov() : 0.0;
+    if (first > 0.0 && fov < kStockFov) {
+        double blend = std::clamp((fov - first) / (kStockFov - first), 0.0, 1.0);
+        double user = setting * (kStockFov / 90.0);
+        out = fov + (user - kStockFov) * blend;
+    }
     return true;
 }
 
@@ -67,7 +103,7 @@ PPC_FUNC(GUEST(CCamera_Update)) {
     bool screen = std::fabs(aspect - fcip::DisplayAspect()) < 0.01f * aspect;
     double wide = screen ? std::max(1.0, aspect / kWide) : 1.0;
     double h = 0.0;
-    bool user = valid && UserFov(fov, fcip::Get().fov, h);
+    bool user = valid && ViewFov(fov, h);
     if (!user && !(valid && wide > 1.0 && fov < 3.14f)) {
         GUEST_ORIG(CCamera_Update)(ctx, base);
         return;
@@ -100,7 +136,7 @@ PPC_FUNC(GUEST(COcean_Update)) {
     double h = 0.0;
     double wide = std::max(1.0, fcip::DisplayAspect() / kWide);
     double fov = ctx.f[3];
-    if (UserFov(fov, fcip::Get().fov, h)) ctx.f[3] = 2.0 * std::atan(std::tan(h * 0.5) * kOceanMargin * wide);
+    if (ViewFov(fov, h)) ctx.f[3] = 2.0 * std::atan(std::tan(h * 0.5) * kOceanMargin * wide);
     else if (fov > 0.0 && fov < 3.14) ctx.f[3] = 2.0 * std::atan(std::tan(fov * 0.5) * wide);
     GUEST_ORIG(COcean_Update)(ctx, base);
 }
