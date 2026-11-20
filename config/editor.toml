@@ -127,6 +127,7 @@ Grass_Reset = 0x82493678
 Grass_SetTexture = 0x82493688
 Overlay_Flush = 0x8235B940
 PerspectiveFov = 0x8265B0F8
+PostEffect_Blur = 0x824815E8
 Renderer_Init = 0x8247DC18
 ShadowMaps_Update = 0x823425C0
 Shadow_Extent = 0x8235EAC0
@@ -210,3 +211,8 @@ call = "ShadowRadiusLight"
 at = 0x82355668
 call = "ShadowRadiusRange"
 
+# instruction hooks, defined in src/game/edram_restore.cpp
+[[hook]]  # the EDRAM restore's draw: r6 its vertices, r29 set when it copies a texture, r22 a second one
+at = 0x82372F4C
+call = "RestoreQuads"
+regs = ["r1", "r6", "r22", "r29"]
