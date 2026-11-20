@@ -749,6 +749,7 @@ void IlluminationOcean(uint32_t dev, bool ocean) {
 }
 void CausticsWater(uint32_t dev, bool water) { Mark(dev, water ? gpu::kClearCausticsWater : gpu::kClearCausticsDry); }
 void FogMap(uint32_t dev, bool drawing) { Mark(dev, drawing ? gpu::kClearFogMap : gpu::kClearFogMapEnd); }
+void Blur(uint32_t dev, bool drawing) { Mark(dev, drawing ? gpu::kClearBlur : gpu::kClearBlurEnd); }
 
 // Shaders: the library makes its object, the host translates the container's microcode as created
 HLE_AFTER(D3DDevice_CreateVertexShader) { CreateShader(a[0], uint32_t(ctx.r[3]), true); }

@@ -102,6 +102,10 @@ void SetOceanLook(bool on, const OceanLook& look);
 // render thread: false when off
 bool OceanLookDrawn(OceanLook& out);
 
+// set on a blur pass's draws over an upscaled resolve: each fetch averages the two title texels a tap spans, g_ext.x
+// host texels per title texel
+constexpr uint32_t kBlurOut = 27;
+
 // HLSL of CasterHit(caster, prim, bary): t_ray_casters and t_ray_records declared before it
 extern const char* const kCasterHitHlsl;
 

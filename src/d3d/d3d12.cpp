@@ -1833,6 +1833,7 @@ private:
     bool OceanFlags(const State& s, const ShaderInfo& info, ShaderOptions& opt);
     bool FogFlags(const State& s, ShaderOptions& opt);
     bool CausticsFlags(const State& s, const ShaderInfo& info, ShaderOptions& opt);
+    bool BlurFlags(const State& s, const ShaderInfo& info, ShaderOptions& opt);
     uint8_t SoftShadow(uint32_t base, bool far_map) const;
     Resolved* SunMap(uint32_t base);
     void SunMapView(Resolved& r, D3D12_CPU_DESCRIPTOR_HANDLE at);
@@ -2193,6 +2194,8 @@ private:
     };
     std::unordered_map<uint32_t, RayShadow> ray_shadows_;  // by map address
     bool fog_map_ = false;  // between kClearFogMap and kClearFogMapEnd
+    bool blur_ = false;     // between kClearBlur and kClearBlurEnd
+    float blur_scale_ = 1;  // the blurred resolve's host texels per title texel
     std::vector<CasterDraw> caster_draws_;
     std::vector<CasterDraw> caster_build_;
     uint64_t casters_used_ = 0;   // records this frame
@@ -3634,6 +3637,21 @@ bool D3D12Backend::CausticsFlags(const State& s, const ShaderInfo& info, ShaderO
     return false;
 }
 
+// a blur pass's draws over an upscaled resolve: its taps, whole title texels apart, would skip host texels
+bool D3D12Backend::BlurFlags(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
+    if (!blur_ || info.textures.size() > fcip::kBlurOut) return false;
+    for (uint32_t i = 0; i < info.textures.size(); i++) {
+        uint32_t fetch[6];
+        ReadFetch(s, info.textures[i].fetch, fetch);
+        Resolved* r = FindResolved(xenos::DecodeTextureFetch(fetch), info.textures[i], ShaderStage::Pixel, i);
+        if (!r || r->scale <= 1) continue;
+        opt.tex_flags[fcip::kBlurOut] = 1;
+        blur_scale_ = r->scale;
+        return true;
+    }
+    return false;
+}
+
 // the soft filter's flags on a fetch of the map at base, none when it is no shadow map
 uint8_t D3D12Backend::SoftShadow(uint32_t base, bool far_map) const {
     auto map = shadow_resolves_.find(base);
@@ -4300,6 +4318,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     fog_view_ = FogFlags(s, ps_opt) ? fog_[0].Get() : nullptr;
     bool caustics = s.ps && !sun && !ray_scenes_[0] && CausticsFlags(s, s.ps->info, ps_opt);
     caustics_view_ = caustics ? caustics_.Get() : nullptr;
+    bool blur = s.ps && BlurFlags(s, s.ps->info, ps_opt);
     Variant* vs = EnsureVariant(s.vs, vs_opt);
     // no pixel shader: a depth only draw
     Variant* ps = s.ps ? EnsureVariant(s.ps, ps_opt) : nullptr;
@@ -4372,6 +4391,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         c.ext[0] = ocean_.amount;
         c.ext[1] = ocean_.pivot;
     }
+    if (blur) c.ext[0] = blur_scale_;
     // the source factor of colour 0, 1 without blending
     uint32_t b0 = k.blend[0];
     uint32_t src_blend = (b0 & 0x1FFF1FFF) != 0x00010001 ? Bits(b0, 0, 5) : 1;
@@ -4481,6 +4501,10 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
     }
     if (flags & (kClearFogMap | kClearFogMapEnd)) {
         fog_map_ = (flags & kClearFogMap) != 0;
+        return;
+    }
+    if (flags & (kClearBlur | kClearBlurEnd)) {
+        blur_ = (flags & kClearBlur) != 0;
         return;
     }
     if (flags & kClearMotionBegin) {

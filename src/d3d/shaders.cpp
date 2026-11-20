@@ -473,6 +473,21 @@ float3 OceanXbox(float3 water, float3 reflection) {
 }
 )";
 
+// a console tap between two texels averages them: over upscaled texels, a box of two title texels, a sample per
+// two host texels
+const char* kBlurPrelude = R"(
+float4 BlurTap(Texture2D<float4> t, SamplerState s, float2 uv, float2 size) {
+    int n = int(ceil(g_ext.x));
+    float2 gap = 2 * g_ext.x / n / size;
+    float2 first = uv - gap * (n - 1) * 0.5;
+    float4 sum = 0;
+    for (int y = 0; y < n; y++) {
+        for (int x = 0; x < n; x++) sum += t.SampleLevel(s, first + gap * float2(x, y), 0);
+    }
+    return sum / (n * n);
+}
+)";
+
 // caustics: the screen behind the water lit where the light behind it lies under the water's pixel
 const char* kCausticsWaterPrelude = R"(
 static float4 g_pixel;  // the water's SV_Position, w its view distance
@@ -626,6 +641,8 @@ private:
     // pixel: the ocean's colour becomes its reflection over its water, as the original Xbox game drew it
     bool OceanXbox() const { return Pixel() && (opt_.tex_flags[fcip::kOceanOut] & fcip::kOceanReflection); }
     bool DepthOnly() const { return Pixel() && opt_.tex_flags[fcip::kDepthOut]; }
+    // pixel: a blur pass over an upscaled resolve
+    bool Blur() const { return Pixel() && opt_.tex_flags[fcip::kBlurOut]; }
     // pixel: the index of the screen a water draw shows behind it, which takes the caustics' light, -1 none
     int CausticsScreen() const { return Pixel() ? int(opt_.tex_flags[fcip::kCausticsOut]) - 1 : -1; }
     // pixel: colour 0 seen through the volumetric fog in front of it
@@ -953,6 +970,7 @@ void Translator::EmitTextureFetch(const Fetch& f) {
         } else {
             fetch = F("t%u.Sample(s%u, %s)", t, t, at.c_str());
         }
+        if (op == kTextureFetch && dim == kDim2D && Blur()) fetch = F("BlurTap(t%u, s%u, uv, size)", t, t);
         bool sun_op = op == kTextureFetch || op == kGetWeights;
         uint8_t sun = Pixel() && dim == kDim2D && !f.Unnormalized() ? opt_.tex_flags[t & 31] : 0;
         bool soft = sun_op && (sun & (fcip::kSunSoft | fcip::kShadowSoft)) && (op == kGetWeights || oy);
@@ -1274,6 +1292,7 @@ void CommitAlu() {
     }
     if (Albedo()) s += "static float4 g_albedo = 0;\nstatic bool g_albedo_set = false;\n";
     if (OceanXbox()) s += kOceanXboxPrelude;
+    if (Blur()) s += kBlurPrelude;
     if (FogIn()) s += F("Texture2D<float4> t_fog : register(t%u);\n", fcip::kFogSlot);
     if (CausticsScreen() >= 0) {
         s += F("Texture2D<float4> t_caustics : register(t%u);\n", fcip::kCausticsSlot);
