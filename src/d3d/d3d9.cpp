@@ -744,8 +744,8 @@ void MotionPause(uint32_t dev) { Mark(dev, gpu::kClearMotionPause); }
 void MotionResume(uint32_t dev) { Mark(dev, gpu::kClearMotionResume); }
 void IlluminationScene(uint32_t dev) { Mark(dev, gpu::kClearIlluminationScene); }
 void VolumetricFogEnd(uint32_t dev) { Mark(dev, gpu::kClearFogEnd); }
-void IlluminationOcean(uint32_t dev, bool ocean) {
-    Mark(dev, ocean ? gpu::kClearIlluminationOcean : gpu::kClearIlluminationPastOcean);
+void IlluminationUnlit(uint32_t dev, bool unlit) {
+    Mark(dev, unlit ? gpu::kClearIlluminationUnlit : gpu::kClearIlluminationLit);
 }
 void CausticsWater(uint32_t dev, bool water) { Mark(dev, water ? gpu::kClearCausticsWater : gpu::kClearCausticsDry); }
 void FogMap(uint32_t dev, bool drawing) { Mark(dev, drawing ? gpu::kClearFogMap : gpu::kClearFogMapEnd); }

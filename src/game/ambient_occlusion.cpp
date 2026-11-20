@@ -5,18 +5,19 @@
 // the characters, the blended layers and the ocean land on top. The fog is linear over view distance, from the
 // renderer's constant block. RTAO traces the world's draws from the start of the camera's list to that point. Global
 // illumination traces every world layer, the characters included, and is added after the list's last item wherever a
-// draw left its albedo, the first person weapon's past the world too but not the ocean's. Volumetric fog replaces the
-// game's: the list draws without it, then the fog goes in through its own sun map and the terrain's heights before the
-// first item on the camera's side of the water, layer 9 on. Those are mostly blended and leave no depth for the fog to
-// read, so each of their pixels takes the fog in front of it as it draws, until the list ends. Volumetric clouds go in
-// after the sky box's draw (82372698, the Sky box pipeline's item 82508720), in the camera's pass and the water's
-// reflections, over the pixels nothing but sky covers. The box turns about the world's up axis by the degrees 825EE578
-// hands it at renderer +0x92A4, RotationSpeed (engine +0xA2C) times the render time plus SkyBoxAngle (+0xA28), and the
-// clouds turn by the same. The level's Rain node (+0xB60), set by the StartRain and StopRain script calls, thickens and
-// darkens them over kRainFade. Caustics go in before the camera's list draws its first water item, the Ocean
-// pipeline's (Ocean.fx) or the Lake pipeline's (lakes and rivers, Lake.fx, layer 8), and each water item takes them
-// through the screen it shows behind it; with the camera under the sea they go straight onto what lies below it, before
-// the first item past the world. The ocean's layers hold the quads over and under the water, not the water itself.
+// draw left its albedo, the first person weapon's past the world too but not the characters' or the ocean's. Volumetric
+// fog replaces the game's: the list draws without it, then the fog goes in through its own sun map and the terrain's
+// heights before the first item on the camera's side of the water, layer 9 on. Those are mostly blended and leave no
+// depth for the fog to read, so each of their pixels takes the fog in front of it as it draws, until the list ends.
+// Volumetric clouds go in after the sky box's draw (82372698, the Sky box pipeline's item 82508720), in the camera's
+// pass and the water's reflections, over the pixels nothing but sky covers. The box turns about the world's up axis by
+// the degrees 825EE578 hands it at renderer +0x92A4, RotationSpeed (engine +0xA2C) times the render time plus
+// SkyBoxAngle (+0xA28), and the clouds turn by the same. The level's Rain node (+0xB60), set by the StartRain and
+// StopRain script calls, thickens and darkens them over kRainFade. Caustics go in before the camera's list draws its
+// first water item, the Ocean pipeline's (Ocean.fx) or the Lake pipeline's (lakes and rivers, Lake.fx, layer 8), and
+// each water item takes them through the screen it shows behind it; with the camera under the sea they go straight onto
+// what lies below it, before the first item past the world. The ocean's layers hold the quads over and under the water,
+// not the water itself.
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -99,7 +100,7 @@ thread_local Pipelines t_pipelines;
 thread_local uint32_t t_draw_list = 0;  // the camera pass's list while it is drawn, until occlusion went in
 thread_local uint32_t t_world_list = 0;  // the same while its world layers stream into global illumination's scene
 thread_local uint32_t t_past_list = 0;   // the same past its world, whose draws but the ocean's keep their albedo
-thread_local bool t_ocean = false;
+thread_local bool t_unlit = false;       // the draws clear their albedo
 
 // the camera pass's list until the volumetric fog went in, and the game's fog the list draws without
 struct FogSplit {
@@ -237,14 +238,22 @@ void EndWorld(PPCContext& ctx) {
     d3d::IlluminationWorld(R32(SYM_Device_pointer), ambient);
 }
 
+// the moved characters clear their albedo, so global illumination doesn't show their low poly shapes
+void UpdateCharacters(uint32_t list) {
+    uint32_t key = 0;
+    if (t_unlit || !NextKey(list, key) || (key & kLayerAndPipeline) != kMovedKey) return;
+    t_unlit = true;
+    d3d::IlluminationUnlit(R32(SYM_Device_pointer), true);
+}
+
 // past the world, the ocean's layers clear the albedo the others write
 void UpdateOcean(uint32_t list) {
     uint32_t key = 0;
     if (!NextKey(list, key)) return;
     bool ocean = kOceanLayers >> (key >> kLayerShift & kLayerMask) & 1;
-    if (ocean == t_ocean) return;
-    t_ocean = ocean;
-    d3d::IlluminationOcean(R32(SYM_Device_pointer), ocean);
+    if (ocean == t_unlit) return;
+    t_unlit = ocean;
+    d3d::IlluminationUnlit(R32(SYM_Device_pointer), ocean);
 }
 
 // the camera's view inverted, a rotation and a translation, with the renderer's z, the distance, turned back into the
@@ -506,7 +515,7 @@ PPC_EXTERN_FUNC(GUEST_ORIG(SkyBox_Draw));
 
 // the list's keys made and pushed, r3 the constant block
 PPC_FUNC(GUEST(Scene_Sort)) {
-    if (Enabled()) {
+    if (Enabled() || Illuminated()) {
         t_sort_list = uint32_t(ctx.r[3]) + kBlockList;
         t_pipelines = FindPipelines();
     }
@@ -553,7 +562,7 @@ PPC_FUNC(GUEST(Scene_Draw)) {
     if (t_draw_list) Occlude();
     if (lit) Illuminate(ctx);
     t_past_list = 0;
-    t_ocean = false;
+    t_unlit = false;
     if (fogged) {
         if (t_fog.list) FogIn();
         W32(block + kBlockFogScale, t_fog.scale);
@@ -568,6 +577,7 @@ PPC_FUNC(GUEST(Scene_Pop)) {
     uint32_t list = uint32_t(ctx.r[3]);
     if (t_draw_list && t_draw_list == list && PastWorld(list, false)) Occlude();
     if (t_world_list && t_world_list == list && PastWorld(list, true)) EndWorld(ctx);
+    if (t_world_list && t_world_list == list) UpdateCharacters(list);
     if (t_past_list && t_past_list == list) UpdateOcean(list);
     if (t_fog.list && t_fog.list == list && NearLayer(list)) FogIn();
     if (t_caustics.list && t_caustics.list == list) UpdateCaustics(list);
