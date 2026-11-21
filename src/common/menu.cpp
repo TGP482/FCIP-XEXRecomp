@@ -130,7 +130,7 @@ enum RowId {
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kFrameGeneration, kSmaa, kAmbientOcclusion,
     kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection, kVolumetricClouds,
     kCaustics, kPadSensitivityX, kPadSensitivityY, kPadAimSensitivityX, kPadAimSensitivityY, kPadInvertX, kPadInvertY,
-    kPadHoldAim, kGyroRecenter
+    kPadHoldAim, kGyroRecenter, kJoinIp, kPlayer1, kPlayer2, kPlayer3, kPlayer4
 };
 
 constexpr Row kSettingsRows[] = {
@@ -173,10 +173,17 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kDrawDistance, "DRAW DISTANCE",
      "Scales how far objects, grass and vegetation are drawn up to 8x and the area casting sun shadows up to 32x"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
-    {Kind::Heading, -1, "GENERAL", "Intros and audio output"},
+    {Kind::Heading, -1, "GENERAL", "Intros, audio output and the system link join address"},
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
     {Kind::Value, kAudioOutput, "AUDIO OUTPUT",
      "Mono, stereo or 5.1 surround, automatic follows the speakers set up in Windows"},
+    {Kind::Text, kJoinIp, "SYSTEM LINK JOIN IP",
+     "The IP address or name of a host past your network, which the system link game search also asks"},
+    {Kind::Heading, -1, "INPUT DEVICES", "The keyboard and mouse or controller each player uses"},
+    {Kind::Value, kPlayer1, "PLAYER 1", "The keyboard and mouse or controller player 1 uses"},
+    {Kind::Value, kPlayer2, "PLAYER 2", "The keyboard and mouse or controller player 2 uses"},
+    {Kind::Value, kPlayer3, "PLAYER 3", "The keyboard and mouse or controller player 3 uses"},
+    {Kind::Value, kPlayer4, "PLAYER 4", "The keyboard and mouse or controller player 4 uses"},
     {Kind::Heading, -1, "TEXTURES", "Texture replacement and dumping"},
     {Kind::Value, kTextureReplacement, "TEXTURE REPLACEMENT",
      "Replaces the game's textures with the images in the textures\\replacement folder beside the exe"},
@@ -515,8 +522,91 @@ void StepInputRow(int id, int step, char (&text)[64]) {
     }
 }
 
+// Players
+
+constexpr app::Port kPlayerChoices[] = {{true, 0},  {true, 1},  {true, 2},  {true, 3}, {true, -1},
+                                        {false, 0}, {false, 1}, {false, 2}, {false, 3}, {false, -1}};
+
+// the player a row sets, -1 for other rows
+int PlayerOf(int id) { return id >= kPlayer1 && id <= kPlayer4 ? id - kPlayer1 : -1; }
+
+std::string PortText(const app::Port& p) {
+    if (p.keyboard && p.pad >= 0) return "KEYBOARD + CONTROLLER " + std::to_string(p.pad + 1);
+    if (p.keyboard) return "KEYBOARD";
+    if (p.pad >= 0) return "CONTROLLER " + std::to_string(p.pad + 1);
+    return "NOT CONNECTED";
+}
+
+bool SamePort(const app::Port& a, const app::Port& b) { return a.keyboard == b.keyboard && a.pad == b.pad; }
+
+// a port's devices without those a choice takes
+app::Port Without(app::Port p, const app::Port& choice) {
+    if (choice.keyboard) p.keyboard = false;
+    if (choice.pad >= 0 && choice.pad == p.pad) p.pad = -1;
+    return p;
+}
+
+bool Empty(const app::Port& p) { return !p.keyboard && p.pad < 0; }
+
+// A choice takes its devices from the other players. Player 1 drives single player, so a choice that leaves it with
+// none hands it the chooser's old devices instead, and is refused when that leaves none too.
+bool SetPlayer(app::Port (&players)[app::kPorts], int player, const app::Port& choice) {
+    app::Port next[app::kPorts];
+    for (int i = 0; i < app::kPorts; i++) next[i] = i == player ? choice : Without(players[i], choice);
+    if (Empty(next[0])) next[0] = Without(players[player], choice);
+    if (Empty(next[0])) return false;
+    std::copy(std::begin(next), std::end(next), players);
+    return true;
+}
+
+// an unplugged controller is left out unless the player has it now, and so is a choice SetPlayer refuses
+std::vector<app::Port> PlayerList(const app::Settings& s, int player) {
+    std::vector<app::Port> out;
+    for (const app::Port& c : kPlayerChoices) {
+        bool current = SamePort(c, s.players[player]);
+        bool plugged = c.pad < 0 || current || input::PadConnected(c.pad);
+        app::Port test[app::kPorts];
+        std::copy(std::begin(s.players), std::end(s.players), test);
+        bool allowed = !(player == 0 && Empty(c)) && SetPlayer(test, player, c);
+        if (plugged && (current || allowed)) out.push_back(c);
+    }
+    return out;
+}
+
+// a choice holding another player's device names that player
+std::string ChoiceText(const app::Settings& s, int player, const app::Port& c) {
+    std::string text = PortText(c);
+    bool current = SamePort(c, s.players[player]);
+    for (int i = 0; i < app::kPorts && !current; i++) {
+        const app::Port& other = s.players[i];
+        bool shared = (c.keyboard && other.keyboard) || (c.pad >= 0 && c.pad == other.pad);
+        if (i != player && shared) {
+            text += "  (FROM PLAYER " + std::to_string(i + 1) + ")";
+            break;
+        }
+    }
+    if (current && c.pad >= 0 && !input::PadConnected(c.pad)) text += "  (UNPLUGGED)";
+    return text;
+}
+
+void StepPlayer(app::Settings& s, int player, int step) {
+    std::vector<app::Port> list = PlayerList(s, player);
+    int i = 0;
+    for (int k = 0; k < int(list.size()); k++) {
+        if (SamePort(list[size_t(k)], s.players[player])) i = k;
+    }
+    SetPlayer(s.players, player, list[size_t(StepIndex(i, step, int(list.size())))]);
+}
+
 void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
     switch (id) {
+        case kPlayer1:
+        case kPlayer2:
+        case kPlayer3:
+        case kPlayer4:
+            if (step) StepPlayer(s, PlayerOf(id), step);
+            std::snprintf(text, sizeof(text), "%s", PortText(s.players[PlayerOf(id)]).c_str());
+            break;
         case kMonitor:
             StepMonitor(step, s, text);
             break;
@@ -761,6 +851,67 @@ int OptionRow(const char* label, const char* value) {
     return step;
 }
 
+// a row whose value is one widget across OptionRow's arrows and value
+struct WideRow {
+    float x, y, w, h;
+};
+
+// the label left, the cursor where the arrows would start at their width
+WideRow BeginWideRow(const char* label) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    float row_w = ImGui::GetContentRegionAvail().x;
+    WideRow r{ImGui::GetCursorPosX(), ImGui::GetCursorPosY(), row_w, ImGui::GetFrameHeight()};
+    float block_w = r.h * 2 + ImGui::GetFontSize() * kValueEms + style.ItemSpacing.x * 2;
+    ImGui::PushID(label);
+    ImGui::SetCursorPos(ImVec2(r.x + style.ItemInnerSpacing.x, r.y));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SetCursorPos(ImVec2(r.x + r.w - block_w, r.y));
+    ImGui::SetNextItemWidth(block_w);
+    return r;
+}
+
+void EndWideRow(const WideRow& r) {
+    ImGui::PopID();
+    ImGui::SetCursorPos(ImVec2(r.x, r.y));
+    ImGui::Dummy(ImVec2(r.w, r.h));
+}
+
+// a drop-down list of the player's choices: stepping through them would hand devices between players on the way
+void PlayerRow(const Row& r) {
+    app::Settings& s = app::Get();
+    int player = PlayerOf(r.id);
+    WideRow box = BeginWideRow(r.label);
+    // opaque: the rows under the list showed through
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(kPanelBg.x, kPanelBg.y, kPanelBg.z, 1.0f));
+    if (ImGui::BeginCombo("##device", PortText(s.players[player]).c_str())) {
+        for (const app::Port& c : PlayerList(s, player)) {
+            bool current = SamePort(c, s.players[player]);
+            bool picked = ImGui::Selectable(ChoiceText(s, player, c).c_str(), current) && !current;
+            if (picked && SetPlayer(s.players, player, c)) Changed(false);
+            if (current) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopStyleColor();
+    EndWideRow(box);
+}
+
+// typed where the arrows and value sit, saved once the edit ends
+void JoinRow(const Row& r) {
+    static char join[64] = {};
+    static bool loaded = false;
+    if (!loaded) std::snprintf(join, sizeof(join), "%s", app::Get().join_ip.c_str());
+    loaded = true;
+    WideRow box = BeginWideRow(r.label);
+    ImGui::InputText("##text", join, sizeof(join));
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        app::Get().join_ip = join;
+        Changed(false);
+    }
+    EndWideRow(box);
+}
+
 const char* const kPages[] = {"RECOMP SETTINGS", "MOUSE AND KEYBOARD", "CONTROLLER", "DEBUG"};
 
 // the debug page is default.xex's only
@@ -893,7 +1044,12 @@ void DrawRows(int page) {
         }
         if (r.kind == Kind::Bind) BindRow(r);
         if (r.kind == Kind::Level) LevelRow(r);
+        if (r.kind == Kind::Text) JoinRow(r);
         if (r.kind != Kind::Value) continue;
+        if (PlayerOf(r.id) >= 0) {
+            PlayerRow(r);
+            continue;
+        }
         bool held = g_display_held && DisplayRow(r.id);
         int step = OptionRow(r.label, RowText(r.id, 0, held ? g_display : app::Get()).c_str());
         if (step && DisplayRow(r.id)) HoldDisplay(r.id, step);
@@ -1124,6 +1280,14 @@ std::vector<std::string> Choices(const Row& row, int* current) {
     *current = 0;
     // calibrating has no values, a step starts it
     if (row.kind != Kind::Value || row.id == kGyroCalibrate) return out;
+    if (int player = PlayerOf(row.id); player >= 0) {
+        const app::Settings& s = app::Get();
+        for (const app::Port& c : PlayerList(s, player)) {
+            if (SamePort(c, s.players[player])) *current = int(out.size());
+            out.push_back(ChoiceText(s, player, c));
+        }
+        return out;
+    }
     const Settings keep = Get();
     const std::string monitor = g_display_monitor;
     g_picks = 0;
@@ -1144,6 +1308,13 @@ std::vector<std::string> Choices(const Row& row, int* current) {
 
 void Choose(const Row& row, int index) {
     std::lock_guard lock(app::UiLock());
+    if (int player = PlayerOf(row.id); player >= 0) {
+        app::Settings& s = app::Get();
+        std::vector<app::Port> list = PlayerList(s, player);
+        bool other = index >= 0 && index < int(list.size()) && !SamePort(list[size_t(index)], s.players[player]);
+        if (other && SetPlayer(s.players, player, list[size_t(index)])) Changed(false);
+        return;
+    }
     g_pick = index;
     RowText(row.id, 1);
     g_pick = -1;

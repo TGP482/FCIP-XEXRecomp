@@ -270,8 +270,9 @@ void ListRows() {
         }
         return;
     }
+    // text rows are typed on F10 only
     for (size_t i = size_t(g_native.section) + 1; i < page.size() && !SectionEnd(page[i]); i++) {
-        g_native.rows.push_back(&page[i]);
+        if (page[i].kind != rows::Kind::Text) g_native.rows.push_back(&page[i]);
     }
 }
 

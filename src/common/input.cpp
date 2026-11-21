@@ -442,23 +442,25 @@ void PressStart() {
 }
 
 void GamePad(int port, input::Pad& pad) {
-    if (port != 0) return;
+    int keyboard = input::KeyboardPort();
+    // the keyboard's port, or player 1's when no player has it
+    if (port != std::max(keyboard, 0)) return;
     bool start = std::chrono::steady_clock::now().time_since_epoch().count() < g_start_until;
     K::TrackKeys(pad.connected && !Neutral(pad), MenuOpen());
     g_pad_y = pad.buttons & input::kY;
     g_pad_aim = pad.buttons & input::kRightThumb;
     if (MenuOpen()) {
         g_reload_only = g_interact_only = false;
-        pad = {.connected = true};
+        pad = {.connected = pad.connected || port == keyboard};
         return;
     }
     ToggleHud();
-    input::Pad kb = Keyboard(pad);
+    input::Pad kb = port == keyboard ? Keyboard(pad) : input::Pad{};
     // not plain negation: -32768 has no positive
     if (fcip::Get().pad_invert_x && !InMenu()) pad.rx = int16_t(-1 - pad.rx);
     if (fcip::Get().pad_invert_y && !InMenu()) pad.ry = int16_t(-1 - pad.ry);
-    // keyboard and mouse ride on port 0, a controller or not
-    pad.connected = true;
+    // keyboard and mouse ride on their port, a controller or not
+    if (port == keyboard) pad.connected = true;
     pad.buttons |= kb.buttons;
     pad.left_trigger = std::max(pad.left_trigger, kb.left_trigger);
     pad.right_trigger = std::max(pad.right_trigger, kb.right_trigger);

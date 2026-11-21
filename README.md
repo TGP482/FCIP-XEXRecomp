@@ -48,6 +48,7 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 ### General
 - **Skip Intros** - Skips the Ubisoft logo, the branding plate and the intro movie.
 - **Audio Output** - Choose between Automatic, which follows the speakers set up in Windows, Mono, 2.0 Stereo and 5.1 Surround.
+- **System Link Support** - System Link can be played online by directly connecting to a friend's IP address, or over LAN.
 
 
 ### Textures
@@ -66,6 +67,12 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 ### Miscellaneous
 - **Custom Menu Cursor** - Place a `cursor.png` (or `cursor.dds`) beside the exe to replace the Windows arrow in the game's menus.
 - **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.
+
+## Playing Online
+System Link can be played online by connecting directly to the host's IP address. No third-party programs are needed.
+- Press F10 by default to open the Settings overlay.
+- Enter the host's IP address in **System Link Join IP**.
+- From the System Link menu, join the host's session from the list.
 
 ## System Requirements
 

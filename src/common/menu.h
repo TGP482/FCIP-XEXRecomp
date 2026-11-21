@@ -46,7 +46,7 @@ bool SkippableMovie();
 
 namespace rows {
 
-enum class Kind : uint8_t { Heading, Value, Bind, Level, Defaults };
+enum class Kind : uint8_t { Heading, Value, Bind, Level, Defaults, Text };
 
 struct Row {
     Kind kind;
