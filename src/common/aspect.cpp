@@ -48,11 +48,10 @@ thread_local bool g_paint = false;   // the red paint is drawing
 thread_local bool g_black = false;   // the black paint is drawing
 thread_local bool g_held = false;    // a menu part above has its place
 
-// a kStretchWidgets part drawing: page x of its centre and of its label's inner edge, -1 when none
+// a kStretchWidgets part drawing: page x of its centre, -1 when none
 struct Stretch {
     float centre = -1.0f;
     float place = 0.0f;  // back buffer x the narrowed layout gives the centre
-    float edge = -1.0f;
 };
 thread_local Stretch g_stretch;
 
@@ -91,10 +90,21 @@ constexpr uint32_t kStayWidgets[] = {0x46740CFEu, 0xAD70BF0Fu, 0x5DDFF3C6u, 0xC3
 // parts whose text changes as they are used keep the hold they first took, else typing or the turning letter ring
 // moves them: the virtual keyboard's A_VirtualKeyboard, A_Cursor, A_Cursor1 and L_Text
 constexpr uint32_t kFrozenWidgets[] = {0x32971D5Cu, 0x26994A5Fu, 0x782E3A98u, 0xC9E6E44Bu};
-// drawn by the wide set for the console's 16:9 stretch (Controlpad_wide.xbt): i_controlpad, the controller map's
-// label groups with their lines, the profile's ai_merc
-constexpr uint32_t kStretchWidgets[] = {0x0F949DB9u, 0x5DDFF3C6u, 0xC3577984u, 0x6BF79324u};
+// drawn for the console's 16:9 stretch at every aspect: the profile's ai_merc
+constexpr uint32_t kStretchWidgets[] = {0x6BF79324u};
 constexpr float kConsoleStretch = 4.0f / 3.0f;  // a 4:3 page across 16:9
+// font: +0x54 glyphs, 0x18 each with u, v at +8, +0xC (whole part of u the texture page); +0x58 char map, a u16
+// glyph index table per high byte
+constexpr uint32_t kFontGlyphs = 0x54;
+constexpr uint32_t kFontCharMap = 0x58;
+constexpr uint32_t kGlyphSize = 0x18;
+constexpr uint32_t kGlyphU = 0x08;
+constexpr uint32_t kGlyphV = 0x0C;
+constexpr int kPadGlyphs = 31;  // UIGlyph_table
+
+// the drawing font's pad button glyphs by the texture corner its quads carry, u bits high, v bits low
+thread_local uint64_t g_pad_icons[kPadGlyphs];
+thread_local int g_pad_icon_count = 0;
 
 uint32_t Bits(float f) {
     uint32_t b;
@@ -316,20 +326,12 @@ static bool LastSpan(uint32_t widget, Span& span) {
 // a stretched part keeps the console's shape about its centre, at the place the narrowed layout gives it
 static void UpdateStretch(uint32_t widget, uint32_t name) {
     Span span;
-    bool known = LastSpan(widget, span);
-    if (g_stretch.centre < 0.0f) {
-        if (!In(name, kStretchWidgets) || !fcip::DisplayWide() || !MenuLayout()) return;
-        if (!known || span.right <= span.left) return;
-        float width = float(R32(SYM_DisplayBlock + kBlockWidth));
-        float k = fcip::Scale2D();
-        g_stretch.centre = (span.left + span.right) * 0.5f;
-        g_stretch.place = g_stretch.centre * width / kMenuWidth * k + g_anchor * (1.0f - k) * width;
-    }
-    // a label holds its side toward the centre, where its line meets it
-    if (known && span.text_right > span.text_left) {
-        bool left = span.text_left + span.text_right < 2.0f * g_stretch.centre;
-        g_stretch.edge = left ? span.text_right : span.text_left;
-    }
+    if (g_stretch.centre >= 0.0f || !In(name, kStretchWidgets) || !MenuLayout()) return;
+    if (!LastSpan(widget, span) || span.right <= span.left) return;
+    float width = float(R32(SYM_DisplayBlock + kBlockWidth));
+    float k = fcip::Scale2D();
+    g_stretch.centre = (span.left + span.right) * 0.5f;
+    g_stretch.place = g_stretch.centre * width / kMenuWidth * k + g_anchor * (1.0f - k) * width;
 }
 
 static void Remember(const Span& span, float anchor) {
@@ -365,7 +367,31 @@ PPC_FUNC(GUEST(UIWidget_Draw)) {
     g_stretch = outer_stretch;
 }
 
+// as Font_Draw works out a glyph's corner: u and v less the page
+static void NotePadIcons(uint32_t font) {
+    g_pad_icon_count = 0;
+    uint32_t glyphs = R32(font + kFontGlyphs);
+    for (int i = 0; glyphs && i < kPadGlyphs; i++) {
+        uint32_t code = R16(SYM_UIGlyph_table + uint32_t(i) * 2);
+        uint32_t map = R32(font + kFontCharMap + (code >> 8) * 4);
+        if (!map) continue;
+        uint32_t glyph = glyphs + R16(map + (code & 0xFF) * 2) * kGlyphSize;
+        float u = Float(R32(glyph + kGlyphU));
+        float v = Float(R32(glyph + kGlyphV));
+        float page = float(int(u));
+        g_pad_icons[g_pad_icon_count++] = uint64_t(Bits(u - page)) << 32 | Bits(v - page);
+    }
+}
+
+// r8 points at the quad's first texture corner
+static bool IsPadIcon(uint32_t corner) {
+    uint64_t uv = uint64_t(R32(corner)) << 32 | R32(corner + 4);
+    return std::find(g_pad_icons, g_pad_icons + g_pad_icon_count, uv) != g_pad_icons + g_pad_icon_count;
+}
+
+// r3 the font
 PPC_FUNC(GUEST(Font_Draw)) {
+    NotePadIcons(uint32_t(ctx.r[3]));
     g_text = true;
     GUEST_ORIG(Font_Draw)(ctx, base);
     g_text = false;
@@ -379,18 +405,10 @@ static float Fit(float x, float k, float pos, float width) {
     return (x + 0.5f) * k + pos * (1.0f - k) * width - 0.5f;
 }
 
-// x at the console's stretch about the stretched part's centre; a glyph keeps its shape about its label's inner edge
+// x at the console's stretch about the stretched part's centre
 static float Stretched(float x, float k, float width) {
-    float to_bb = width / kMenuWidth;
-    float wide = k * kConsoleStretch;
-    float centre = g_stretch.centre * to_bb;
-    float at = x + 0.5f;
-    float out = g_stretch.place + (at - centre) * wide;
-    if (g_text && g_stretch.edge >= 0.0f) {
-        float edge = g_stretch.edge * to_bb;
-        out = g_stretch.place + (edge - centre) * wide + (at - edge) * k;
-    }
-    return out - 0.5f;
+    float centre = g_stretch.centre * width / kMenuWidth;
+    return g_stretch.place + (x + 0.5f - centre) * k * kConsoleStretch - 0.5f;
 }
 
 // the red paint keeps its shape at the share of the spare width it had, so a swipe moves smoothly and paint running
@@ -426,8 +444,8 @@ static void Gather(const uint32_t (&x)[4], float width) {
 // about the anchor
 PPC_FUNC(GUEST(UI_DrawQuad)) {
     float scale = fcip::Scale2D();
-    // 854x480 is 16:9 to within a pixel
-    if (std::fabs(scale - 1.0f) < 0.002f) {
+    // 854x480 is 16:9 to within a pixel; menus still stretch their pad buttons and kStretchWidgets
+    if (std::fabs(scale - 1.0f) < 0.002f && !MenuLayout()) {
         GUEST_ORIG(UI_DrawQuad)(ctx, base);
         return;
     }
@@ -442,11 +460,17 @@ PPC_FUNC(GUEST(UI_DrawQuad)) {
         return;
     }
     float anchor = g_paint ? PaintSide(saved, width) : g_anchor;
+    float fitted[4];
     for (int i = 0; i < 4; i++) {
         float x = Float(saved[i]);
-        float fitted = g_stretch.centre >= 0.0f ? Stretched(x, scale, width) : Fit(x, scale, anchor, width);
-        W32(corner[i], Bits(fitted));
+        fitted[i] = g_stretch.centre >= 0.0f ? Stretched(x, scale, width) : Fit(x, scale, anchor, width);
     }
+    // the menu font's pad buttons take the console's 16:9 stretch about their centre at every aspect
+    if (g_text && MenuLayout() && IsPadIcon(uint32_t(ctx.r[8]))) {
+        float mid = (*std::min_element(fitted, fitted + 4) + *std::max_element(fitted, fitted + 4)) * 0.5f;
+        for (float& x : fitted) x = mid + (x - mid) * kConsoleStretch;
+    }
+    for (int i = 0; i < 4; i++) W32(corner[i], Bits(fitted[i]));
     GUEST_ORIG(UI_DrawQuad)(ctx, base);
     for (int i = 0; i < 4; i++) W32(corner[i], saved[i]);
 }
