@@ -45,13 +45,18 @@ constexpr uint32_t kHeightTarget = 0x828C4A54;
 constexpr uint32_t kSquareCursor = 0x8296B1D4;
 constexpr uint32_t kToolCursor = 0x828C5D50;   // xyz, where the tools act
 constexpr uint32_t kCursorMoved = 0x8296B245;  // the camera update's flag the tools re-aim on (brush area, selection)
-constexpr uint32_t kCursorTarget = 0x8296C724;  // xyz, the orbit point's copy; previews and moves use it
+constexpr uint32_t kCursorTarget = 0x8296C724;  // xyz, what the camera aims at; previews and moves use it
+constexpr uint32_t kWaterPoint = 0x8296C730;    // xyz, floating objects' place, where the view meets the water
+constexpr uint32_t kFloating = 0x8296B265;      // the object placed floats
+constexpr uint32_t kWaterHeight = 0x82067BD0;   // float, metres
 constexpr uint32_t kMapChanged = 0x8296B266;
-// camera: distance 1 to 115 from what it orbits; mode 2 casts its view's centre ray, the others orbit the cursor
+// camera: distance 1 to 115 from what it orbits; mode 0 orbits the cursor, 1 flies looking at kCursorTarget, 2 casts
+// its view's centre ray
 constexpr uint32_t kCameraDistance = 0x828C49A4;
 constexpr uint32_t kCameraMode = 0x8296B240;
+constexpr uint32_t kCameraPlace = 1;
 constexpr uint32_t kCameraRaycast = 2;
-constexpr uint32_t kFrameSeconds = 0x828C7310;
+constexpr uint32_t kFrameSeconds = 0x828C7310;  // double
 // undo: a vector of command objects with methods destroy(this, 1) and undo(this)
 constexpr uint32_t kUndoFirst = 0x828C632C;
 constexpr uint32_t kUndoLast = 0x828C6330;
@@ -139,6 +144,7 @@ constexpr uint32_t kHeightCaption = 0x820D19F0;
 constexpr uint32_t kTextureCaption = 0x820D18D0;
 constexpr uint32_t kUndoPop = 0x8210DDD8;
 constexpr uint32_t kTerrainHeight = 0x82324AA8;  // (x f1, y f2, terrain)
+constexpr uint32_t kPickTarget = 0x820EE8F8;     // (object) kCursorTarget where the view's centre ray hits, past it
 constexpr uint32_t kClampToMap = 0x82103000;    // (out, in), returns out
 constexpr uint32_t kCategoryShown = 0x820D6498;  // (add tool) after its category changes
 constexpr uint32_t kItemShown = 0x820D6788;      // (add tool) after its item changes
@@ -238,6 +244,9 @@ thread_local Inject t_inject;
 bool g_have_orbit = false;
 Vec g_orbit;    // what the camera orbits, kept while the cursor follows the mouse
 Vec g_written;  // the cursor as we left it
+bool g_have_view = false;
+Vec g_view_target;     // what the place camera looks at, kept while kCursorTarget follows the mouse
+Vec g_target_written;  // kCursorTarget as we left it
 uint32_t g_scratch = 0;
 uint32_t g_name_scratch = 0;
 uint32_t g_widget_scratch = 0;
@@ -256,6 +265,13 @@ void WF(uint32_t at, float f) {
     uint32_t bits;
     std::memcpy(&bits, &f, sizeof(bits));
     W32(at, bits);
+}
+
+double GD(uint32_t at) {
+    uint64_t bits = R64(at);
+    double d;
+    std::memcpy(&d, &bits, sizeof(d));
+    return d;
 }
 
 Vec ReadVec(uint32_t at) { return {GF(at), GF(at + 4), GF(at + 8)}; }
@@ -543,7 +559,7 @@ double ZoomRate(double distance) {
 // the look this frame from the mouse; a pitch and a zoom share an input, so a zoom waits for a frame without pitch
 Inject TakeLook() {
     Inject in;
-    double dt = GF(kFrameSeconds);
+    double dt = GD(kFrameSeconds);
     std::lock_guard lock(g_lock);
     if (dt <= 0.0) return in;
     in.look_x = InputFor(g_view.look_x * kLookDegreesPerCount, dt * kYawPerSecond);
@@ -629,9 +645,8 @@ void RestoreOrbit() {
     if (g_have_orbit && ReadVec(kToolCursor) == g_written) WriteVec(kToolCursor, g_orbit);
 }
 
-// the editor raises kCursorMoved only for the stick and copies the orbit point to kCursorTarget, so the mouse's
-// cursor does both
-void PlaceCursor(PPCContext& ctx) {
+// true when the mouse moved the cursor
+bool PlaceCursor(PPCContext& ctx) {
     g_orbit = ReadVec(kToolCursor);
     g_have_orbit = true;
     float origin[3];
@@ -640,8 +655,39 @@ void PlaceCursor(PPCContext& ctx) {
     if (MouseRay(origin, dir) && TerrainHit(ctx, origin, dir, hit)) WriteVec(kToolCursor, ClampToMap(ctx, hit));
     Vec last = g_written;
     g_written = ReadVec(kToolCursor);
-    if (g_written != last) W8(kCursorMoved, 1);
-    WriteVec(kCursorTarget, g_written);
+    return g_written != last;
+}
+
+// the place camera's own target back, unless the editor moved it itself since
+void RestoreViewTarget() {
+    if (g_have_view && ReadVec(kCursorTarget) == g_target_written) WriteVec(kCursorTarget, g_view_target);
+}
+
+// as the place camera sets kWaterPoint (820EF06C), along the mouse's ray
+void PlaceOnWater(const float o[3], const float d[3]) {
+    Vec target = ReadVec(kCursorTarget);
+    Vec water = target;
+    float t = d[2] != 0.0f ? (GF(kWaterHeight) - o[2]) / d[2] : -1.0f;
+    if (t > 0.0f && GF(kWaterHeight) > target.z) water = {o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t};
+    WriteVec(kWaterPoint, water);
+    if (R8(kFloating) && water != target) WriteVec(kCursorTarget, water);
+}
+
+// the editor's own pick again, along the mouse's ray, so the object goes where it points with the editor's snapping;
+// true when it ran
+bool AimAtMouse(PPCContext& ctx, uint32_t object) {
+    g_view_target = ReadVec(kCursorTarget);
+    g_have_view = true;
+    float origin[3];
+    bool picked = MouseRay(origin, t_inject.dir);
+    if (picked) {
+        t_inject.ray = true;
+        CallGuest(ctx, kPickTarget, {object});
+        t_inject.ray = false;
+        PlaceOnWater(origin, t_inject.dir);
+    }
+    g_target_written = ReadVec(kCursorTarget);
+    return picked;
 }
 
 }  // namespace
@@ -882,17 +928,26 @@ PPC_FUNC(sub_820C6520) {
     __imp__sub_820C6520(ctx, base);
 }
 
-// the camera's update, from the active tool's; the tools act at the cursor it leaves
+// the camera's update (r3 the object placed or moved), from the active tool's; the tools act at the cursor and
+// target it leaves
 PPC_FUNC(sub_820EFBB8) {
     if (!fcip::editor::ShellUp()) return __imp__sub_820EFBB8(ctx, base);
+    uint32_t object = uint32_t(ctx.r[3]);
+    uint32_t mode = R32(kCameraMode);
     t_inject = TakeLook();
-    bool raycast = R32(kCameraMode) == kCameraRaycast;
     float origin[3];  // the editor casts from its own camera
-    if (raycast) t_inject.ray = MouseRay(origin, t_inject.dir);
+    if (mode == kCameraRaycast) t_inject.ray = MouseRay(origin, t_inject.dir);
     else RestoreOrbit();
+    if (mode == kCameraPlace) RestoreViewTarget();
     __imp__sub_820EFBB8(ctx, base);
     t_inject = {};
-    if (!raycast) PlaceCursor(ctx);
+    if (mode == kCameraRaycast) return;
+    // the editor raises kCursorMoved only for the stick. The place camera's tools select and move what its pick
+    // left (8296B260), so there it is raised only with a fresh pick and while the left button holds, as a click selects
+    bool moved = PlaceCursor(ctx);
+    if (mode == kCameraPlace) moved = AimAtMouse(ctx, object) && g_apply;
+    else WriteVec(kCursorTarget, g_written);  // the orbit camera keeps its target on the cursor (820EF398)
+    if (moved) W8(kCursorMoved, 1);
 }
 
 // an input action's value (r3 the input map, r4 the action), the mouse added to the camera's

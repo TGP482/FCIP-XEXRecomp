@@ -201,6 +201,15 @@ input::Pad Keyboard(const input::Pad& pad) {
     return menu ? MenuKeys(kb) : kb;
 }
 
+// the editor's view: the movement keys as its camera's stick, though its hidden console page counts as a menu
+input::Pad EditorKeys() {
+    input::Pad kb;
+    if (K::TextEntry()) return kb;
+    kb.lx = int16_t(Axis(K::kStrafeRight, K::kStrafeLeft));
+    kb.ly = int16_t(Axis(K::kMoveForward, K::kMoveBack));
+    return kb;
+}
+
 // Gameplay
 
 // cl_aimingHelper's value slot, zeroed for one call while the keyboard or mouse is in use
@@ -267,6 +276,8 @@ bool InCutscene(uint32_t player) { return GuestOk(player) && R8(player + kPlayer
 void MouseLook(uint32_t cmd) {
     uint64_t now = NowMs();
     uint64_t prev = g_gameplay_ms.exchange(now);
+    // the editor's view takes the raw motion itself while it is up
+    if (fcip::g_editor_shell) return;
     // drained every frame: motion banked while the look was off is stale and snaps the view when applied late
     double dx = 0;
     double dy = 0;
@@ -456,13 +467,8 @@ void GamePad(int port, input::Pad& pad) {
         return;
     }
     ToggleHud();
-    input::Pad kb = port == keyboard ? Keyboard(pad) : input::Pad{};
-    if (g_editor_view_keys) {
-        input::Pad move;
-        move.lx = kb.lx;
-        move.ly = kb.ly;
-        kb = move;
-    }
+    input::Pad kb;
+    if (port == keyboard) kb = g_editor_view_keys ? EditorKeys() : Keyboard(pad);
     // not plain negation: -32768 has no positive
     if (fcip::Get().pad_invert_x && !InMenu()) pad.rx = int16_t(-1 - pad.rx);
     if (fcip::Get().pad_invert_y && !InMenu()) pad.ry = int16_t(-1 - pad.ry);
