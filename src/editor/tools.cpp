@@ -45,6 +45,7 @@ constexpr uint32_t kHeightTarget = 0x828C4A54;
 constexpr uint32_t kSquareCursor = 0x8296B1D4;
 constexpr uint32_t kToolCursor = 0x828C5D50;   // xyz, where the tools act
 constexpr uint32_t kCursorMoved = 0x8296B245;  // the camera update's flag the tools re-aim on (brush area, selection)
+constexpr uint32_t kCursorTarget = 0x8296C724;  // xyz, the orbit point's copy; previews and moves use it
 constexpr uint32_t kMapChanged = 0x8296B266;
 // camera: distance 1 to 115 from what it orbits; mode 2 casts its view's centre ray, the others orbit the cursor
 constexpr uint32_t kCameraDistance = 0x828C49A4;
@@ -628,7 +629,8 @@ void RestoreOrbit() {
     if (g_have_orbit && ReadVec(kToolCursor) == g_written) WriteVec(kToolCursor, g_orbit);
 }
 
-// the editor raises kCursorMoved only for the stick, so a cursor the mouse moved raises it too
+// the editor raises kCursorMoved only for the stick and copies the orbit point to kCursorTarget, so the mouse's
+// cursor does both
 void PlaceCursor(PPCContext& ctx) {
     g_orbit = ReadVec(kToolCursor);
     g_have_orbit = true;
@@ -639,6 +641,7 @@ void PlaceCursor(PPCContext& ctx) {
     Vec last = g_written;
     g_written = ReadVec(kToolCursor);
     if (g_written != last) W8(kCursorMoved, 1);
+    WriteVec(kCursorTarget, g_written);
 }
 
 }  // namespace
