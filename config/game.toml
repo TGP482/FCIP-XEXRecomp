@@ -105,6 +105,12 @@ UIPage_StoreFocus = 0x8246CC20
 UIText_Draw = 0x8247D1A8
 UIText_Measure = 0x8247DA98
 UIWidget_CanFocus = 0x8246B950
+# CryUI, the original Xbox virtual keyboard page answering the system keyboard requests (src/game/virtual_keyboard.cpp)
+UIText_SetText = 0x821557A8         # (text element, text)
+VirtualKeyboard_Close = 0x82171580  # (keyboard)
+VirtualKeyboard_Update = 0x82171658 # (keyboard) once a menu update
+WString_AssignText = 0x820F6150     # (std::wstring, text, length)
+XShowKeyboardUI = 0x82643CF0
 
 # CrySystem, the startup movies
 PlayMovie = 0x8233FFA0
@@ -217,6 +223,7 @@ MenuManager_vtable = 0x82054644
 UIGlyph_table = 0x82053C70
 UIList_vtable = 0x82078A40
 UISystem_pointer = 0x82912904
+VirtualKeyboard_pointer = 0x82911A14
 
 # CrySystem: return addresses of the startup movie and screen calls
 BrandScreen_return = 0x82316094
@@ -395,3 +402,9 @@ regs = ["r6", "r23"]
 at = 0x82363754
 call = "ImageQuad"
 regs = ["r1"]
+
+# instruction hooks, defined in src/game/virtual_keyboard.cpp
+[[hook]]  # the virtual keyboard's accept, r31 the keyboard, before it calls its listener
+at = 0x82171C78
+call = "VirtualKeyboardAccept"
+on_true = 0x82171C98

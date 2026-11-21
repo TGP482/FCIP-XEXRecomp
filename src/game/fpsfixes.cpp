@@ -242,3 +242,21 @@ void WaterBobRoll(PPCContext& ctx, uint8_t*) {
     ctx.f[28] = float(ctx.f[28] * frames);
     ctx.f[30] = float(std::pow(ctx.f[30], frames));
 }
+
+// Virtual keyboard
+
+// The virtual keyboard's idle animation steps one of its 360 frames each update, a rate tuned to the console's 30 fps;
+// at high frame rates it cycled many times a second and the page shook. It now steps by console frames of time.
+
+constexpr uint32_t kKeyboardIdleFrame = 0x118;  // the frame it shows next, 0 to 359
+constexpr double kKeyboardIdleFrames = 360.0;
+
+PPC_EXTERN_FUNC(GUEST_ORIG(VirtualKeyboard_Update));
+
+// (keyboard)
+PPC_FUNC(GUEST(VirtualKeyboard_Update)) {
+    static double frame = 0.0;
+    frame = std::fmod(frame + ConsoleFrames(), kKeyboardIdleFrames);
+    W32(uint32_t(ctx.r[3]) + kKeyboardIdleFrame, uint32_t(frame));
+    GUEST_ORIG(VirtualKeyboard_Update)(ctx, base);
+}
