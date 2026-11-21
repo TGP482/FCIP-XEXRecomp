@@ -142,6 +142,9 @@ UIRect_Draw = 0x82608758
 UIWidget_Draw = 0x8239ABD0
 UI_DrawQuad = 0x82496B60
 
+# CryEditor: the Add Object tool's update (src/editor/tools.cpp)
+AddTool_Update = 0x820D6C38
+
 # Direct3D device fields the SDK does not know yet
 [layout]
 Device_Predication = 0x32A0

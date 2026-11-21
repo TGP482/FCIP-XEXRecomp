@@ -27,13 +27,16 @@ constexpr const wchar_t* kTitle =
 
 // the game keeps its user maps as saved game content
 constexpr uint32_t kUserMapContent = 1;
+constexpr char kPublishedMap[] = "P";  // a published map's file name starts so, the game's map lists keep only those
 
 // custom levels live in this exe's custom levels folder, made at start and laid over the disc's Levels; the editor's
 // new levels too, in theirs, which the last run's are cleared from. User maps are saved in maps\saved by the editor,
-// played and downloaded in maps\play by the game
+// published ones in maps\published, played and downloaded in maps\play by the game
 void Loaded() {
     std::error_code ec;
-    xam::MountContent(kUserMapContent, (app::ExeDir() / "maps" / (kEditor ? "saved" : "play")).string());
+    std::filesystem::path maps = app::ExeDir() / "maps";
+    xam::MountContent(kUserMapContent, (maps / (kEditor ? "saved" : "play")).string());
+    if (kEditor) xam::SplitContent(kUserMapContent, kPublishedMap, (maps / "published").string());
     std::filesystem::create_directories(fcip::CustomLevelsFolder(), ec);
     kernel::MountDiscOverlay("Levels", fcip::CustomLevelsFolder().string());
     if (!kEditor) return;

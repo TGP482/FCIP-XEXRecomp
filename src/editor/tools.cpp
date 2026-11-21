@@ -74,6 +74,7 @@ constexpr uint32_t kCategoryItems = 0x0;
 constexpr uint32_t kCategoryItemName = 0x4;
 constexpr uint32_t kCategoryPlaced = 0x10;
 constexpr uint32_t kCategoryLimit = 0x14;
+constexpr uint32_t kCategoryPreview = 0x4;  // the object that follows the cursor, which every placing step uses
 constexpr int kCatalogueFrames = 30;  // between reads of the catalogue
 // environment tool: +0x110 changes since its row was picked; the editor's manager holds its values
 constexpr uint32_t kEnvironmentTool = kEditorHandler + 0x628;
@@ -801,6 +802,7 @@ PPC_EXTERN_FUNC(__imp__sub_820EFBB8);
 PPC_EXTERN_FUNC(__imp__sub_820D0938);
 PPC_EXTERN_FUNC(__imp__sub_820C4818);
 PPC_EXTERN_FUNC(__imp__sub_820DFA90);
+PPC_EXTERN_FUNC(__imp__sub_820D6C38);
 PPC_EXTERN_FUNC(__imp__sub_8210DCD8);
 PPC_EXTERN_FUNC(__imp__sub_8210DDD8);
 PPC_EXTERN_FUNC(__imp__sub_82313E70);
@@ -865,6 +867,19 @@ PPC_FUNC(sub_820DFA90) {
     if (!t_inject.ray) return;
     t_inject.ray = false;
     WriteVec(v, {t_inject.dir[0], t_inject.dir[1], t_inject.dir[2]});
+}
+
+// the Add Object tool's update (r3): a category shown without its preview object, as after placing spawn points and
+// objectives, gets it back as picking its item does; still none, the tool waits
+PPC_FUNC(sub_820D6C38) {
+    uint32_t tool = uint32_t(ctx.r[3]);
+    uint32_t shown = R32(tool + kAddShown);
+    if (shown && !R32(shown + kCategoryPreview)) CallGuest(ctx, kItemShown, {tool});
+    if (shown && !R32(shown + kCategoryPreview)) {
+        ctx.r[3] = 1;
+        return;
+    }
+    __imp__sub_820D6C38(ctx, base);
 }
 
 // an undo command (r3) pushed; the stack keeps the last five

@@ -108,6 +108,7 @@ bool g_looking = false;   // the right button went down on the view
 bool g_applying = false;  // the left button went down on the view
 bool g_save_as_open = false;
 char g_save_as_name[32] = "";  // the map name's 32 characters, its end among them
+constexpr size_t kMapNameBytes = 16;  // a multiplayer map's name, its end among them
 
 // Menus and toolbar
 
@@ -168,7 +169,7 @@ bool DrawLevelList() {
     return true;
 }
 
-bool SaveAsAllowed() { return editor::g_solo && !BaseLevel().empty(); }
+bool SaveAsAllowed() { return editor::g_solo ? !BaseLevel().empty() : MapOpen(); }
 
 void OpenSaveAs() {
     g_save_as_open = true;
@@ -188,7 +189,7 @@ int NameChar(ImGuiInputTextCallbackData* data) {
     return keep ? 0 : 1;
 }
 
-// the level saved into levels\saved under the name typed
+// the level saved into levels\saved under the name typed, a map as a new map
 void DrawSaveAs() {
     if (SaveAsAsked()) OpenSaveAs();
     if (!g_save_as_open) return;
@@ -201,12 +202,14 @@ void DrawSaveAs() {
         if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         constexpr ImGuiInputTextFlags kNameFlags =
             ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue;
-        bool enter = ImGui::InputText("Name", g_save_as_name, sizeof(g_save_as_name), kNameFlags, NameChar);
+        size_t bytes = editor::g_solo ? sizeof(g_save_as_name) : kMapNameBytes;
+        bool enter = ImGui::InputText("Name", g_save_as_name, bytes, kNameFlags, NameChar);
         std::string name = g_save_as_name;
-        std::string problem = SaveAsProblem(name);
+        std::string problem = editor::g_solo ? SaveAsProblem(name) : name.empty() ? "Type a name" : "";
         std::error_code ec;
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
         if (!problem.empty()) ImGui::TextUnformatted(problem.c_str());
+        else if (!editor::g_solo) ImGui::TextUnformatted("Saved as a new map");
         else if (std::filesystem::exists(CustomLevelsFolder() / name, ec)) ImGui::Text("Saves over %s", name.c_str());
         else ImGui::Text("Saved in levels\\saved\\%s", name.c_str());
         ImGui::PopStyleColor();
@@ -237,7 +240,7 @@ void DrawMenuBar(const State& s) {
         if (ImGui::MenuItem(editor::g_solo ? "Open Saved Level..." : "Open Map...")) ExitToMapManager();
         if (editor::g_solo) DrawOpenLevel();
         if (ImGui::MenuItem("Save", "Ctrl+S", false, !(editor::g_solo && LevelUnsaved()))) Save();
-        if (editor::g_solo && ImGui::MenuItem("Save As...", "Ctrl+Shift+S", false, SaveAsAllowed())) OpenSaveAs();
+        if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S", false, SaveAsAllowed())) OpenSaveAs();
         ImGui::Separator();
         if (ImGui::MenuItem(editor::g_solo ? "Exit to Level Manager" : "Exit to Map Manager")) ExitToMapManager();
         ImGui::EndMenu();
@@ -792,7 +795,7 @@ bool DrawShell(double fps) {
     if (g_show_status) DrawStatus(bottom, size.x, fps, s);
     if (editor::g_solo) editor::DrawMarkers();
     if (editor::g_solo) editor::DrawLinkWindow();
-    if (editor::g_solo) DrawSaveAs();
+    DrawSaveAs();
     DrawControls();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(int(std::size(kPanelColors) + std::size(kShellColors)));
@@ -800,8 +803,8 @@ bool DrawShell(double fps) {
     return !console || ImGui::GetIO().WantCaptureMouse;
 }
 
-// the level list takes the keys while up, Esc closes it; Ctrl+Z undoes, Ctrl+S saves a map, Ctrl+Shift+S saves a
-// level as, Del deletes, 1 to 4 pick the tools, F5 play tests
+// the level list takes the keys while up, Esc closes it; Ctrl+Z undoes, Ctrl+S saves, Ctrl+Shift+S saves as, Del
+// deletes, 1 to 4 pick the tools, F5 play tests
 bool EditorKey(uintptr_t wp) {
     if (editor::g_solo && !MapOpen() && LevelListUp()) {
         if (wp == VK_ESCAPE) CloseLevelList();

@@ -381,6 +381,17 @@ std::string TakeSaveAs() {
     return std::exchange(g_save_as, std::string());
 }
 
+// a map saved as a new one: its new name, then a new package for it as a new map gets, then the game's save
+void SaveMapAs(PPCContext& ctx, uint32_t manager, const std::string& name) {
+    constexpr uint32_t kInfoContent = 0x10;  // XCONTENT_DATA, its device first
+    uint32_t maps = R32(SYM_UserMaps_pointer);
+    uint32_t info = R32(maps + kUserMapInfo);
+    if (!info) return;
+    SetMapName(manager, name);
+    CallGuest(ctx, SYM_UserMapInfo_New, {maps, info + kInfoContent, manager + kMapName, 1});
+    Save();
+}
+
 }  // namespace
 
 namespace fcip::editor {
@@ -487,6 +498,8 @@ PPC_FUNC(sub_82112AD0) {
             g_unsaved = false;
         }
         if (ShellUp()) UpdateMarkers(ctx);
+    } else if (std::string save_as = TakeSaveAs(); !save_as.empty()) {
+        SaveMapAs(ctx, uint32_t(ctx.r[3]), save_as);
     }
     __imp__sub_82112AD0(ctx, base);
 }
