@@ -1,9 +1,9 @@
-// The game's screen quads put their edges on pixel centres: the post effects' copies (default.xex 8237BB08, ige.xex
-// 82481E28) and blur (8237B268, 824815E8) map pixel -0.5 to the screen's edge, the full screen quad (823AE398,
-// 82372C08) that restores EDRAM starts at the viewport's corners, and 2D images (82363548, 8235E148) such as
-// the level fades start at pixel 0. Upscaled, the half pixel shift then leaves the top row and left column of host
-// pixels out. Each quad moves half a pixel up and left, a 2D image only its corners on the screen's edges, texture
-// coordinates with them, so it covers every host pixel and samples the same texels.
+// The game's screen quads that put their edges on pixel centres: the full screen quad (default.xex 823AE398, ige.xex
+// 82372C08) that restores EDRAM starts at the viewport's corners, and 2D images (82363548, 8235E148) such as the level
+// fades start at pixel 0. Upscaled, the half pixel shift then leaves the top row and left column of host pixels out.
+// The full screen quad moves half a pixel up and left, a 2D image only its corners on the screen's edges, texture
+// coordinates with them, so it covers every host pixel and samples the same texels. The post effects' copies
+// (8237BB08, 82481E28) and blur (8237B268, 824815E8) start at pixel -0.5 and already cover every host pixel.
 #include <bit>
 #include <initializer_list>
 
@@ -18,11 +18,6 @@ constexpr uint32_t kVertices = 4;
 constexpr uint32_t kBlockViewWidth = 0x198;
 constexpr uint32_t kBlockViewHeight = 0x19C;
 // vertex layouts: x, y first, then texture coordinate pairs
-constexpr uint32_t kPostStride = 0x1C;
-constexpr uint32_t kPostCoords = 0xC;
-constexpr uint32_t kPostCoords2 = 0x14;
-constexpr uint32_t kBlurStride = 0x14;
-constexpr uint32_t kBlurCoords = 0xC;
 constexpr uint32_t kFullStride = 0x18;  // x, y in clip space
 constexpr uint32_t kFullCoords = 0x8;
 constexpr uint32_t kFullCoords2 = 0x10;
@@ -88,18 +83,6 @@ void ExtendToEdges(uint32_t vertices, uint32_t stride, uint32_t coords) {
     }
 }
 
-void ShiftPost(uint32_t vertices) { ShiftQuad(vertices, kPostStride, -0.5f, -0.5f, {kPostCoords, kPostCoords2}); }
-
-// the blur draws one vertex array every pass: moved for its draw, then put back
-thread_local uint32_t t_blur[kVertices * kBlurStride / 4];
-thread_local uint32_t t_blur_at = 0;
-
-void ShiftBlur(uint32_t vertices) {
-    for (uint32_t i = 0; i < kVertices * kBlurStride / 4; i++) t_blur[i] = R32(vertices + i * 4);
-    t_blur_at = vertices;
-    ShiftQuad(vertices, kBlurStride, -0.5f, -0.5f, {kBlurCoords});
-}
-
 // clip space y points up
 void ShiftFull(uint32_t vertices, std::initializer_list<uint32_t> coords) {
     float w = float(R32(SYM_DisplayBlock + kBlockViewWidth));
@@ -109,21 +92,9 @@ void ShiftFull(uint32_t vertices, std::initializer_list<uint32_t> coords) {
 
 }  // namespace
 
-// before each draw, the quad's vertices in r6 (default.xex) or r5 (ige.xex)
-void PostQuad(PPCContext& ctx, uint8_t*) { ShiftPost(uint32_t(ctx.r[6])); }
-void EditorPostQuad(PPCContext& ctx, uint8_t*) { ShiftPost(uint32_t(ctx.r[5])); }
-void BlurQuad(PPCContext& ctx, uint8_t*) { ShiftBlur(uint32_t(ctx.r[6])); }
-void EditorBlurQuad(PPCContext& ctx, uint8_t*) { ShiftBlur(uint32_t(ctx.r[5])); }
-
 // a 2D image's vertices built, r1 its stack
 void ImageQuad(PPCContext& ctx, uint8_t*) {
     ExtendToEdges(uint32_t(ctx.r[1]) + kImageVertices, kImageStride, kImageCoords);
-}
-
-void BlurQuadDone(PPCContext&, uint8_t*) {
-    if (!t_blur_at) return;
-    for (uint32_t i = 0; i < kVertices * kBlurStride / 4; i++) W32(t_blur_at + i * 4, t_blur[i]);
-    t_blur_at = 0;
 }
 
 // r23 set when it copies a texture
