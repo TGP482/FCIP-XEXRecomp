@@ -128,6 +128,7 @@ ProfileManager_Remove = 0x821E2610      # (manager, index)
 ProfileManager_Select = 0x821E2848      # (manager, user)
 ProfileMenu_PageShown = 0x821E50A0      # (menu, page)
 XUserGetName = 0x82643A30               # (user, text, size)
+LiveStatus_Set = 0x821BBFB8             # (help bar, page, std::string icon, std::wstring text) the top right corner
 
 # CrySystem, the startup movies
 PlayMovie = 0x8233FFA0

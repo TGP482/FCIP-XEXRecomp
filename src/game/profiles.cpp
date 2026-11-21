@@ -3,6 +3,7 @@
 #include "game/profiles.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -73,11 +74,13 @@ bool g_asked = false;
 uint32_t g_menu = 0;  // the profile menu the last NEW PROFILE came from
 uint32_t g_next_user = kOtherUsers;
 
-// guest scratch: UTF-16 texts, a std::wstring and a title settings results block with its two records and data
+// guest scratch: UTF-16 texts, two std::wstrings and a title settings results block with its two records and data
 constexpr uint32_t kTextUnits = 0x40;
-constexpr uint32_t kTextSlots = 3;
-constexpr uint32_t kWideString = kTextSlots * kTextUnits * 2;
-constexpr uint32_t kResults = kWideString + 0x20;
+constexpr uint32_t kTextSlots = 4;
+constexpr uint32_t kStatusSlot = 3;
+constexpr uint32_t kWideStringBytes = 0x20;
+constexpr uint32_t kWideStrings = kTextSlots * kTextUnits * 2;
+constexpr uint32_t kResults = kWideStrings + 2 * kWideStringBytes;
 constexpr uint32_t kResultsList = kResults + 0x10;
 constexpr uint32_t kRecords = kResultsList + 0x10;
 constexpr uint32_t kResultsData = kRecords + 2 * kRecordBytes;
@@ -97,10 +100,10 @@ uint32_t GuestText(uint32_t slot, const std::string& text) {
     return addr;
 }
 
-// a std::wstring over slot 0's text; a capacity of 8 or more keeps its pointer
-uint32_t GuestWideString(const std::string& text) {
-    uint32_t str = Scratch() + kWideString;
-    W32(str + 0x04, GuestText(0, text));
+// a std::wstring over a slot's text, the first slot's in the first string; a capacity of 8 or more keeps its pointer
+uint32_t GuestWideString(uint32_t slot, const std::string& text) {
+    uint32_t str = Scratch() + kWideStrings + (slot ? kWideStringBytes : 0);
+    W32(str + 0x04, GuestText(slot, text));
     W32(str + 0x14, uint32_t(text.size()));
     W32(str + 0x18, std::max<uint32_t>(uint32_t(text.size()), 8));
     return str;
@@ -136,9 +139,15 @@ std::vector<uint32_t> Loaded() {
 fs::path Folder() { return app::ExeDir() / "profiles"; }
 fs::path FileFor(const std::string& name) { return Folder() / (name + ".bin"); }
 
+// a gamertag: a letter first, then letters, digits and single spaces, none at the end
 bool NameAllowed(const std::string& name) {
-    if (name.empty() || name.back() == ' ' || name.back() == '.') return false;
-    return name.find_first_of("<>:\"/\\|?*") == std::string::npos;
+    if (name.empty() || !std::isalpha(uint8_t(name[0])) || name.back() == ' ') return false;
+    for (size_t i = 1; i < name.size(); i++) {
+        bool space = name[i] == ' ';
+        if (!space && !std::isalnum(uint8_t(name[i]))) return false;
+        if (space && name[i - 1] == ' ') return false;
+    }
+    return true;
 }
 
 // by a saved or loaded profile other than self
@@ -189,7 +198,7 @@ void LoadProfile(PPCContext& ctx, uint32_t profile, const std::vector<char>& byt
 uint32_t NewProfile(PPCContext& ctx, const std::string& name) {
     uint32_t profile = uint32_t(CallGuest(ctx, SYM_Guest_Alloc, {kProfileBytes}));
     if (!profile) return 0;
-    CallGuest(ctx, SYM_Profile_New, {profile, GuestWideString(name)});
+    CallGuest(ctx, SYM_Profile_New, {profile, GuestWideString(0, name)});
     W8(profile + kProfileValid, 1);
     W32(profile + kProfileUser, g_next_user++);
     CallGuest(ctx, SYM_ProfileManager_Add, {Manager(), profile});
@@ -317,6 +326,7 @@ PPC_EXTERN_FUNC(GUEST_ORIG(ProfileList_AskDelete));
 PPC_EXTERN_FUNC(GUEST_ORIG(ProfileList_Key));
 PPC_EXTERN_FUNC(GUEST_ORIG(ProfileMenu_PageShown));
 PPC_EXTERN_FUNC(GUEST_ORIG(XUserGetName));
+PPC_EXTERN_FUNC(GUEST_ORIG(LiveStatus_Set));
 
 // (profile) packs it and writes the gamer's title settings
 PPC_FUNC(GUEST(Profile_Save)) {
@@ -400,3 +410,12 @@ PPC_FUNC(GUEST(XUserGetName)) {
 
 // before CryProfile shows its first page: the list, as the original's OPTIONS did, not P_EditProfile
 void ProfileListFirst(PPCContext& ctx, uint8_t*) { ctx.r[4] = 0; }
+
+// (help bar, page, icon name, text): the 360 blanks the original's NOT SIGNED IN corner every frame; it shows the
+// current profile's name, the gamertag the game reads
+PPC_FUNC(GUEST(LiveStatus_Set)) {
+    uint32_t manager = Manager();
+    uint32_t current = manager ? R32(manager + kManagerCurrent) : 0;
+    if (current) ctx.r[6] = GuestWideString(kStatusSlot, ProfileName(current));
+    GUEST_ORIG(LiveStatus_Set)(ctx, base);
+}
