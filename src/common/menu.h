@@ -56,6 +56,7 @@ struct Row {
 };
 
 std::span<const Row> Page(int page);
+bool PanelOnly(const Row& row);  // on F10 only: typed text, the microphone and push to talk
 // any thread: the value as shown, stepped first when step is not zero
 std::string Text(const Row& row, int step = 0);
 // any thread: the row's values as a list, empty when it only steps; current is the one set

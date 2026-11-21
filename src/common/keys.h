@@ -10,8 +10,8 @@ namespace fcip::keys {
 enum Action : int {
     kMoveForward, kMoveBack, kStrafeLeft, kStrafeRight, kWalk, kJump, kCrouch, kFire, kAim, kMelee, kReload,
     kInteract, kFeralRun, kFeralVision, kThrow, kGrenades, kWeapons, kBinoculars, kPistol, kRifle, kHeavy,
-    kNextWeapon, kPreviousWeapon, kObjectives, kToggleHud, kToggleTextures, kPause, kSettings, kNoclip, kLookUp, kLookDown,
-    kLookLeft, kLookRight, kActionCount
+    kNextWeapon, kPreviousWeapon, kObjectives, kToggleHud, kToggleTextures, kPushToTalk, kPause, kSettings, kNoclip, kLookUp,
+    kLookDown, kLookLeft, kLookRight, kActionCount
 };
 
 const char* Label(int action);
@@ -32,6 +32,7 @@ uint8_t PositionKey(uintptr_t vk);  // a key the window was sent, as the key bin
 // pressed since the last poll counts only when fresh is set
 bool Held(int action, bool fresh = false);
 bool KeyHeld(uint8_t vk);  // a key itself, bound or not
+bool BindDown(int action);  // any thread: a key bound to the action is down, outside text entry
 
 // window thread: every message after the panel's; true takes it
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp);

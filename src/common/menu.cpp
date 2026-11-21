@@ -34,6 +34,7 @@
 #include "core/input.h"
 #include "d3d/fsr.h"
 #include "d3d/occlusion.h"
+#include "xam/voice.h"
 
 namespace fcip {
 
@@ -130,7 +131,7 @@ enum RowId {
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kFrameGeneration, kSmaa, kAmbientOcclusion,
     kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection, kVolumetricClouds,
     kCaustics, kPadSensitivityX, kPadSensitivityY, kPadAimSensitivityX, kPadAimSensitivityY, kPadInvertX, kPadInvertY,
-    kPadHoldAim, kGyroRecenter, kJoinIp, kPlayer1, kPlayer2, kPlayer3, kPlayer4
+    kPadHoldAim, kGyroRecenter, kJoinIp, kPlayer1, kPlayer2, kPlayer3, kPlayer4, kMicrophone, kPushToTalk
 };
 
 constexpr Row kSettingsRows[] = {
@@ -173,12 +174,14 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kDrawDistance, "DRAW DISTANCE",
      "Scales how far objects, grass and vegetation are drawn up to 8x and the area casting sun shadows up to 32x"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
-    {Kind::Heading, -1, "GENERAL", "Intros, audio output and the online join address"},
+    {Kind::Heading, -1, "GENERAL", "Intros, audio output, the online join address and voice chat"},
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
     {Kind::Value, kAudioOutput, "AUDIO OUTPUT",
      "Mono, stereo or 5.1 surround, automatic follows the speakers set up in Windows"},
     {Kind::Text, kJoinIp, "ONLINE JOIN IP",
      "The IP address or name of a host past your network, which the system link game search also asks"},
+    {Kind::Value, kMicrophone, "MICROPHONE", "The recording device voice chat uses, the Windows default or one by name"},
+    {Kind::Value, kPushToTalk, "PUSH TO TALK", "Sends your voice only while the push to talk key is held"},
     {Kind::Heading, -1, "INPUT DEVICES", "The keyboard and mouse or controller each player uses"},
     {Kind::Value, kPlayer1, "PLAYER 1", "The keyboard and mouse or controller player 1 uses"},
     {Kind::Value, kPlayer2, "PLAYER 2", "The keyboard and mouse or controller player 2 uses"},
@@ -629,6 +632,13 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             Flip(s.vsync, step);
             std::snprintf(text, sizeof(text), "%s", OnOff(s.vsync));
             break;
+        case kPushToTalk:
+            Flip(s.push_to_talk, step);
+            std::snprintf(text, sizeof(text), "%s", OnOff(s.push_to_talk));
+            break;
+        case kMicrophone:
+            std::snprintf(text, sizeof(text), "%s", s.microphone.empty() ? "SYSTEM DEFAULT" : s.microphone.c_str());
+            break;
         case kMaxFps: {
             uint32_t cap = kFpsCaps[StepTable(kFpsCaps, s.fps_cap, step)];
             if (cap == app::kFpsCapRefresh) std::snprintf(text, sizeof(text), "REFRESH RATE");
@@ -777,6 +787,7 @@ void RestoreDefaults(int page) {
     s.aniso = def.aniso;
     s.msaa = def.msaa;
     s.audio_output = def.audio_output;
+    s.push_to_talk = def.push_to_talk;
     s.custom_textures = def.custom_textures;
     s.dump_textures = def.dump_textures;
     s.texture_dump_format = def.texture_dump_format;
@@ -889,6 +900,34 @@ void PlayerRow(const Row& r) {
             bool current = SamePort(c, s.players[player]);
             bool picked = ImGui::Selectable(ChoiceText(s, player, c).c_str(), current) && !current;
             if (picked && SetPlayer(s.players, player, c)) Changed(false);
+            if (current) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopStyleColor();
+    EndWideRow(box);
+}
+
+// a drop-down list of the recording devices, read as it opens; a picked device that is gone stays listed
+void MicrophoneRow(const Row& r) {
+    static std::vector<std::string> devices;
+    app::Settings& s = app::Get();
+    WideRow box = BeginWideRow(r.label);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(kPanelBg.x, kPanelBg.y, kPanelBg.z, 1.0f));
+    if (ImGui::BeginCombo("##device", RowText(kMicrophone, 0).c_str())) {
+        if (ImGui::IsWindowAppearing()) devices = xam::Microphones();
+        std::vector<std::string> list = devices;
+        list.insert(list.begin(), std::string());
+        bool gone = !s.microphone.empty() && std::find(devices.begin(), devices.end(), s.microphone) == devices.end();
+        if (gone) list.push_back(s.microphone);
+        for (const std::string& name : list) {
+            bool current = name == s.microphone;
+            std::string text = name.empty() ? "SYSTEM DEFAULT" : name;
+            if (current && gone) text += "  (UNPLUGGED)";
+            if (ImGui::Selectable(text.c_str(), current) && !current) {
+                s.microphone = name;
+                Changed(false);
+            }
             if (current) ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
@@ -1050,6 +1089,10 @@ void DrawRows(int page) {
         if (r.kind != Kind::Value) continue;
         if (PlayerOf(r.id) >= 0) {
             PlayerRow(r);
+            continue;
+        }
+        if (r.id == kMicrophone) {
+            MicrophoneRow(r);
             continue;
         }
         bool held = g_display_held && DisplayRow(r.id);
@@ -1254,6 +1297,11 @@ std::span<const Row> Page(int page) {
     if (page == kControllerPage) return kControllerRows;
     if (page == kDebugPage) return DebugRows();
     return {};
+}
+
+bool PanelOnly(const Row& row) {
+    bool voice = row.kind == Kind::Value && (row.id == kMicrophone || row.id == kPushToTalk);
+    return voice || row.kind == Kind::Text;
 }
 
 std::string Text(const Row& row, int step) {

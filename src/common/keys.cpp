@@ -59,6 +59,7 @@ constexpr ActionInfo kActions[kActionCount] = {
     {"OBJECTIVES", "objectives", VK_TAB, 0},
     {"TOGGLE HUD", "toggle_hud", 0, 0},
     {"TOGGLE TEXTURE REPLACEMENT", "toggle_textures", 0, 0},
+    {"PUSH TO TALK", "push_to_talk", 'T', 0},
     {"PAUSE MENU", "pause_menu", VK_ESCAPE, 0},
     {"SETTINGS PANEL", "settings_panel", VK_F10, 0},
     {"NOCLIP KEY", "noclip", VK_F1, 0},
@@ -279,6 +280,12 @@ uint8_t PositionKey(uintptr_t vk) {
 bool Held(int action, bool fresh) { return Usable(Key(action, 0), fresh) || Usable(Key(action, 1), fresh); }
 
 bool KeyHeld(uint8_t vk) { return Usable(vk, true); }
+
+bool BindDown(int action) {
+    uint8_t first = Key(action, 0);
+    uint8_t second = Key(action, 1);
+    return !g_text && ((first && g_down[first]) || (second && g_down[second]));
+}
 
 bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp) {
     switch (msg) {

@@ -40,6 +40,8 @@ void Init() {
     if (fcip::g_editor_launch) fcip::g_editor_launch();
 }
 
+bool TalkKey() { return fcip::keys::BindDown(fcip::keys::kPushToTalk); }
+
 }  // namespace
 
 const app::GameInfo app::kGame = {
@@ -61,6 +63,7 @@ const app::GameInfo app::kGame = {
     .ui = fcip::DrawUi,
     .pad = fcip::GamePad,
     .rumble = fcip::GameRumble,
+    .talk_key = TalkKey,
     .compiler_colours = {
         .background = Argb(fcip::kPanelBg),
         .text = Argb(fcip::kText),
