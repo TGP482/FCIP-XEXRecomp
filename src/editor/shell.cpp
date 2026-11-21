@@ -24,6 +24,7 @@
 
 #include "app/app.h"
 #include "common/aspect.h"
+#include "common/keys.h"
 #include "common/menu.h"
 #include "common/panel_colors.h"
 #include "common/view_clip.h"
@@ -732,6 +733,17 @@ void DrawStatus(float top, float width, double fps, const State& s) {
 bool SoloEditing(const State& s) { return editor::g_solo && s.tool == kEditObject; }
 bool PickedMarker(const State& s, ImVec2 m) { return SoloEditing(s) && PickMarker(m.x, m.y); }
 
+// the pointer held where a right button look began
+void HoldPointer(bool hold) {
+    static bool held = false;
+    if (hold == held) return;
+    held = hold;
+    POINT p;
+    GetCursorPos(&p);
+    RECT here{p.x, p.y, p.x + 1, p.y + 1};
+    ClipCursor(hold ? &here : nullptr);
+}
+
 void UpdateViewInput(const Box& view, const State& s) {
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 m = io.MousePos;
@@ -748,14 +760,18 @@ void UpdateViewInput(const Box& view, const State& s) {
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_looking = false;
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) g_applying = false;
     if (g_looking) ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+    HoldPointer(g_looking);
+    double dx = 0;
+    double dy = 0;
+    fcip::keys::TakeMouse(dx, dy);  // drained every frame, motion from before the look would snap it
     Box frame = FrameBox(io.DisplaySize.x, io.DisplaySize.y);
     ViewInput in;
     in.inside = over || g_looking || g_applying;
     in.u = frame.w > 0.0f ? (m.x - frame.x) / frame.w : 0.5f;
     in.v = frame.h > 0.0f ? (m.y - frame.y) / frame.h : 0.5f;
     if (g_looking) {
-        in.look_x = io.MouseDelta.x;
-        in.look_y = io.MouseDelta.y;
+        in.look_x = float(dx);
+        in.look_y = float(dy);
     }
     if (over) in.wheel = io.MouseWheel;
     in.apply = g_applying;
@@ -769,6 +785,8 @@ bool DrawShell(double fps) {
     if (!ShellUp()) {
         SetViewBox({});
         SetViewInput({});
+        HoldPointer(false);
+        g_editor_view_keys = false;
         g_editor_typing = false;
         g_save_as_open = false;
         return editor::g_solo && !MapOpen() && LevelListUp() && DrawLevelList();
@@ -790,8 +808,13 @@ bool DrawShell(double fps) {
     Box view{0.0f, top, size.x - dock, bottom - top};
     SetViewBox(view);
     bool console = ConsoleMenuUp();
-    if (console) SetViewInput({});
-    else UpdateViewInput(view, s);
+    g_editor_view_keys = !console;
+    if (console) {
+        HoldPointer(false);
+        SetViewInput({});
+    } else {
+        UpdateViewInput(view, s);
+    }
     if (g_show_dock) DrawDock(size.x - dock, top, bottom, s);
     if (g_show_status) DrawStatus(bottom, size.x, fps, s);
     if (editor::g_solo) editor::DrawMarkers();

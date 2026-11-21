@@ -38,6 +38,8 @@ inline bool (*g_editor_message)(void* hwnd, uint32_t msg, uintptr_t wp) = nullpt
 inline std::atomic<bool> g_editor_typing{false};
 // while it is up the pointer stays free: the editor's player never mouse looks under it
 inline std::atomic<bool> g_editor_shell{false};
+// while its view has the input the keyboard reaches the pad only as the movement keys, which move its camera
+inline std::atomic<bool> g_editor_view_keys{false};
 // FCIPEditor.exe's launch question, set by the level editor's sources (GameInfo::init)
 inline void (*g_editor_launch)() = nullptr;
 // window thread: the cursor and buttons for the game's menus, a left click skips a skippable movie

@@ -457,6 +457,12 @@ void GamePad(int port, input::Pad& pad) {
     }
     ToggleHud();
     input::Pad kb = port == keyboard ? Keyboard(pad) : input::Pad{};
+    if (g_editor_view_keys) {
+        input::Pad move;
+        move.lx = kb.lx;
+        move.ly = kb.ly;
+        kb = move;
+    }
     // not plain negation: -32768 has no positive
     if (fcip::Get().pad_invert_x && !InMenu()) pad.rx = int16_t(-1 - pad.rx);
     if (fcip::Get().pad_invert_y && !InMenu()) pad.ry = int16_t(-1 - pad.ry);

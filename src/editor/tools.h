@@ -118,7 +118,7 @@ struct ViewInput {
     bool inside = false;   // over the view, or dragging from it
     float u = 0.0f;        // its place in the frame, 0 to 1 from the top left
     float v = 0.0f;
-    float look_x = 0.0f;   // pixels dragged with the right button
+    float look_x = 0.0f;   // raw mouse counts while the right button looks
     float look_y = 0.0f;
     float wheel = 0.0f;    // notches, up is positive
     bool apply = false;    // the left button is held on the view

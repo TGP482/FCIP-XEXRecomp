@@ -159,7 +159,7 @@ constexpr uint32_t kSetEditorMode = 0x820C5548;   // (handler, 1 editing or 2 fi
 // how the editor turns its look inputs into motion each second, an input of v moving v * |v| times this
 constexpr double kYawPerSecond = 90.0;
 constexpr double kPitchPerSecond = 60.0;
-constexpr double kLookDegreesPerPixel = 0.2;
+constexpr double kLookDegreesPerCount = 0.2;
 constexpr double kZoomPerNotch = 0.15;  // of the distance
 // the pick ray against the terrain
 constexpr float kPickReach = 500.0f;
@@ -546,10 +546,10 @@ Inject TakeLook() {
     double dt = GF(kFrameSeconds);
     std::lock_guard lock(g_lock);
     if (dt <= 0.0) return in;
-    in.look_x = InputFor(g_view.look_x * kLookDegreesPerPixel, dt * kYawPerSecond);
+    in.look_x = InputFor(g_view.look_x * kLookDegreesPerCount, dt * kYawPerSecond);
     if (g_view.look_y != 0.0f) {
         in.pitch = true;
-        in.look_y = InputFor(g_view.look_y * kLookDegreesPerPixel, dt * kPitchPerSecond);
+        in.look_y = InputFor(g_view.look_y * kLookDegreesPerCount, dt * kPitchPerSecond);
     } else if (g_view.wheel != 0.0f) {
         double distance = GF(kCameraDistance);
         in.look_y = InputFor(g_view.wheel * distance * kZoomPerNotch, dt * ZoomRate(distance));
