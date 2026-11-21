@@ -302,20 +302,15 @@ void Release(Guest& guest, uint32_t page, uint32_t hit, uint32_t element, int ro
 void Pointer(Guest& guest, uint32_t page, const Input& in) {
     Cursor c;
     if (!(in.moved || in.left_down || in.left_up) || !ToVirtual(in.u, in.v, c)) return;
-    uint32_t focus = Read32(page + kPageFocus);
-    bool list_focused = ObjectOk(focus) && IsList(Read32(focus + kWidgetElement));
     int hit_x = c.x;
     uint32_t hit = HitTest(guest, page, c, hit_x);
     uint32_t element = hit ? Read32(hit + kWidgetElement) : 0;
     int row = -1;
-    if (hit && IsList(element)) {
-        // a list is entered the stock way, then owns hover until a click elsewhere
-        if (hit == focus) {
-            row = ListRow(guest, element, hit_x, c.y);
-            SelectRow(guest, hit, element, row);
-        }
-    } else if (hit && (!list_focused || in.left_down)) {
-        Focus(guest, page, hit);
+    // hover moves the focus as the keys do, into and out of lists (P_Controller's rows and CONTROLLER SETUP)
+    if (hit) Focus(guest, page, hit);
+    if (hit && IsList(element) && Read32(page + kPageFocus) == hit) {
+        row = ListRow(guest, element, hit_x, c.y);
+        SelectRow(guest, hit, element, row);
     }
     if (in.left_down) {
         g_press_page = page;
