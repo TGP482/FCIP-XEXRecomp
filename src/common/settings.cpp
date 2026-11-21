@@ -161,6 +161,7 @@ void LoadSettings(const void* table) {
     s.gyro.recenter_button = std::min(t["gyro_recenter_button"].value_or(s.gyro.recenter_button), last_button);
     s.invincible = t["invincibility"].value_or(s.invincible);
     s.noclip = t["noclip"].value_or(s.noclip);
+    s.profile = t["profile"].value_or(s.profile);
     LoadDisplay(t);
     keys::Load(table);
 }
@@ -218,6 +219,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("gyro_recenter_button", int64_t(s.gyro.recenter_button));
     t.insert_or_assign("invincibility", s.invincible);
     t.insert_or_assign("noclip", s.noclip);
+    t.insert_or_assign("profile", s.profile);
     SaveDisplay(t);
     keys::Save(table);
 }

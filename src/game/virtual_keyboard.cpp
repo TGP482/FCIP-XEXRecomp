@@ -1,5 +1,8 @@
 // default.xex: the original Xbox virtual keyboard page (P_VirtualKeyBoard), still built and updated by the 360 menus
-// but never opened, takes the title's XShowKeyboardUI requests (the CHEATS code entry) in place of the system keyboard
+// but never opened, takes the title's XShowKeyboardUI requests (the CHEATS code entry) in place of the system keyboard,
+// and the profile names the profile list asks for
+#include "game/virtual_keyboard.h"
+
 #include <algorithm>
 
 #include "core/log.h"
@@ -11,6 +14,7 @@ using namespace kernel;
 namespace {
 
 // the virtual keyboard menu (constructor 82170098)
+constexpr uint32_t kKeyboardListener = 0x60;  // left unset by the constructor, read by back and accept
 constexpr uint32_t kKeyboardInfo = 0xB4;  // L_InfoText
 constexpr uint32_t kKeyboardLine = 0xB8;  // L_Text
 constexpr uint32_t kKeyboardText = 0xD8;  // std::wstring
@@ -35,13 +39,16 @@ constexpr uint32_t kErrorCancelled = 0x4C7;
 
 constexpr uint32_t kMaxUnits = 256;
 
-// the open XShowKeyboardUI request, menu thread only
+// the open entry, menu thread only: an XShowKeyboardUI request, or ours with its accept
 struct Request {
+    bool open = false;
     uint32_t result = 0;  // UTF-16 the title reads, units long with the terminator
     uint32_t units = 0;
     uint32_t overlapped = 0;
+    fcip::keyboard::Accept accept = nullptr;
 };
 Request g_request;
+uint32_t g_keyboard = 0;
 
 uint32_t StringData(uint32_t str) {
     return R32(str + kStringCapacity) < kStringInline ? str + kStringData : R32(str + kStringData);
@@ -63,47 +70,73 @@ void Finish(uint32_t error, uint32_t text, uint32_t length) {
     g_request = {};
 }
 
+bool OpenPage(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length) {
+    uint32_t keyboard = R32(SYM_VirtualKeyboard_pointer);
+    if (!keyboard || g_request.open) return false;
+    g_keyboard = keyboard;
+    W32(keyboard + kKeyboardListener, 0);
+    CallGuest(ctx, R32(R32(keyboard) + kMenuShowPage), {keyboard, 0, 1, 1});
+    uint32_t length = WideLength(start);
+    uint32_t text = start ? start : StringData(keyboard + kKeyboardText);
+    CallGuest(ctx, SYM_WString_AssignText, {keyboard + kKeyboardText, text, length});
+    W32(keyboard + kKeyboardKeepStart, length ? 1 : 0);
+    W32(keyboard + kKeyboardStartShown, length ? 1 : 0);
+    W32(keyboard + kKeyboardMaxLength, max_length);
+    CallGuest(ctx, SYM_UIText_SetText, {R32(keyboard + kKeyboardLine), StringData(keyboard + kKeyboardText)});
+    fcip::keyboard::SetInfo(ctx, info);
+    LOGR("virtual keyboard: opened, up to %u characters", max_length);
+    return true;
+}
+
 }  // namespace
 
 PPC_EXTERN_FUNC(GUEST_ORIG(XShowKeyboardUI));
 PPC_EXTERN_FUNC(GUEST_ORIG(VirtualKeyboard_Close));
 
+bool fcip::keyboard::Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length, Accept accept) {
+    if (!OpenPage(ctx, start, info, max_length)) return false;
+    g_request = {true, 0, 0, 0, accept};
+    return true;
+}
+
+void fcip::keyboard::SetInfo(PPCContext& ctx, uint32_t info) {
+    uint32_t line = g_keyboard ? R32(g_keyboard + kKeyboardInfo) : 0;
+    if (info && line) CallGuest(ctx, SYM_UIText_SetText, {line, info});
+}
+
 // (user, flags, starting text, title, description, result, result units, overlapped)
 PPC_FUNC(GUEST(XShowKeyboardUI)) {
-    uint32_t keyboard = R32(SYM_VirtualKeyboard_pointer);
     uint32_t units = uint32_t(ctx.r[9]);
-    if (!keyboard || !units || g_request.overlapped) {
+    uint32_t result = uint32_t(ctx.r[8]);
+    uint32_t start = uint32_t(ctx.r[5]);
+    uint32_t info = ctx.r[7] ? uint32_t(ctx.r[7]) : uint32_t(ctx.r[6]);
+    if (!units || !OpenPage(ctx, start, info, units - 1)) {
         GUEST_ORIG(XShowKeyboardUI)(ctx, base);
         return;
     }
-    uint32_t start = uint32_t(ctx.r[5]);
-    uint32_t info = ctx.r[7] ? uint32_t(ctx.r[7]) : uint32_t(ctx.r[6]);
-    g_request = {uint32_t(ctx.r[8]), units, uint32_t(ctx.r[10])};
+    g_request = {true, result, units, uint32_t(ctx.r[10]), nullptr};
     W32(g_request.overlapped + kOverlappedResult, kErrorIoPending);
-
-    CallGuest(ctx, R32(R32(keyboard) + kMenuShowPage), {keyboard, 0, 1, 1});
-    uint32_t length = WideLength(start);
-    CallGuest(ctx, SYM_WString_AssignText, {keyboard + kKeyboardText, start ? start : g_request.result, length});
-    W32(keyboard + kKeyboardKeepStart, length ? 1 : 0);
-    W32(keyboard + kKeyboardStartShown, length ? 1 : 0);
-    W32(keyboard + kKeyboardMaxLength, units - 1);
-    CallGuest(ctx, SYM_UIText_SetText, {R32(keyboard + kKeyboardLine), StringData(keyboard + kKeyboardText)});
-    uint32_t info_line = R32(keyboard + kKeyboardInfo);
-    if (info && info_line) CallGuest(ctx, SYM_UIText_SetText, {info_line, info});
-    LOGR("virtual keyboard: opened, up to %u characters", units - 1);
     ctx.r[3] = kErrorIoPending;
 }
 
 // the page's back out, and its close after an accept
 PPC_FUNC(GUEST(VirtualKeyboard_Close)) {
     if (g_request.overlapped) Finish(kErrorCancelled, 0, 0);
+    g_request = {};
     GUEST_ORIG(VirtualKeyboard_Close)(ctx, base);
 }
 
-// r31 the keyboard, before its accept hands the text to a listener (none is ever set on the 360): true closes the page
+// r31 the keyboard, before its accept hands the text to a listener (none is ever set on the 360): true closes the
+// page, false keeps it open
 bool VirtualKeyboardAccept(PPCContext& ctx, uint8_t*) {
-    if (!g_request.overlapped) return false;
     uint32_t text = uint32_t(ctx.r[31]) + kKeyboardText;
-    Finish(kErrorSuccess, StringData(text), R32(text + kStringLength));
+    uint32_t data = StringData(text);
+    uint32_t length = R32(text + kStringLength);
+    if (g_request.overlapped) {
+        Finish(kErrorSuccess, data, length);
+        return true;
+    }
+    if (!g_request.accept || !g_request.accept(ctx, data, length)) return false;
+    g_request = {};
     return true;
 }

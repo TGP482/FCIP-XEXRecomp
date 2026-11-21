@@ -52,6 +52,7 @@ struct Settings {
     gyro::Settings gyro;           // the controller's gyro turns the view, beside the right stick
     bool invincible = false;
     bool noclip = false;  // the noclip key flies the player
+    std::string profile;  // the current profile's name, empty until the first one is made
 };
 
 Settings& Get();

@@ -111,6 +111,23 @@ VirtualKeyboard_Close = 0x82171580  # (keyboard)
 VirtualKeyboard_Update = 0x82171658 # (keyboard) once a menu update
 WString_AssignText = 0x820F6150     # (std::wstring, text, length)
 XShowKeyboardUI = 0x82643CF0
+# CryProfile, the original Xbox profile list and one save file per profile (src/game/profiles.cpp)
+Guest_Alloc = 0x826306C8                # (bytes)
+Profile_LoadOptions = 0x821E1F38        # (manager, profile, title settings results)
+Profile_LoadProgress = 0x821E1C20       # (manager, profile, title settings results)
+Profile_New = 0x821E06B0                # (profile, std::wstring name)
+Profile_Pack = 0x821E0FE0               # (profile) the progress into the block the save writes
+Profile_Save = 0x821E1340               # (profile) packs it and writes its user's title settings
+ProfileList_AskDelete = 0x821E3730      # (menu, profile)
+ProfileList_Key = 0x821E4FC0            # (menu, sender, event)
+ProfileList_Row = 0x821E36D8            # (menu) the selected profile's index, -1 on NEW PROFILE
+ProfileList_SetCurrent = 0x821E3D30     # (menu)
+ProfileManager_Add = 0x821E2B80         # (manager, profile)
+ProfileManager_Apply = 0x821E28E0       # (manager) the current profile's settings and player name
+ProfileManager_Remove = 0x821E2610      # (manager, index)
+ProfileManager_Select = 0x821E2848      # (manager, user)
+ProfileMenu_PageShown = 0x821E50A0      # (menu, page)
+XUserGetName = 0x82643A30               # (user, text, size)
 
 # CrySystem, the startup movies
 PlayMovie = 0x8233FFA0
@@ -224,6 +241,7 @@ UIGlyph_table = 0x82053C70
 UIList_vtable = 0x82078A40
 UISystem_pointer = 0x82912904
 VirtualKeyboard_pointer = 0x82911A14
+ProfileManager_pointer = 0x8293A7A4
 
 # CrySystem: return addresses of the startup movie and screen calls
 BrandScreen_return = 0x82316094
@@ -404,7 +422,14 @@ call = "ImageQuad"
 regs = ["r1"]
 
 # instruction hooks, defined in src/game/virtual_keyboard.cpp
-[[hook]]  # the virtual keyboard's accept, r31 the keyboard, before it calls its listener
+[[hook]]  # the virtual keyboard's accept, r31 the keyboard, before it calls its listener: closes or stays open
 at = 0x82171C78
 call = "VirtualKeyboardAccept"
 on_true = 0x82171C98
+on_false = 0x82171EC8
+
+# instruction hooks, defined in src/game/profiles.cpp
+[[hook]]  # r4 = 1, the page CryProfile opens on; the list comes first
+at = 0x821E32C8
+call = "ProfileListFirst"
+regs = ["r4"]

@@ -10,6 +10,7 @@
 #include "common/menu.h"
 #include "common/widgets.h"
 #include "core/log.h"
+#include "game/profiles.h"
 #include "cpu/dispatch.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
@@ -591,6 +592,7 @@ void NativeUnbind(PPCContext& ctx) {
 
 // menu thread, each frame: a bind row's capture ends with a key, Escape, or the page going away
 void NativeTick(PPCContext& ctx, uint32_t) {
+    profiles::Tick(ctx);
     // a change from the panel shows at once
     static uint32_t seen = 0;
     uint32_t revision = SettingsRevision();
@@ -779,6 +781,7 @@ PPC_FUNC(sub_821BBA70) {
     uint32_t page = uint32_t(ctx.r[4]);
     __imp__sub_821BBA70(ctx, base);
     SetWatermark(ctx, page);
+    if (Read32(page + kPageNameCrc) == kCrcMainPage) profiles::NoteMainMenu();
 }
 
 // the value list's key up (helper, widget, event)
