@@ -163,7 +163,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kOceanReflection, "OCEAN REFLECTION",
      "Xbox 360 keeps the game's own ocean, Original Xbox mirrors the sky and shore over it like the original Xbox game"},
     {Kind::Value, kAntiAliasing, "ANTI ALIASING",
-     "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, or AMD FSR 3 from the render resolution, sharpened by AMD CAS"},
+     "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, TAA, or AMD FSR 3 from the render resolution, sharpened by AMD CAS"},
     {Kind::Value, kFrameGeneration, "FRAME GENERATION",
      "Generates a frame between each two rendered ones with AMD FSR Frame Generation, with FSR on"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
@@ -452,16 +452,21 @@ void StepRenderResolution(app::Settings& s, int step, char (&text)[64]) {
     std::snprintf(text, sizeof(text), "%u%% (%ux%u)", percent, out.width * percent / 100, out.height * percent / 100);
 }
 
-// MSAA's sample counts, then FSR
+// MSAA's sample counts, then TAA and FSR
 void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
-    constexpr int kMsaaCount = int(std::size(kMsaaValues));
-    int i = Get().fsr ? kMsaaCount : NearestIndex(kMsaaValues, kMsaaCount, s.msaa);
+    constexpr int kTaa = int(std::size(kMsaaValues));
+    constexpr int kFsr = kTaa + 1;
+    int i = NearestIndex(kMsaaValues, kTaa, s.msaa);
+    if (Get().taa) i = kTaa;
+    if (Get().fsr) i = kFsr;
     if (step) {
-        i = StepIndex(i, step, kMsaaCount + 1);
-        Get().fsr = i == kMsaaCount;
-        s.msaa = Get().fsr ? 0 : kMsaaValues[i];
+        i = StepIndex(i, step, kFsr + 1);
+        Get().taa = i == kTaa;
+        Get().fsr = i == kFsr;
+        s.msaa = i < kTaa ? kMsaaValues[i] : 0;
     }
-    if (i < kMsaaCount) std::snprintf(text, sizeof(text), "%s", kMsaaNames[i]);
+    if (i < kTaa) std::snprintf(text, sizeof(text), "%s", kMsaaNames[i]);
+    else if (i == kTaa) std::snprintf(text, sizeof(text), "TAA");
     else std::snprintf(text, sizeof(text), "FSR3%s", fsr::StatusNote(fsr::UpscalingStatus()));
 }
 

@@ -28,7 +28,7 @@ void ReadMatrix(uint32_t addr, float out[16]) {
 namespace fcip {
 
 void MotionSceneDraw(uint32_t block) {
-    if (!Get().fsr || SubmittedPass() != kPassCamera) return;
+    if (!Temporal() || SubmittedPass() != kPassCamera) return;
     uint32_t camera = Camera();
     if (!camera) return;
     gpu::MotionCamera c;

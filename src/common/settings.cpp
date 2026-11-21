@@ -121,6 +121,7 @@ void LoadSettings(const void* table) {
     s.hdr_output = t["hdr_output"].value_or(s.hdr_output);
     s.colour_blind = std::min(t["colour_blind"].value_or(s.colour_blind), 3u);
     s.smaa = t["smaa"].value_or(s.smaa);
+    s.taa = t["taa"].value_or(s.taa);
     s.fsr = t["fsr"].value_or(s.fsr);
     s.frame_generation = t["frame_generation"].value_or(s.frame_generation);
     s.ambient_occlusion = std::min(t["ambient_occlusion"].value_or(s.ambient_occlusion), 3u);
@@ -176,6 +177,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("hdr_output", s.hdr_output);
     t.insert_or_assign("colour_blind", int64_t(s.colour_blind));
     t.insert_or_assign("smaa", s.smaa);
+    t.insert_or_assign("taa", s.taa);
     t.insert_or_assign("fsr", s.fsr);
     t.insert_or_assign("frame_generation", s.frame_generation);
     t.insert_or_assign("ambient_occlusion", int64_t(s.ambient_occlusion));

@@ -123,7 +123,8 @@ constexpr uint32_t kFogRtv = kGiRtv + kGiTargets;  // volumetric fog's march and
 constexpr int kFogTargets = 2;
 constexpr uint32_t kCloudRtv = kFogRtv + kFogTargets;  // volumetric clouds' march
 constexpr uint32_t kCausticsRtv = kCloudRtv + 1;       // the caustics' light
-constexpr uint32_t kRtvSlots = kCausticsRtv + 1;
+constexpr uint32_t kTaaRtv = kCausticsRtv + 1;        // TAA's two histories, this frame's and the last
+constexpr uint32_t kRtvSlots = kTaaRtv + 2;
 constexpr DXGI_FORMAT kAlbedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kGiFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 // a full float: the water's draws fade the light by the floor's distance less theirs, which half floats step through
@@ -1604,6 +1605,74 @@ float2 motion(float4 pos : SV_Position) : SV_Target {
 }
 )";
 
+// TAA: the scene blended into its history where its motion carries it back, the history clipped to the scene around
+const char* kTaaHlsl = R"(
+cbuffer P : register(b1) { float4 p0; float4 p1; };
+Texture2D scene : register(t0);
+Texture2D history : register(t1);
+Texture2D<float2> motion : register(t2);
+SamplerState ls : register(s0);
+float4 vs(uint id : SV_VertexID) : SV_Position {
+    float2 t = float2((id << 1) & 2, id & 2);
+    return float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+float3 ycocg(float3 c) {
+    return float3(dot(c, float3(0.25, 0.5, 0.25)), dot(c, float3(0.5, 0, -0.5)), dot(c, float3(-0.25, 0.5, -0.25)));
+}
+float3 rgb(float3 c) {
+    return float3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z);
+}
+// Catmull Rom from nine bilinear taps, so the history stays sharp as it moves
+float3 history_at(float2 uv, float2 size) {
+    float2 p = uv * size - 0.5;
+    float2 f = frac(p);
+    float2 c = (floor(p) + 0.5) / size;
+    float2 w0 = f * (-0.5 + f * (1 - 0.5 * f));
+    float2 w1 = 1 + f * f * (-2.5 + 1.5 * f);
+    float2 w2 = f * (0.5 + f * (2 - 1.5 * f));
+    float2 w3 = f * f * (-0.5 + 0.5 * f);
+    float2 at[3] = {c - 1 / size, c + w2 / (w1 + w2) / size, c + 2 / size};
+    float2 w[3] = {w0, w1 + w2, w3};
+    float3 r = 0;
+    for (int y = 0; y < 3; y++) {
+        for (int x = 0; x < 3; x++) r += history.SampleLevel(ls, float2(at[x].x, at[y].y), 0).rgb * w[x].x * w[y].y;
+    }
+    return max(r, 0);
+}
+// p0.xy the jitter in uv, p0.z 1 when the history holds nothing
+float4 taa(float4 pos : SV_Position) : SV_Target {
+    int2 px = int2(pos.xy);
+    float2 size;
+    scene.GetDimensions(size.x, size.y);
+    float2 uv = pos.xy / size;
+    // alpha holds the game's glow mask: the scene's own, unjittered
+    float alpha = scene.SampleLevel(ls, uv + p0.xy, 0).a;
+    float3 c = ycocg(scene.Load(int3(px, 0)).rgb);
+    float3 sum = 0;
+    float3 sq = 0;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            float3 n = ycocg(scene.Load(int3(clamp(px + int2(x, y), 0, int2(size) - 1), 0)).rgb);
+            sum += n;
+            sq += n * n;
+        }
+    }
+    float2 mv = motion.Load(int3(px, 0));
+    float2 last = uv + mv;
+    if (p0.z > 0 || any(abs(mv) >= 2) || any(last != saturate(last))) return float4(rgb(c), alpha);
+    float3 mean = sum / 9;
+    float3 spread = sqrt(max(sq / 9 - mean * mean, 0)) * 1.25 + 1e-5;
+    float3 h = ycocg(history_at(last, size));
+    float3 v = abs(h - mean) / spread;
+    float out_by = max(v.x, max(v.y, v.z));
+    if (out_by > 1) h = mean + (h - mean) / out_by;
+    // weighted by inverse luma so bright specks don't flicker
+    float wc = 0.1 / (1 + c.x);
+    float wh = 0.9 / (1 + h.x);
+    return float4(rgb((c * wc + h * wh) / (wc + wh)), alpha);
+}
+)";
+
 // the radical inverse of i in base b, 0 to 1
 float Halton(uint32_t i, uint32_t b) {
     float f = 1;
@@ -2034,6 +2103,10 @@ private:
     bool Fsr() const { return fcip::Get().fsr && fsr::Upscaling(); }
     // frame generation's swap chain only while it is on: it costs a copy and two threads every present
     bool GenerationWanted() const { return fcip::Get().frame_generation && Fsr() && fsr::FrameGeneration(); }
+    // TAA: the camera's pass jittered as for FSR, resolved at its end at the same scale
+    bool Taa() const { return fcip::Get().taa; }
+    bool EnsureHistory(uint32_t w, uint32_t h);
+    void ResolveTemporal(Target& scene, Target& out);
     void RecreateSwapChain();
     void ConfigureGeneration(bool enabled);
     void KeepHudless(const State& s);
@@ -2224,6 +2297,14 @@ private:
         uint32_t w = 0;
         uint32_t h = 0;
     } upscale_;
+    struct Temporal {
+        ComPtr<ID3D12Resource> history[2];
+        D3D12_RESOURCE_STATES state[2] = {};
+        uint32_t now = 0;   // the history last written
+        uint64_t last = 0;  // the present the history was last written for
+        uint32_t w = 0;
+        uint32_t h = 0;
+    } taa_;
     // frame generation tells the HUD apart by the frame without it, in the back buffer's form
     struct Hudless {
         ComPtr<ID3D12Resource> frame;  // the target as the post effects left it, before the HUD
@@ -5420,7 +5501,7 @@ float D3D12Backend::SceneScale() const {
 
 // the camera's pass begins: its full screen targets at the scene's scale, its draws offset by the next jitter
 void D3D12Backend::BeginScene() {
-    upscale_.scene = Fsr();
+    upscale_.scene = Fsr() || Taa();
     upscale_.motion = false;
     if (!upscale_.scene) return;
     // Halton 2 and 3, eight phases for each output pixel a scene pixel covers
@@ -5449,7 +5530,12 @@ void D3D12Backend::EndScene() {
     }
     Target& in = color->second;
     Target* out = EnsureTarget(in.surface, false, in.width, in.height);
-    if (!out || !EnsureUpscaled(out->w, out->h)) return;
+    if (!out) return;
+    if (Taa()) {
+        ResolveTemporal(in, *out);
+        return;
+    }
+    if (!EnsureUpscaled(out->w, out->h)) return;
     auto depth = targets_.find(upscale_.depth);
     bool ok = false;
     if (upscale_.motion && depth != targets_.end()) {
@@ -5665,6 +5751,58 @@ bool D3D12Backend::DrawSharpened(Target& scene, Target& out) {
     ID3D12Resource* const src[3] = {upscale_.out.Get(), scene.res.Get(), nullptr};
     const DXGI_FORMAT fmt[3] = {kUpscaledFormat, ReadFormat(scene), kSwapFormat};
     return Pass(hlsl.c_str(), "vs", "cas", out.fmt, Rtv(out.view), out.w, out.h, src, fmt, p, -1);
+}
+
+// TAA
+
+bool D3D12Backend::EnsureHistory(uint32_t w, uint32_t h) {
+    if (taa_.history[0] && taa_.w == w && taa_.h == h) return true;
+    taa_.w = 0;
+    taa_.h = 0;
+    taa_.last = 0;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(kUpscaledFormat, w, h);
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    for (int i = 0; i < 2; i++) {
+        if (taa_.history[i]) Release(std::move(taa_.history[i]));
+        taa_.state[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, taa_.state[i], nullptr,
+                                                 IID_PPV_ARGS(&taa_.history[i])))) {
+            LOGE("D3D12: no %ux%u TAA history", w, h);
+            return false;
+        }
+        dev_->CreateRenderTargetView(taa_.history[i].Get(), nullptr, Rtv(kTaaRtv + i));
+    }
+    taa_.w = w;
+    taa_.h = h;
+    return true;
+}
+
+// the scene into this frame's history over last frame's, then into the target the title draws on
+void D3D12Backend::ResolveTemporal(Target& scene, Target& out) {
+    bool ok = upscale_.motion && EnsureHistory(scene.w, scene.h);
+    // a history older than the last present shows another view
+    bool reset = upscale_.reset || presents_ - taa_.last > 1;
+    uint32_t prev = taa_.now;
+    uint32_t now = prev ^ 1;
+    if (ok) {
+        Transition(scene.res.Get(), scene.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        Transition(taa_.history[prev].Get(), taa_.state[prev], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        Transition(motion_.done.Get(), motion_.done_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        Transition(taa_.history[now].Get(), taa_.state[now], D3D12_RESOURCE_STATE_RENDER_TARGET);
+        ID3D12Resource* const src[3] = {scene.res.Get(), taa_.history[prev].Get(), motion_.done.Get()};
+        const DXGI_FORMAT fmt[3] = {ReadFormat(scene), kUpscaledFormat, kMotionFormat};
+        const float p[8] = {jitter_[0] / scene.w, jitter_[1] / scene.h, reset ? 1.0f : 0.0f, 0, 0, 0, 0, 0};
+        ok = Pass(kTaaHlsl, "vs", "taa", kUpscaledFormat, Rtv(kTaaRtv + now), scene.w, scene.h, src, fmt, p, -1);
+    }
+    upscale_.reset = !ok;
+    if (!ok) {
+        DrawUpscaled(scene.res.Get(), scene.state, ReadFormat(scene), 1, out);
+        return;
+    }
+    taa_.now = now;
+    taa_.last = presents_;
+    DrawUpscaled(taa_.history[now].Get(), taa_.state[now], kUpscaledFormat, 1, out);
 }
 
 // RTAO

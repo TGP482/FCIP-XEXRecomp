@@ -19,6 +19,7 @@ struct Settings {
     bool hdr_output = false;  // HDR10 on a display with Windows HDR on
     uint32_t colour_blind = 0;  // 0 off, 1 protanopia, 2 deuteranopia, 3 tritanopia
     bool smaa = false;          // over the finished frame, HUD included; combines with MSAA
+    bool taa = false;           // temporal anti aliasing in place of MSAA, at the render resolution
     bool fsr = false;           // AMD FSR in place of MSAA, the render resolution its input
     bool frame_generation = false;  // AMD FSR frame generation, with FSR only
     uint32_t ambient_occlusion = 0;  // 0 off, 1 SSAO, 2 GTAO, 3 RTAO; the world only, under the fog
@@ -56,6 +57,9 @@ struct Settings {
 };
 
 Settings& Get();
+
+// FSR or TAA: the camera's pass drawn jittered, with motion vectors
+inline bool Temporal() { return Get().fsr || Get().taa; }
 
 // ray traced shadows cover what the game's do, Ultra also what it leaves out: vehicles, dropped weapons, bushes
 enum : uint32_t { kFilterSharp, kFilterSoft, kFilterPcss, kFilterRay, kFilterRayUltra };

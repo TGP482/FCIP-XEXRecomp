@@ -1,4 +1,4 @@
-// Motion vectors for FSR from the camera's pass
+// Motion vectors for FSR and TAA from the camera's pass
 #pragma once
 #include <cstdint>
 
