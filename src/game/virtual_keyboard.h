@@ -14,5 +14,7 @@ using Accept = bool (*)(PPCContext& ctx, uint32_t text, uint32_t length);
 bool Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length, Accept accept);
 // the line above the text, while the page is open
 void SetInfo(PPCContext& ctx, uint32_t info);
+// once a menu frame: the real keyboard types into an open page
+void Tick(PPCContext& ctx);
 
 }  // namespace fcip::keyboard

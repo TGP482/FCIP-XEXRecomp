@@ -4,7 +4,9 @@
 #include "game/virtual_keyboard.h"
 
 #include <algorithm>
+#include <string>
 
+#include "common/keys.h"
 #include "core/log.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
@@ -23,6 +25,7 @@ constexpr uint32_t kKeyboardKeepStart = 0x100;
 constexpr uint32_t kKeyboardStartShown = 0x104;
 constexpr uint32_t kKeyboardMaxLength = 0x10C;
 constexpr uint32_t kMenuShowPage = 0x2C;  // vtable: (menu, page, 1, 1)
+constexpr uint32_t kMenuClose = 0x28;     // vtable: (menu, 0, 0)
 
 // std::wstring
 constexpr uint32_t kStringData = 0x04;
@@ -38,6 +41,11 @@ constexpr uint32_t kErrorIoPending = 0x3E5;
 constexpr uint32_t kErrorCancelled = 0x4C7;
 
 constexpr uint32_t kMaxUnits = 256;
+
+// the real keyboard's control codes as the layout types them
+constexpr char16_t kBackspace = 0x08;
+constexpr char16_t kEnter = 0x0D;
+constexpr char16_t kEscape = 0x1B;
 
 // the open entry, menu thread only: an XShowKeyboardUI request, or ours with its accept
 struct Request {
@@ -70,6 +78,57 @@ void Finish(uint32_t error, uint32_t text, uint32_t length) {
     g_request = {};
 }
 
+bool AllSpaces(uint32_t text, uint32_t length) {
+    for (uint32_t i = 0; i < length; i++) {
+        if (R16(text + i * 2) != ' ') return false;
+    }
+    return true;
+}
+
+// the typed text to the entry's owner: true when the page should close
+bool HandOver(PPCContext& ctx, uint32_t keyboard) {
+    uint32_t text = keyboard + kKeyboardText;
+    uint32_t data = StringData(text);
+    uint32_t length = R32(text + kStringLength);
+    if (g_request.overlapped) {
+        Finish(kErrorSuccess, data, length);
+        return true;
+    }
+    if (!g_request.accept || !g_request.accept(ctx, data, length)) return false;
+    g_request = {};
+    return true;
+}
+
+void ClosePage(PPCContext& ctx) { CallGuest(ctx, R32(R32(g_keyboard) + kMenuClose), {g_keyboard, 0, 0}); }
+
+// a std::wstring holding one character in place
+uint32_t OneCharacter(char16_t c) {
+    static const uint32_t str = mem::AllocSystem(0x20);
+    W16(str + kStringData, c);
+    W16(str + kStringData + 2, 0);
+    W32(str + kStringLength, 1);
+    W32(str + kStringCapacity, kStringInline - 1);
+    return str;
+}
+
+// false once the page closed
+bool Type(PPCContext& ctx, char16_t c) {
+    if (c == kBackspace) {
+        CallGuest(ctx, SYM_VirtualKeyboard_Delete, {g_keyboard});
+    } else if (c == kEscape) {
+        ClosePage(ctx);
+        return false;
+    } else if (c == kEnter) {
+        uint32_t text = g_keyboard + kKeyboardText;
+        if (AllSpaces(StringData(text), R32(text + kStringLength)) || !HandOver(ctx, g_keyboard)) return true;
+        ClosePage(ctx);
+        return false;
+    } else if (c >= ' ' && c < 0x7F) {
+        CallGuest(ctx, SYM_VirtualKeyboard_AddText, {g_keyboard, OneCharacter(c)});
+    }
+    return true;
+}
+
 bool OpenPage(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length) {
     uint32_t keyboard = R32(SYM_VirtualKeyboard_pointer);
     if (!keyboard || g_request.open) return false;
@@ -97,6 +156,14 @@ bool fcip::keyboard::Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32
     if (!OpenPage(ctx, start, info, max_length)) return false;
     g_request = {true, 0, 0, 0, accept};
     return true;
+}
+
+void fcip::keyboard::Tick(PPCContext& ctx) {
+    keys::SetTextEntry(g_request.open);
+    if (!g_request.open) return;
+    for (char16_t c : keys::TakeText()) {
+        if (!Type(ctx, c)) break;
+    }
 }
 
 void fcip::keyboard::SetInfo(PPCContext& ctx, uint32_t info) {
@@ -128,15 +195,4 @@ PPC_FUNC(GUEST(VirtualKeyboard_Close)) {
 
 // r31 the keyboard, before its accept hands the text to a listener (none is ever set on the 360): true closes the
 // page, false keeps it open
-bool VirtualKeyboardAccept(PPCContext& ctx, uint8_t*) {
-    uint32_t text = uint32_t(ctx.r[31]) + kKeyboardText;
-    uint32_t data = StringData(text);
-    uint32_t length = R32(text + kStringLength);
-    if (g_request.overlapped) {
-        Finish(kErrorSuccess, data, length);
-        return true;
-    }
-    if (!g_request.accept || !g_request.accept(ctx, data, length)) return false;
-    g_request = {};
-    return true;
-}
+bool VirtualKeyboardAccept(PPCContext& ctx, uint8_t*) { return HandOver(ctx, uint32_t(ctx.r[31])); }

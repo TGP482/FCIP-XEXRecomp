@@ -40,6 +40,12 @@ void WindowUp(void* hwnd);  // raw mouse
 // Delete went down in the last 250 ms, once per press
 bool TakeDelete();
 
+// a text entry: keys go to TakeText as the window's layout, Caps Lock and Shift type them, not to the binds, and keys
+// pressed during it count only once released
+void SetTextEntry(bool on);
+bool TextEntry();
+std::u16string TakeText();  // typed since the last call, Backspace, Enter and Escape as their control codes
+
 // the next key or mouse button pressed goes to Captured() instead of the game; Escape cancels
 void BeginCapture();
 bool Capturing();

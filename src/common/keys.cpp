@@ -13,7 +13,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <mutex>
+#include <utility>
 
 #include <toml++/toml.hpp>
 
@@ -120,6 +122,20 @@ std::atomic<int> g_wheel{0};  // window thread adds, pad poll takes whole notche
 std::atomic<uint64_t> g_pad_ms{0};
 std::atomic<uint64_t> g_kbm_ms{0};
 std::atomic<uint64_t> g_delete_ms{0};
+std::atomic<bool> g_text{false};
+std::mutex g_text_lock;
+std::u16string g_typed;
+
+// window thread: the key as the layout types it with the keyboard's state, Caps Lock and Shift included
+void Type(uintptr_t vk, intptr_t lp) {
+    BYTE state[256];
+    wchar_t typed[4];
+    if (!GetKeyboardState(state)) return;
+    UINT scan = UINT(lp >> 16) & 0xFF;
+    int n = ToUnicodeEx(UINT(vk), scan, state, typed, int(std::size(typed)), 0, Layout());
+    std::lock_guard lock(g_text_lock);
+    for (int i = 0; i < n; i++) g_typed += char16_t(typed[i]);
+}
 
 // 0 idle, 1 waiting for a key, 2 key taken, 3 cancelled
 std::atomic<int> g_capture{0};
@@ -265,6 +281,7 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp) {
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:
             if (wp < 256) Set(PositionKey(wp), true);
+            if (g_text) Type(wp, lp);
             // bit 30: a held key's repeat
             if (wp == VK_DELETE && !(lp & (1 << 30))) g_delete_ms = NowMs();
             // Alt and F10 open the system menu otherwise
@@ -300,6 +317,19 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp) {
 void WindowUp(void* hwnd) {
     RAWINPUTDEVICE mouse{0x01, 0x02, 0, static_cast<HWND>(hwnd)};  // generic desktop, mouse
     RegisterRawInputDevices(&mouse, 1, sizeof(mouse));
+}
+
+void SetTextEntry(bool on) {
+    if (g_text.exchange(on) == on) return;
+    std::lock_guard lock(g_text_lock);
+    g_typed.clear();
+}
+
+bool TextEntry() { return g_text; }
+
+std::u16string TakeText() {
+    std::lock_guard lock(g_text_lock);
+    return std::exchange(g_typed, {});
 }
 
 bool TakeDelete() {
@@ -367,7 +397,7 @@ void TrackKeys(bool pad_moved, bool menu_open) {
         }
         if (down && !g_prev[i]) {
             g_fresh[i] = true;
-            g_tainted[i] = pad_recent || menu_open;
+            g_tainted[i] = pad_recent || menu_open || g_text;
         }
         if (!down) g_fresh[i] = g_tainted[i] = false;
         g_prev[i] = down;

@@ -174,6 +174,7 @@ input::Pad MenuKeys(input::Pad kb) {
 
 input::Pad Keyboard(const input::Pad& pad) {
     input::Pad kb;
+    if (K::TextEntry()) return kb;
     for (const ButtonBind& b : kButtonBinds)
         if (Held(b.action)) kb.buttons |= b.mask;
     bool reload = kb.buttons & input::kX;

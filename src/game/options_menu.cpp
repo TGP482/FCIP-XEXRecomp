@@ -11,6 +11,7 @@
 #include "common/widgets.h"
 #include "core/log.h"
 #include "game/profiles.h"
+#include "game/virtual_keyboard.h"
 #include "cpu/dispatch.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
@@ -593,6 +594,7 @@ void NativeUnbind(PPCContext& ctx) {
 // menu thread, each frame: a bind row's capture ends with a key, Escape, or the page going away
 void NativeTick(PPCContext& ctx, uint32_t) {
     profiles::Tick(ctx);
+    keyboard::Tick(ctx);
     // a change from the panel shows at once
     static uint32_t seen = 0;
     uint32_t revision = SettingsRevision();
