@@ -87,6 +87,8 @@ constexpr uint32_t kCVarValuePtr = 0x10;
 
 // the guest stops calling CAimHelper::Update in menus and on loading screens
 constexpr uint64_t kGameplayTimeoutMs = 250;
+constexpr UINT_PTR kCursorTimer = 0x46435552;  // "FCUR", no other timer on the window
+constexpr UINT kCursorPollMs = 16;
 constexpr float kDegreesPerPixel = 0.05f;  // at sensitivity 1
 constexpr float kMaxDeltaDegrees = 180.0f;
 
@@ -490,15 +492,39 @@ void GameRumble(int, uint16_t& left, uint16_t& right) {
     if (K::KbmActive()) left = right = 0;
 }
 
-bool CursorMessage(void* hwnd, uint32_t msg, intptr_t lp, intptr_t* result) {
+// the cursor the client area shows: none while the mouse looks; false while the panel keeps its own
+static bool WantedCursor(bool locked, HCURSOR& cursor) {
+    cursor = nullptr;
+    if (locked) return true;
+    if (MenuOpen()) return false;
+    cursor = static_cast<HCURSOR>(MenuCursor());
+    // the window class has none, so once play hid it nothing else brings the arrow back
+    if (!cursor) cursor = LoadCursor(nullptr, IDC_ARROW);
+    return true;
+}
+
+static bool PointerInClient(HWND hwnd) {
+    POINT p;
+    RECT r;
+    if (!GetCursorPos(&p) || WindowFromPoint(p) != hwnd || !ScreenToClient(hwnd, &p)) return false;
+    return GetClientRect(hwnd, &r) && PtInRect(&r, p);
+}
+
+// Mouse look starts and stops with play, not with a mouse message, so a timer swaps the cursor at once.
+bool CursorMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
     static bool locked = false;
+    static bool polling = false;
+    HWND window = static_cast<HWND>(hwnd);
+    if (!polling) polling = SetTimer(window, kCursorTimer, kCursorPollMs, nullptr) != 0;
+    bool tick = msg == WM_TIMER && wp == kCursorTimer;
     bool look = MouseLookActive();
-    if (look != locked && (msg == WM_INPUT || msg == WM_SETCURSOR || msg == WM_MOUSEMOVE)) {
+    bool flipped = look != locked;
+    if (flipped && (tick || msg == WM_INPUT || msg == WM_SETCURSOR || msg == WM_MOUSEMOVE)) {
         locked = look;
         RECT r;
-        GetClientRect(static_cast<HWND>(hwnd), &r);
+        GetClientRect(window, &r);
         POINT centre{(r.left + r.right) / 2, (r.top + r.bottom) / 2};
-        ClientToScreen(static_cast<HWND>(hwnd), &centre);
+        ClientToScreen(window, &centre);
         RECT hold{centre.x, centre.y, centre.x + 1, centre.y + 1};
         ClipCursor(look ? &hold : nullptr);
     }
@@ -506,14 +532,13 @@ bool CursorMessage(void* hwnd, uint32_t msg, intptr_t lp, intptr_t* result) {
         locked = false;
         ClipCursor(nullptr);
     }
-    if (msg != WM_SETCURSOR || LOWORD(lp) != HTCLIENT) return false;
-    // hidden while the mouse looks, the panel keeps the arrow
-    HCURSOR cursor = nullptr;
-    if (!locked) {
-        if (MenuOpen()) return false;
-        cursor = static_cast<HCURSOR>(MenuCursor());
-        if (!cursor) return false;
+    HCURSOR cursor;
+    if (tick) {
+        if (flipped && PointerInClient(window) && WantedCursor(locked, cursor)) SetCursor(cursor);
+        *result = 0;
+        return true;
     }
+    if (msg != WM_SETCURSOR || LOWORD(lp) != HTCLIENT || !WantedCursor(locked, cursor)) return false;
     SetCursor(cursor);
     *result = TRUE;
     return true;
