@@ -183,6 +183,9 @@ XmlFile_Load = 0x823FC7E8                     # (XML file, path)
 File_CreateHandle = 0x823F66A0                # (path, mode, stop the game on a failure)
 File_Exists = 0x823F20F8                      # (packs, path) in a pack, else as named
 
+# the player's ladder grab and let go, (player, on, ladder id, ...)
+Player_SetLadder = 0x8225C540
+
 # CryAnimation, MORE: a model's animation step
 Animation_Step = 0x82461648
 
@@ -334,6 +337,17 @@ at = 0x8254D6B4
 call = "StepUpRate"
 regs = ["f12"]
 after = true
+
+[[hook]]  # f0 = 1e-6, the least squared move a living entity's step makes
+at = 0x82552410
+call = "LeastMove"
+regs = ["f0", "r22"]
+after = true
+
+[[hook]]  # the ladder's top exit, just before it lets go: r29 the player
+at = 0x82261958
+call = "LadderTopExit"
+regs = ["r29"]
 
 [[hook]]  # the continuous emitters' spawn call: r3 the emitter, f1 the frame time
 at = 0x825D88A4

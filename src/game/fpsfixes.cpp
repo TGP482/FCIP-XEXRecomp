@@ -23,6 +23,7 @@ constexpr uint32_t kClockFrequency = 0x18;
 constexpr uint32_t kTimerFrame = 0x68;  // the timer's frame time, double seconds
 
 static float g_frame_ms = 0.0f;  // this frame's whole milliseconds for the menus and the UI
+static double g_game_seconds = 0.0;  // the frame times added up
 
 static double GuestDouble(uint32_t va) {
     uint64_t raw = R64(va);
@@ -49,6 +50,7 @@ PPC_FUNC(GUEST(Timer_Now)) {
 // once a frame, sets the frame time
 PPC_FUNC(GUEST(Timer_Update)) {
     GUEST_ORIG(Timer_Update)(ctx, base);
+    g_game_seconds += fcip::FrameTime();
     static double carry = 0.0;
     double ms = fcip::FrameTime() * 1000.0 + carry;
     double whole = std::floor(ms);
@@ -100,6 +102,48 @@ PPC_FUNC(GUEST(Animation_Step)) {
 
 // f12 = 0.075 just loaded
 void StepUpRate(PPCContext& ctx, uint8_t*) { ctx.f[12] *= fcip::FrameTime() / fcip::kConsoleFrame; }
+
+// Small moves
+
+// A living entity's step skips its move when the move is under 1 mm, a cut off tuned to the console's 30 fps steps.
+// At high frame rates slow moves fell under it every step and were lost, so air control never pushed the player off a
+// ledge's edge it hung on. The cut off now follows the step's time.
+
+// f0 = 1e-6 just loaded, the least squared move; r22 the step's time
+void LeastMove(PPCContext& ctx, uint8_t*) {
+    double frames = std::min(GF(uint32_t(ctx.r[22])) / fcip::kConsoleFrame, 1.0);
+    ctx.f[0] *= frames * frames;
+}
+
+// Ladder exits
+
+// Climbing past a ladder's top lets go of it, and the ladder's script runs every frame the player still overlaps it,
+// grabbing it again when the stick pushes on from the ledge side. At 30 fps the first step after letting go took the
+// player out of the overlap, so the script stayed quiet until the player had landed away from the ladder; at high frame
+// rates the overlap lasted many frames and the script grabbed again, so the player got stuck at the top. Grabs are now
+// skipped from letting go at the top until the script has gone a console frame without asking.
+
+static uint32_t g_exit_player = 0;
+static double g_hold_until = 0.0;
+
+// the top exit's let go, r29 the player
+void LadderTopExit(PPCContext& ctx, uint8_t*) {
+    g_exit_player = uint32_t(ctx.r[29]);
+    g_hold_until = g_game_seconds + fcip::kConsoleFrame;
+}
+
+PPC_EXTERN_FUNC(GUEST_ORIG(Player_SetLadder));
+
+// (player, on, ladder id, ...)
+PPC_FUNC(GUEST(Player_SetLadder)) {
+    bool grab = (ctx.r[4] & 0xFF) != 0;
+    bool held = uint32_t(ctx.r[3]) == g_exit_player && g_game_seconds < g_hold_until;
+    if (grab && held) {
+        g_hold_until = g_game_seconds + fcip::kConsoleFrame;
+        return;
+    }
+    GUEST_ORIG(Player_SetLadder)(ctx, base);
+}
 
 // Continuous emitters
 
