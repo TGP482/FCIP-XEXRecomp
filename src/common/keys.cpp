@@ -125,14 +125,18 @@ std::atomic<uint64_t> g_delete_ms{0};
 std::atomic<bool> g_text{false};
 std::mutex g_text_lock;
 std::u16string g_typed;
+std::atomic<bool> g_upper{false};
 
-// window thread: the key as the layout types it with the keyboard's state, Caps Lock and Shift included
+// window thread: the key as the layout types it with the keyboard's state, Caps Lock and Shift included; a dead key
+// types nothing, and the layout's own dead key state is left as it was
 void Type(uintptr_t vk, intptr_t lp) {
+    constexpr UINT kKeepState = 0x4;
     BYTE state[256];
     wchar_t typed[4];
     if (!GetKeyboardState(state)) return;
+    g_upper = bool(state[VK_CAPITAL] & 1) != bool(state[VK_SHIFT] & 0x80);
     UINT scan = UINT(lp >> 16) & 0xFF;
-    int n = ToUnicodeEx(UINT(vk), scan, state, typed, int(std::size(typed)), 0, Layout());
+    int n = ToUnicodeEx(UINT(vk), scan, state, typed, int(std::size(typed)), kKeepState, Layout());
     std::lock_guard lock(g_text_lock);
     for (int i = 0; i < n; i++) g_typed += char16_t(typed[i]);
 }
@@ -289,6 +293,7 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t lp) {
         case WM_KEYUP:
         case WM_SYSKEYUP:
             if (wp < 256) Set(PositionKey(wp), false);
+            if (wp == VK_SHIFT) g_upper = bool(GetKeyState(VK_CAPITAL) & 1);
             return msg == WM_SYSKEYUP;
         case WM_LBUTTONDOWN:
         case WM_LBUTTONUP:
@@ -321,11 +326,14 @@ void WindowUp(void* hwnd) {
 
 void SetTextEntry(bool on) {
     if (g_text.exchange(on) == on) return;
+    g_upper = bool(GetKeyState(VK_CAPITAL) & 1) != bool(GetAsyncKeyState(VK_SHIFT) & 0x8000);
     std::lock_guard lock(g_text_lock);
     g_typed.clear();
 }
 
 bool TextEntry() { return g_text; }
+
+bool TypingUpper() { return g_upper; }
 
 std::u16string TakeText() {
     std::lock_guard lock(g_text_lock);
@@ -393,7 +401,7 @@ void TrackKeys(bool pad_moved, bool menu_open) {
         if (g_fresh[i]) {
             g_fresh[i] = false;
             g_tainted[i] = g_tainted[i] || pad_recent;
-            if (!g_tainted[i]) g_kbm_ms = now;
+            if (!g_tainted[i] || g_text) g_kbm_ms = now;
         }
         if (down && !g_prev[i]) {
             g_fresh[i] = true;

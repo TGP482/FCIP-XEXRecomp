@@ -173,11 +173,11 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kDrawDistance, "DRAW DISTANCE",
      "Scales how far objects, grass and vegetation are drawn up to 8x and the area casting sun shadows up to 32x"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
-    {Kind::Heading, -1, "GENERAL", "Intros, audio output and the system link join address"},
+    {Kind::Heading, -1, "GENERAL", "Intros, audio output and the online join address"},
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
     {Kind::Value, kAudioOutput, "AUDIO OUTPUT",
      "Mono, stereo or 5.1 surround, automatic follows the speakers set up in Windows"},
-    {Kind::Text, kJoinIp, "SYSTEM LINK JOIN IP",
+    {Kind::Text, kJoinIp, "ONLINE JOIN IP",
      "The IP address or name of a host past your network, which the system link game search also asks"},
     {Kind::Heading, -1, "INPUT DEVICES", "The keyboard and mouse or controller each player uses"},
     {Kind::Value, kPlayer1, "PLAYER 1", "The keyboard and mouse or controller player 1 uses"},
@@ -897,16 +897,18 @@ void PlayerRow(const Row& r) {
     EndWideRow(box);
 }
 
-// typed where the arrows and value sit, saved once the edit ends
+// typed where the arrows and value sit, saved as each key changes it; ONLINE JOIN IP on the menus sets it too
 void JoinRow(const Row& r) {
     static char join[64] = {};
-    static bool loaded = false;
-    if (!loaded) std::snprintf(join, sizeof(join), "%s", app::Get().join_ip.c_str());
-    loaded = true;
+    static std::string shown;
+    if (shown != app::Get().join_ip) {
+        shown = app::Get().join_ip;
+        std::snprintf(join, sizeof(join), "%s", shown.c_str());
+    }
     WideRow box = BeginWideRow(r.label);
-    ImGui::InputText("##text", join, sizeof(join));
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
+    if (ImGui::InputText("##text", join, sizeof(join))) {
         app::Get().join_ip = join;
+        shown = join;
         Changed(false);
     }
     EndWideRow(box);

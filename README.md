@@ -70,8 +70,7 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 
 ## Playing Online
 System Link can be played online by connecting directly to the host's IP address. No third-party programs are needed.
-- Press F10 by default to open the Settings overlay.
-- Enter the host's IP address in **System Link Join IP**.
+- Enter the host's IP address in **Online Join IP**, from the Multiplayer menu or the Settings overlay.
 - From the System Link menu, join the host's session from the list.
 
 ## System Requirements

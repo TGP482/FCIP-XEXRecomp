@@ -106,12 +106,13 @@ UIText_Draw = 0x8247D1A8
 UIText_Measure = 0x8247DA98
 UIWidget_CanFocus = 0x8246B950
 # CryUI, the original Xbox virtual keyboard page answering the system keyboard requests (src/game/virtual_keyboard.cpp)
-UIText_SetText = 0x821557A8          # (text element, text)
-VirtualKeyboard_AddText = 0x82171ED0 # (keyboard, std::wstring)
-VirtualKeyboard_Close = 0x82171580   # (keyboard)
-VirtualKeyboard_Delete = 0x82171FA0  # (keyboard) the last character
-VirtualKeyboard_Update = 0x82171658  # (keyboard) once a menu update
-WString_AssignText = 0x820F6150      # (std::wstring, text, length)
+UIText_SetText = 0x821557A8              # (text element, text)
+VirtualKeyboard_AddText = 0x82171ED0     # (keyboard, std::wstring)
+VirtualKeyboard_Close = 0x82171580       # (keyboard)
+VirtualKeyboard_Delete = 0x82171FA0      # (keyboard) the last character
+VirtualKeyboard_ShowLetters = 0x821713F8 # (keyboard) the ring's letters from its letter set
+VirtualKeyboard_Update = 0x82171658      # (keyboard) once a menu update
+WString_AssignText = 0x820F6150          # (std::wstring, text, length)
 XShowKeyboardUI = 0x82643CF0
 # CryProfile, the original Xbox profile list and one save file per profile (src/game/profiles.cpp)
 Guest_Alloc = 0x826306C8                # (bytes)

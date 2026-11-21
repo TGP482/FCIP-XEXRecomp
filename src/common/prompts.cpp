@@ -22,8 +22,17 @@ constexpr int kGlyphCount = 31;
 constexpr int kGlyphA = 0;
 constexpr int kGlyphB = 1;
 constexpr int kGlyphX = 2;
+constexpr int kGlyphY = 3;
 constexpr int kGlyphStart = 6;
+constexpr int kGlyphFirstTrigger = 24;  // TRIG, the left trigger's four, then the right trigger's two
+constexpr int kGlyphLastTrigger = 30;
 constexpr uint8_t kEnter = 0x0D;  // VK_RETURN
+// a text entry's keys: what each pad button does there on the keyboard
+constexpr uint8_t kEscape = 0x1B;     // VK_ESCAPE
+constexpr uint8_t kSpace = 0x20;      // VK_SPACE
+constexpr uint8_t kBackspace = 0x08;  // VK_BACK
+constexpr uint8_t kCapsLock = 0x14;   // VK_CAPITAL
+constexpr uint8_t kTab = 0x09;        // VK_TAB
 
 struct Bind {
     int first;
@@ -78,8 +87,35 @@ std::string KeyText(const Bind& bind, bool& mouse) {
     return key.empty() ? key : "(" + key + ")";
 }
 
+// the text holds the word, any case
+bool Mentions(const std::u16string& text, std::string_view word) {
+    for (size_t i = 0; i + word.size() <= text.size(); i++) {
+        size_t n = 0;
+        while (n < word.size() && (text[i + n] | 0x20) == word[n]) n++;
+        if (n == word.size()) return true;
+    }
+    return false;
+}
+
+// a text entry takes Enter as A, Escape as B, Space as X and Backspace as Y; a trigger's prompt names Tab when it
+// switches to the symbols ("mbol" in SYMBOLS, SYMBOLES, SIMBOLI, SIMBOLOS), else Caps Lock for the letters' case
+uint8_t TextEntryKey(int index, const std::u16string& text) {
+    if (index >= kGlyphFirstTrigger && index <= kGlyphLastTrigger) return Mentions(text, "mbol") ? kTab : kCapsLock;
+    switch (index) {
+        case kGlyphA: return kEnter;
+        case kGlyphB: return kEscape;
+        case kGlyphX: return kSpace;
+        case kGlyphY: return kBackspace;
+        default: return 0;
+    }
+}
+
 // the menus take Enter as A and the pause key as B
-std::string MenuKeyText(int index) {
+std::string MenuKeyText(int index, const std::u16string& text = {}) {
+    if (K::TextEntry()) {
+        uint8_t key = TextEntryKey(index, text);
+        return key ? "(" + Label(key) + ")" : std::string();
+    }
     uint8_t vk = 0;
     if (index == kGlyphA || (index == kGlyphStart && fcip::OnTitle())) vk = kEnter;
     if (index == kGlyphB) vk = K::Key(K::kPause, 0);
@@ -197,15 +233,7 @@ void ToPc(uint32_t str) {
 }
 
 // X is interact, unless the text is about reloading ("To reload Press {X}")
-bool MentionsReload(const std::u16string& text) {
-    constexpr std::string_view kWord = "reload";
-    for (size_t i = 0; i + kWord.size() <= text.size(); i++) {
-        size_t n = 0;
-        while (n < kWord.size() && (text[i + n] | 0x20) == kWord[n]) n++;
-        if (n == kWord.size()) return true;
-    }
-    return false;
-}
+bool MentionsReload(const std::u16string& text) { return Mentions(text, "reload"); }
 
 uint32_t Block() {
     static const uint32_t block = mem::AllocSystem(kSlots * (kStringSize + kMaxUnits * 2));
@@ -225,9 +253,9 @@ std::u16string WithKeyText(const std::u16string& text) {
     for (size_t i = 0; i < text.size(); i++) {
         int index = GlyphIndex(text[i]);
         bool mouse = false;
-        std::string key = index >= 0 ? MenuKeyText(index) : std::string();
+        std::string key = index >= 0 ? MenuKeyText(index, text) : std::string();
         if (key.empty() && index == kGlyphX && MentionsReload(text)) key = KeyText({K::kReload, -1}, mouse);
-        else if (key.empty() && index >= 0) key = KeyText(kBinds[index], mouse);
+        else if (key.empty() && index >= 0 && !K::TextEntry()) key = KeyText(kBinds[index], mouse);
         if (key.empty()) {
             out.push_back(text[i]);
             continue;

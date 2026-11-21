@@ -1,7 +1,8 @@
 // default.xex: EXIT on the main menu asks through the game's own message box, Yes closes the window. CUSTOM CAMPAIGN
 // presses STORY MODE, or EXPANSION CAMPAIGN for an Evolution level, so the game's own new game and save slot pages
 // run, and the level they start becomes the first custom level. Its page reads CUSTOM CAMPAIGN and LOAD A MAP lists
-// the custom levels.
+// the custom levels. MULTIPLAYER's ONLINE reads ONLINE JOIN IP and types the system link join address on the virtual
+// keyboard.
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -12,13 +13,18 @@
 
 #include <algorithm>
 #include <cctype>
+#include <mutex>
 #include <string>
 
 #include "app/app.h"
 #include "common/custom_levels.h"
+#include "common/menu.h"
 #include "common/widgets.h"
 #include "core/log.h"
 #include "game/custom_campaign.h"
+#include "game/exit_menu.h"
+#include "game/virtual_keyboard.h"
+#include "image_symbols.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 
@@ -42,6 +48,15 @@ constexpr uint32_t kPages = 0x50u;
 constexpr uint32_t kSetPageHelp = 0x8216E3D8u;
 
 constexpr const char* kQuestion = "Are you sure you want to exit to the desktop?";
+
+// CryPreGame's menu system, as its help setter (821B7B40) reaches the page on top
+constexpr uint32_t kMenuSystem = 0x10u;
+constexpr uint32_t kMenuSystemUi = 0x18u;
+constexpr uint32_t kUiActivePages = 0x38u;
+
+constexpr uint32_t kJoinIpChars = 63;  // the F10 field's
+constexpr const char* kJoinIpTitle = "ENTER THE HOST'S IP ADDRESS";
+constexpr const char* kOnlineHelp = "Enter the host's IP address, then join their game from System Link. Current IP: ";
 
 // the story buttons on P_Main
 constexpr uint32_t kCrcStoryMode = 0x17130B2Fu;
@@ -132,6 +147,59 @@ void ListCustomLevels(PPCContext& ctx, uint32_t self) {
     }
 }
 
+// UTF-16 for the keyboard: slot 0 the starting text, slot 1 the line above it
+uint32_t KeyboardText(uint32_t slot, const std::string& text) {
+    constexpr uint32_t kSlotBytes = (kJoinIpChars + 1) * 2;
+    static const uint32_t block = mem::AllocSystem(kSlotBytes * 2);
+    uint32_t addr = block + slot * kSlotBytes;
+    uint32_t n = std::min<uint32_t>(uint32_t(text.size()), kJoinIpChars);
+    for (uint32_t i = 0; i < n; i++) kernel::W16(addr + i * 2, uint8_t(text[i]));
+    kernel::W16(addr + n * 2, 0);
+    return addr;
+}
+
+// ONLINE JOIN IP's description, while it is focused
+struct OnlineHelp {
+    uint32_t self = 0;  // CryPreGame
+    uint32_t vtable = 0;  // its own, gone once the menus are
+    uint32_t widget = 0;
+    uint32_t revision = 0;  // the settings revision the description shows
+    bool pending = false;  // the join IP changed since
+};
+OnlineHelp g_online;
+
+std::string JoinIp() {
+    std::lock_guard ui(app::UiLock());
+    return app::Get().join_ip;
+}
+
+void ShowOnlineHelp(PPCContext& ctx, uint32_t page) {
+    std::string ip = JoinIp();
+    std::string text = kOnlineHelp + (ip.empty() ? std::string("NONE") : ip);
+    if (uint32_t help = View(text.c_str())) kernel::CallGuest(ctx, kSetPageHelp, {g_online.self, page, help, 0});
+    g_online.pending = false;
+}
+
+bool OnJoinIp(PPCContext&, uint32_t text, uint32_t length) {
+    std::string ip;
+    for (uint32_t i = 0; i < length; i++) ip += char(kernel::R16(text + i * 2));
+    std::lock_guard ui(app::UiLock());
+    app::Get().join_ip = ip;
+    app::Save();
+    g_online.pending = true;
+    LOGR("online join IP: %s", ip.c_str());
+    return true;
+}
+
+void AskJoinIp(PPCContext& ctx) {
+    fcip::keyboard::Open(ctx, KeyboardText(0, JoinIp()), KeyboardText(1, kJoinIpTitle), kJoinIpChars, OnJoinIp);
+}
+
+uint32_t TopPage(PPCContext& ctx, uint32_t self) {
+    uint32_t ui = Read32(Read32(self + kMenuSystem) + kMenuSystemUi);
+    return uint32_t(kernel::CallGuest(ctx, SYM_UIInputStack_Top, {ui + kUiActivePages, 0, 0}));
+}
+
 }  // namespace
 
 PPC_EXTERN_FUNC(__imp__sub_821B1FD0);
@@ -145,6 +213,10 @@ PPC_FUNC(sub_821B1FD0) {
     uint32_t crc = Read32(uint32_t(ctx.r[4]) + kWidgetNameCrc);
     if (crc == kCrcExit) {
         AskExit(ctx, uint32_t(ctx.r[3]));
+        return;
+    }
+    if (crc == kCrcOnline) {
+        AskJoinIp(ctx);
         return;
     }
     if (crc != kCrcCustomCampaign) {
@@ -161,7 +233,8 @@ PPC_FUNC(sub_821B1FD0) {
     ctx.r[3] = result;
 }
 
-// main and story menu help text, r4 the focused widget; back on the main menu a CUSTOM CAMPAIGN start was left
+// main, multiplayer and story menu help text, r4 the focused widget; back on the main menu a CUSTOM CAMPAIGN start
+// was left
 PPC_FUNC(sub_821B7B40) {
     uint32_t self = uint32_t(ctx.r[3]);
     uint32_t sender = uint32_t(ctx.r[4]);
@@ -169,6 +242,12 @@ PPC_FUNC(sub_821B7B40) {
     uint32_t crc = Read32(sender + kWidgetNameCrc);
     uint32_t page = Read32(Read32(self + kPages) + 4);
     if (FindWidget(page, crc) == sender) fcip::CancelCustomCampaign();
+    g_online = {};
+    if (crc == kCrcOnline) {
+        g_online = {self, Read32(self), sender, fcip::SettingsRevision(), false};
+        ShowOnlineHelp(ctx, TopPage(ctx, self));
+        return;
+    }
     if (crc != kCrcExit && crc != kCrcCustomCampaign) return;
     if (uint32_t help = View(HelpFor(crc))) kernel::CallGuest(ctx, kSetPageHelp, {self, page, help, 0});
 }
@@ -201,4 +280,19 @@ PPC_FUNC(sub_821B3380) {
     }
     LOGR("exit: closing the window");
     PostMessageW(static_cast<HWND>(app::Window()), WM_CLOSE, 0, 0);
+}
+
+// the description waits for the keyboard page to close; another menu's object in CryPreGame's place drops it
+void fcip::TickMainMenu(PPCContext& ctx) {
+    if (!g_online.self) return;
+    uint32_t revision = SettingsRevision();
+    if (revision != g_online.revision) g_online.pending = true;
+    g_online.revision = revision;
+    if (!g_online.pending) return;
+    if (Read32(g_online.self) != g_online.vtable) {
+        g_online = {};
+        return;
+    }
+    uint32_t top = TopPage(ctx, g_online.self);
+    if (FindWidget(top, kCrcOnline) == g_online.widget) ShowOnlineHelp(ctx, top);
 }

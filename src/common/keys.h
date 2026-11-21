@@ -45,6 +45,7 @@ bool TakeDelete();
 void SetTextEntry(bool on);
 bool TextEntry();
 std::u16string TakeText();  // typed since the last call, Backspace, Enter and Escape as their control codes
+bool TypingUpper();  // Caps Lock against Shift as of the last key
 
 // the next key or mouse button pressed goes to Captured() instead of the game; Escape cancels
 void BeginCapture();

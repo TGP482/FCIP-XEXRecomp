@@ -61,6 +61,7 @@ struct Span {
 struct Placed {
     Span span;
     float anchor = 0.5f;
+    float frozen = -1.0f;  // a kFrozenWidgets hold, kept from its first
 };
 
 thread_local std::vector<Span> g_open;  // the widgets drawing now, outermost first
@@ -79,6 +80,9 @@ constexpr uint32_t kBlackPaintWidgets[] = {0x8EFD67A5u, 0xBCE7140Du};
 // page list, the objective screen's header and list (ai_main, l_objectives)
 constexpr uint32_t kStayWidgets[] = {0x46740CFEu, 0xAD70BF0Fu, 0x5DDFF3C6u, 0xC3577984u, 0x221F5C34u,
                                      0xBB798CDFu, 0x32F1CF1Eu};
+// parts whose text changes as they are used keep the hold they first took, else typing or the turning letter ring
+// moves them: the virtual keyboard's A_VirtualKeyboard, A_Cursor, A_Cursor1 and L_Text
+constexpr uint32_t kFrozenWidgets[] = {0x32971D5Cu, 0x26994A5Fu, 0x782E3A98u, 0xC9E6E44Bu};
 
 uint32_t Bits(float f) {
     uint32_t b;
@@ -260,11 +264,17 @@ static float HeldAnchor(float left, float right) {
 static void HoldInPlace(uint32_t widget) {
     if (!MenuLayout() || fcip::Scale2D() >= 1.0f) return;
     Span span;
+    bool freeze = In(R32(widget + kWidgetName), kFrozenWidgets);
     {
         std::lock_guard lock(g_placed_lock);
         auto it = g_placed.find(widget);
         if (it == g_placed.end()) return;
         span = it->second.span;
+        if (freeze && it->second.frozen >= 0.0f) {
+            g_anchor = it->second.frozen;
+            g_held = true;
+            return;
+        }
     }
     uint32_t element = R32(widget + kWidgetElement);
     bool control = R32(widget) == SYM_UIWidgetFocus_vtable || (element && R32(element) == SYM_UIList_vtable);
@@ -278,12 +288,17 @@ static void HoldInPlace(uint32_t widget) {
         g_anchor = HeldAnchor(span.left, span.right);
     }
     g_held = true;
+    if (!freeze) return;
+    std::lock_guard lock(g_placed_lock);
+    g_placed[widget].frozen = g_anchor;
 }
 
 static void Remember(const Span& span, float anchor) {
     std::lock_guard lock(g_placed_lock);
     if (g_placed.size() >= kMaxPlaced) g_placed.clear();
-    g_placed[span.widget] = {span, anchor};
+    Placed& placed = g_placed[span.widget];
+    placed.span = span;
+    placed.anchor = anchor;
 }
 
 // r3 the widget; children draw inside, so a side or a place holds for the whole part

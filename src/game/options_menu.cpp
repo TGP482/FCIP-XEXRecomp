@@ -10,6 +10,7 @@
 #include "common/menu.h"
 #include "common/widgets.h"
 #include "core/log.h"
+#include "game/exit_menu.h"
 #include "game/profiles.h"
 #include "game/virtual_keyboard.h"
 #include "cpu/dispatch.h"
@@ -26,6 +27,7 @@ constexpr uint32_t kCrcVideo = 0xC8040339u;  // GAME OPTIONS, the template for e
 constexpr uint32_t kCrcControlSetup = 0x7765E2D2u;
 constexpr uint32_t kCrcResetDefault = 0x3C4AD511u;
 constexpr uint32_t kCrcMainPage = 0x39514C08u;  // P_Main
+constexpr uint32_t kCrcMultiplayerPage = 0xE0159190u;  // P_Multiplayer
 constexpr uint32_t kCrcOptions = 0x188FC220u;
 constexpr uint32_t kCrcCredits = 0x89ADE9D9u;
 // P_Main's rows top to bottom
@@ -595,6 +597,7 @@ void NativeUnbind(PPCContext& ctx) {
 void NativeTick(PPCContext& ctx, uint32_t) {
     profiles::Tick(ctx);
     keyboard::Tick(ctx);
+    TickMainMenu(ctx);
     // a change from the panel shows at once
     static uint32_t seen = 0;
     uint32_t revision = SettingsRevision();
@@ -688,7 +691,7 @@ PPC_FUNC(sub_8216F570) {
     uint32_t page = uint32_t(ctx.r[4]);
     __imp__sub_8216F570(ctx, base);
     uint32_t crc = Read32(page + kPageNameCrc);
-    if (crc == kCrcEditProfile || crc == kCrcMainPage) SetEntryCaptions(ctx, page);
+    if (crc == kCrcEditProfile || crc == kCrcMainPage || crc == kCrcMultiplayerPage) SetEntryCaptions(ctx, page);
 }
 
 // User page help text

@@ -24,6 +24,12 @@ constexpr uint32_t kKeyboardText = 0xD8;  // std::wstring
 constexpr uint32_t kKeyboardKeepStart = 0x100;
 constexpr uint32_t kKeyboardStartShown = 0x104;
 constexpr uint32_t kKeyboardMaxLength = 0x10C;
+// the letter set the ring shows, of the count loaded: uppercase, lowercase, symbols
+constexpr uint32_t kKeyboardLetterSet = 0x110;
+constexpr uint32_t kKeyboardLetterSets = 0x114;
+constexpr uint32_t kUppercase = 0;
+constexpr uint32_t kLowercase = 1;
+constexpr uint32_t kSymbols = 2;
 constexpr uint32_t kMenuShowPage = 0x2C;  // vtable: (menu, page, 1, 1)
 constexpr uint32_t kMenuClose = 0x28;     // vtable: (menu, 0, 0)
 
@@ -44,6 +50,7 @@ constexpr uint32_t kMaxUnits = 256;
 
 // the real keyboard's control codes as the layout types them
 constexpr char16_t kBackspace = 0x08;
+constexpr char16_t kTab = 0x09;
 constexpr char16_t kEnter = 0x0D;
 constexpr char16_t kEscape = 0x1B;
 
@@ -57,6 +64,7 @@ struct Request {
 };
 Request g_request;
 uint32_t g_keyboard = 0;
+int g_upper = -1;  // Caps Lock against Shift as the ring last followed it, -1 for not yet
 
 uint32_t StringData(uint32_t str) {
     return R32(str + kStringCapacity) < kStringInline ? str + kStringData : R32(str + kStringData);
@@ -111,10 +119,30 @@ uint32_t OneCharacter(char16_t c) {
     return str;
 }
 
+void ShowLetterSet(PPCContext& ctx, uint32_t set) {
+    if (set >= R32(g_keyboard + kKeyboardLetterSets)) return;
+    W32(g_keyboard + kKeyboardLetterSet, set);
+    CallGuest(ctx, SYM_VirtualKeyboard_ShowLetters, {g_keyboard});
+}
+
+uint32_t TypedCase() { return fcip::keys::TypingUpper() ? kUppercase : kLowercase; }
+
+// the ring follows Caps Lock and Shift when they change, unless it shows the symbols
+void FollowCase(PPCContext& ctx) {
+    int upper = fcip::keys::TypingUpper() ? 1 : 0;
+    if (upper == g_upper) return;
+    g_upper = upper;
+    uint32_t set = R32(g_keyboard + kKeyboardLetterSet);
+    if (set != kSymbols && set != TypedCase()) ShowLetterSet(ctx, TypedCase());
+}
+
 // false once the page closed
 bool Type(PPCContext& ctx, char16_t c) {
     if (c == kBackspace) {
         CallGuest(ctx, SYM_VirtualKeyboard_Delete, {g_keyboard});
+    } else if (c == kTab) {
+        bool symbols = R32(g_keyboard + kKeyboardLetterSet) == kSymbols;
+        ShowLetterSet(ctx, symbols ? TypedCase() : kSymbols);
     } else if (c == kEscape) {
         ClosePage(ctx);
         return false;
@@ -133,6 +161,7 @@ bool OpenPage(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_lengt
     uint32_t keyboard = R32(SYM_VirtualKeyboard_pointer);
     if (!keyboard || g_request.open) return false;
     g_keyboard = keyboard;
+    g_upper = -1;
     W32(keyboard + kKeyboardListener, 0);
     CallGuest(ctx, R32(R32(keyboard) + kMenuShowPage), {keyboard, 0, 1, 1});
     uint32_t length = WideLength(start);
@@ -161,6 +190,7 @@ bool fcip::keyboard::Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32
 void fcip::keyboard::Tick(PPCContext& ctx) {
     keys::SetTextEntry(g_request.open);
     if (!g_request.open) return;
+    FollowCase(ctx);
     for (char16_t c : keys::TakeText()) {
         if (!Type(ctx, c)) break;
     }
