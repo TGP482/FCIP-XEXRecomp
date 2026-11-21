@@ -37,6 +37,9 @@ std::vector<CustomLevel> FindCustomLevels();  // any thread, in folder name orde
 // folder is packed into <level>.dat and <level>.fat, the pack the level start opens, in FCIP.exe with its base level's
 // files; made again when a file is newer
 void EnsureLevelPack(const std::string& level);
+// the game writes a Lua array as an element with attributes named 1, 2 and so on, which expat (the game's reader) stops
+// at; such elements go, so their entity keeps the script's default (a DynamicLight's clrDiffuse, enumLightType)
+std::string DropArrayElements(const std::string& xml);
 bool EvolutionLevel(const std::string& level);  // Evolution's levels are 2x and 3x
 // the path names the level's own Mission.lua, Levels\<level>\Mission.lua in any case: the mission script of a level
 // made from an editor template

@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "common/custom_levels.h"
 #include "core/log.h"
 #include "editor/tools.h"
 #include "kernel/memory.h"
@@ -181,7 +182,9 @@ void WriteXml(PPCContext& ctx, const std::string& name, uint32_t node) {
     CallGuest(ctx, Method(node, kNodeGetXml), {node, str, 0});
     uint32_t text = str + kStringText;
     if (R32(str + kStringCapacity) > kStringInlineCapacity) text = R32(text);
-    WriteHostFile(name, HostPtr(text), R32(str + kStringSize));
+    std::string written(static_cast<const char*>(HostPtr(text)), R32(str + kStringSize));
+    std::string xml = fcip::DropArrayElements(written);
+    WriteHostFile(name, xml.data(), xml.size());
     CallGuest(ctx, SYM_String_Destroy, {str});
 }
 

@@ -205,12 +205,19 @@ void ReadNode(uint32_t node, const Node& at, std::vector<Node>& out) {
     }
 }
 
+bool IsEntity(uint32_t entity) {
+    bool found = false;
+    ForEachEntity([&](uint32_t e) { found = found || e == entity; });
+    return found;
+}
+
 Snapshot Read(PPCContext& ctx, uint32_t object) {
     Snapshot s;
     s.object = object;
-    // only an entity's own editor object holds it, zip line ends and mounted weapons hold other data there
+    // only an entity's own editor object holds it, zip line ends and mounted weapons hold other data there, and a
+    // brush's object is keyed in the same map
     uint32_t entity = object ? R32(object + kObjectEntity) : 0;
-    if (!entity || EditorObjectFor(ctx, entity) != object) return s;
+    if (!entity || !IsEntity(entity) || EditorObjectFor(ctx, entity) != object) return s;
     uint32_t script = R32(entity + kEntityScript);
     if (!script) return s;
     s.entity_id = R32(entity + kEntityId);

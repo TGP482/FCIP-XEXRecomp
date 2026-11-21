@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <regex>
 #include <string_view>
 #include <unordered_set>
 
@@ -203,7 +204,8 @@ void EnsureLevelPack(const std::string& level) {
     uint32_t offset = 0;
     for (const PackedFile& f : files) {
         std::ifstream in(f.path, std::ios::binary);
-        std::vector<char> data(std::istreambuf_iterator<char>(in), {});
+        std::string data(std::istreambuf_iterator<char>(in), {});
+        if (Lower(f.path.extension().string()) == ".xml") data = DropArrayElements(data);  // levels saved before
         out.write(data.data(), std::streamsize(data.size()));
         uint32_t size = uint32_t(data.size());
         entries.push_back({offset, size, size, f.crc});
@@ -230,6 +232,11 @@ void EnsureLevelPack(const std::string& level) {
     const char* bytes = reinterpret_cast<const char*>(table.data());
     std::ofstream(fat, std::ios::binary).write(bytes, std::streamsize(table.size()));
     LOGR("custom levels: %s packed, %zu files, %u bytes", level.c_str(), entries.size(), offset);
+}
+
+std::string DropArrayElements(const std::string& xml) {
+    static const std::regex kArray(R"([ \t]*<[A-Za-z_]\w*(?: [0-9]+="[^"]*")+ */>\r?\n?)");
+    return std::regex_replace(xml, kArray, "");
 }
 
 fs::path CustomLevelsFolder() { return app::ExeDir() / "levels" / kCustomFolder; }

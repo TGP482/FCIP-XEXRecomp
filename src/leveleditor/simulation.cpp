@@ -17,6 +17,7 @@
 #include "leveleditor/guest.h"
 #include "leveleditor/layers.h"
 #include "leveleditor/mode.h"
+#include "leveleditor/picking.h"
 #include "leveleditor/sequences.h"
 #include "xdk/hle.h"
 
@@ -33,8 +34,8 @@ constexpr uint32_t kModePlayTest = 2;
 // entity: SetPos by vtable
 constexpr uint32_t kEntitySetPos = 0x14;  // (entity, Vec3, 0)
 constexpr uint32_t kScriptEventReset = 4;
-// the entity system's RemoveEntity, as System.RemoveEntity (822374F0) calls it
-constexpr uint32_t kSystemRemoveEntity = 0x14;  // (system, id, 0, 0)
+// the entity system's RemoveEntity (system, id, 0, 0), as the editor removes entities after play test (820C6030)
+constexpr uint32_t kRemoveEntity = 0x8218D090;
 
 struct Placement {
     bool has_pos = false;
@@ -76,20 +77,25 @@ void KeepPlacements(PPCContext& ctx) {
     });
 }
 
+// by id, each looked up again as it goes: a removal or a reset can free other entities. An entity an editor object
+// owns stays, as the editor's own cleanup (820C6030) keeps them
 void RestorePlacements(PPCContext& ctx) {
     std::vector<uint32_t> spawned;
     std::vector<uint32_t> kept;
     ForEachEntity([&](uint32_t entity) {
-        if (g_placements.count(R32(entity + kEntityId))) {
-            kept.push_back(entity);
-        } else {
-            spawned.push_back(R32(entity + kEntityId));
+        uint32_t id = R32(entity + kEntityId);
+        if (g_placements.count(id)) {
+            kept.push_back(id);
+        } else if (!EditorObjectFor(ctx, entity)) {
+            spawned.push_back(id);
         }
     });
     uint32_t system = R32(SYM_EntitySystem_pointer);
-    for (uint32_t id : spawned) CallGuest(ctx, Method(system, kSystemRemoveEntity), {system, id, 0, 0});
-    for (uint32_t entity : kept) {
-        const Placement& p = g_placements[R32(entity + kEntityId)];
+    for (uint32_t id : spawned) CallGuest(ctx, kRemoveEntity, {system, id, 0, 0});
+    for (uint32_t id : kept) {
+        uint32_t entity = EntityOfId(id);
+        if (!entity) continue;
+        const Placement& p = g_placements[id];
         if (p.has_pos) CallGuest(ctx, Method(entity, kEntitySetPos), {entity, WriteVec(p.pos), 0});
         CallGuest(ctx, SYM_Entity_SetAngles, {entity, WriteVec(p.angles), 1, 1, 0});
         CallGuest(ctx, SYM_Entity_Reset, {entity});
