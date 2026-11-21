@@ -2,7 +2,7 @@
 // presses STORY MODE, or EXPANSION CAMPAIGN for an Evolution level, so the game's own new game and save slot pages
 // run, and the level they start becomes the first custom level. Its page reads CUSTOM CAMPAIGN and LOAD A MAP lists
 // the custom levels. MULTIPLAYER's ONLINE reads ONLINE JOIN IP and types the system link join address on the virtual
-// keyboard.
+// keyboard, and its STATISTICS opens the Live menu's stats pages.
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -57,6 +57,10 @@ constexpr uint32_t kUiActivePages = 0x38u;
 constexpr uint32_t kJoinIpChars = 63;  // the F10 field's
 constexpr const char* kJoinIpTitle = "ENTER THE HOST'S IP ADDRESS";
 constexpr const char* kOnlineHelp = "Enter the host's IP address, then join their game from System Link. Current IP: ";
+
+// CryLiveStats, opened as the Live menu's STATISTICS does (821CC028): its activate slot with 1
+constexpr uint32_t kLiveStats = 0x82911BE0u;
+constexpr uint32_t kMenuActivate = 0x24u;
 
 // the story buttons on P_Main
 constexpr uint32_t kCrcStoryMode = 0x17130B2Fu;
@@ -200,6 +204,12 @@ uint32_t TopPage(PPCContext& ctx, uint32_t self) {
     return uint32_t(kernel::CallGuest(ctx, SYM_UIInputStack_Top, {ui + kUiActivePages, 0, 0}));
 }
 
+void OpenStatistics(PPCContext& ctx) {
+    uint32_t stats = Read32(kLiveStats);
+    if (!AddrOk(stats)) return;
+    kernel::CallGuest(ctx, Read32(Read32(stats) + kMenuActivate), {stats, 1});
+}
+
 }  // namespace
 
 PPC_EXTERN_FUNC(__imp__sub_821B1FD0);
@@ -217,6 +227,10 @@ PPC_FUNC(sub_821B1FD0) {
     }
     if (crc == kCrcOnline) {
         AskJoinIp(ctx);
+        return;
+    }
+    if (crc == kCrcStatistics) {
+        OpenStatistics(ctx);
         return;
     }
     if (crc != kCrcCustomCampaign) {
@@ -246,6 +260,11 @@ PPC_FUNC(sub_821B7B40) {
     if (crc == kCrcOnline) {
         g_online = {self, Read32(self), sender, fcip::SettingsRevision(), false};
         ShowOnlineHelp(ctx, TopPage(ctx, self));
+        return;
+    }
+    if (crc == kCrcStatistics) {
+        uint32_t help = View(HelpFor(crc));
+        if (help) kernel::CallGuest(ctx, kSetPageHelp, {self, TopPage(ctx, self), help, 0});
         return;
     }
     if (crc != kCrcExit && crc != kCrcCustomCampaign) return;

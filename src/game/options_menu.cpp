@@ -39,6 +39,11 @@ constexpr uint32_t kMainRows[] = {
     kCrcOptions, kCrcCredits,
     0x3C3BFDBBu,  // B_Cheats
 };
+// P_Multiplayer's rows top to bottom
+constexpr uint32_t kSystemLink = 0xF65128AAu;   // B_SystemLink
+constexpr uint32_t kSplitScreen = 0x8FA9611Fu;  // B_SplitScreen
+constexpr uint32_t kMapManager = 0x68328DDEu;   // B_MapManager
+constexpr uint32_t kMultiplayerRows[] = {kCrcOnline, kSystemLink, kSplitScreen, kMapManager};
 
 // primary vtables of the two menu classes
 constexpr uint32_t kVtProfile = 0x8205CBA8u;  // CryProfile, P_EditProfile is pages[1]
@@ -58,10 +63,16 @@ uint32_t MainPage(uint32_t self) {
     return page && Read32(page + kPageNameCrc) == kCrcMainPage ? page : 0;
 }
 
-// the lowest row the layout shows
-uint32_t LastMainRow(uint32_t page) {
+uint32_t MultiplayerPage(uint32_t self) {
+    uint32_t page = Read32(Read32(self + kProfilePages) + 8);
+    return page && Read32(page + kPageNameCrc) == kCrcMultiplayerPage ? page : 0;
+}
+
+// the lowest of the rows the layout shows
+template <size_t N>
+uint32_t LastRow(uint32_t page, const uint32_t (&rows)[N]) {
     uint32_t last = 0;
-    for (uint32_t crc : kMainRows) {
+    for (uint32_t crc : rows) {
         uint32_t widget = FindWidget(page, crc);
         if (Read8(widget + kWidgetVisible) & 0x80) last = widget;
     }
@@ -94,9 +105,13 @@ void AddEntriesFor(PPCContext& ctx, uint32_t self) {
         uint32_t page = MainPage(self);
         // CUSTOM CAMPAIGN only with custom levels to play
         if (FindCustomLevels().empty()) {
-            AddEntries(ctx, page, LastMainRow(page), kCrcCredits, kCrcOptions, {kCrcExit});
+            AddEntries(ctx, page, LastRow(page, kMainRows), kCrcCredits, kCrcOptions, {kCrcExit});
         } else {
-            AddEntries(ctx, page, LastMainRow(page), kCrcCredits, kCrcOptions, {kCrcCustomCampaign, kCrcExit});
+            AddEntries(ctx, page, LastRow(page, kMainRows), kCrcCredits, kCrcOptions, {kCrcCustomCampaign, kCrcExit});
+        }
+        // STATISTICS under MULTIPLAYER's last row, as the Live menu had it
+        if (uint32_t mp = MultiplayerPage(self)) {
+            AddEntries(ctx, mp, LastRow(mp, kMultiplayerRows), kMapManager, kSplitScreen, {kCrcStatistics});
         }
     }
 }
