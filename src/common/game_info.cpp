@@ -10,6 +10,7 @@
 #include "common/settings.h"
 #include "image_symbols.h"
 #include "kernel/kernel.h"
+#include "xam/xam.h"
 
 namespace {
 
@@ -24,10 +25,15 @@ constexpr bool kEditor = std::string_view(IMAGE_XEX) == "ige.xex";
 constexpr const wchar_t* kTitle =
     kEditor ? L"Far Cry Instincts: Predator - XEX Recomp Editor" : L"Far Cry Instincts: Predator - XEX Recomp";
 
+// the game keeps its user maps as saved game content
+constexpr uint32_t kUserMapContent = 1;
+
 // custom levels live in this exe's custom levels folder, made at start and laid over the disc's Levels; the editor's
-// new levels too, in theirs, which the last run's are cleared from
+// new levels too, in theirs, which the last run's are cleared from. User maps are saved in maps\saved by the editor,
+// played and downloaded in maps\play by the game
 void Loaded() {
     std::error_code ec;
+    xam::MountContent(kUserMapContent, (app::ExeDir() / "maps" / (kEditor ? "saved" : "play")).string());
     std::filesystem::create_directories(fcip::CustomLevelsFolder(), ec);
     kernel::MountDiscOverlay("Levels", fcip::CustomLevelsFolder().string());
     if (!kEditor) return;

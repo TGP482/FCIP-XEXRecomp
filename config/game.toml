@@ -437,3 +437,10 @@ on_false = 0x82171EC8
 at = 0x821E32C8
 call = "ProfileListFirst"
 regs = ["r4"]
+
+# instruction hooks, defined in src/game/user_maps.cpp
+[[hook]]  # the join's user map lookup, r10 found, r27 its name: a missing one joins and downloads as the map loads
+at = 0x82228290
+call = "JoinMissingUserMap"
+on_true = 0x82228460
+regs = ["r10", "r27"]
