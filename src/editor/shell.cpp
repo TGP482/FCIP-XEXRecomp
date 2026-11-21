@@ -241,6 +241,7 @@ void DrawMenuBar(const State& s) {
         if (editor::g_solo) DrawOpenLevel();
         if (ImGui::MenuItem("Save", "Ctrl+S", false, !(editor::g_solo && LevelUnsaved()))) Save();
         if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S", false, SaveAsAllowed())) OpenSaveAs();
+        if (!editor::g_solo && ImGui::MenuItem("Publish", nullptr, false, CanPublishMap())) PublishMap();
         ImGui::Separator();
         if (ImGui::MenuItem(editor::g_solo ? "Exit to Level Manager" : "Exit to Map Manager")) ExitToMapManager();
         ImGui::EndMenu();

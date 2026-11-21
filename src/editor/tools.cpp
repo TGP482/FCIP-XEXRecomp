@@ -4,6 +4,7 @@
 #include "editor/tools.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -90,6 +91,17 @@ constexpr uint32_t kStartMenuName = 0x82067EBC;  // "StartMenuInterfaceHandler"
 constexpr uint32_t kButtonSave = 0x6535D687u;     // B_SaveMap
 constexpr uint32_t kButtonExit = 0xD23F714Cu;     // B_ExitEditor
 constexpr uint32_t kButtonControls = 0xB297004Cu; // B_Controls
+// the user map info: its content, and its share state whose +0xC byte marks the map published (820CD054)
+constexpr uint32_t kUserMapInfo = 0x30;
+constexpr uint32_t kInfoContent = 0x10;  // XCONTENT_DATA
+constexpr uint32_t kContentBytes = 0x134;
+constexpr uint32_t kInfoShare = 0x158;
+constexpr uint32_t kShared = 0xC;
+// the four multiplayer modes, each +0x8 set once the map has what the mode needs
+constexpr uint32_t kGameModes = 0x8296C870;
+constexpr uint32_t kGameModeBytes = 0xD4;
+constexpr uint32_t kGameModeCount = 4;
+constexpr uint32_t kGameModeComplete = 0x8;
 constexpr uint32_t kMapTimeOfDay = 0x1F8;
 constexpr uint32_t kMapFogThickness = 0x1FC;
 constexpr uint32_t kMapFogDistance = 0x200;
@@ -184,7 +196,7 @@ constexpr auto kPulse = std::chrono::milliseconds(120);  // a pad press long eno
 
 enum class Op {
     SelectTool, TerrainMode, RadiusStep, SetHeight, Texture, SquareCursor, Undo, Environment, Option, Pick,
-    StartMenu, PlayTest,
+    StartMenu, PlayTest, Publish,
 };
 struct Command {
     Op op;
@@ -229,6 +241,8 @@ uint32_t g_name_scratch = 0;
 uint32_t g_widget_scratch = 0;
 int g_catalogue_wait = 0;
 bool g_category_shown[fcip::editor::kCategoryCount] = {};  // since the map opened
+std::atomic<bool> g_publishing{false};  // until the published copy's save ends
+std::array<uint8_t, kContentBytes> g_saved_content;  // the map's own package, put back after
 int g_environment_row = -1;  // the row the last change was to
 
 void Queue(Command c) {
@@ -381,6 +395,22 @@ void RunStartMenu(PPCContext& ctx, uint32_t button) {
     CallGuest(ctx, kStartMenuPress, {kStartMenuListener, g_widget_scratch});
 }
 
+uint32_t MapInfo() {
+    uint32_t maps = R32(SYM_UserMaps_pointer);
+    return maps ? R32(maps + kUserMapInfo) : 0;
+}
+
+// as the map manager publishes a saved map (820CCDF0): marked published, a new package named for it, then saved
+void RunPublish(PPCContext& ctx) {
+    if (!fcip::editor::CanPublishMap()) return;
+    uint32_t info = MapInfo();
+    std::memcpy(g_saved_content.data(), HostPtr(info + kInfoContent), kContentBytes);
+    g_publishing = true;
+    W8(R32(info + kInfoShare) + kShared, 1);
+    CallGuest(ctx, SYM_UserMapInfo_New, {R32(SYM_UserMaps_pointer), info + kInfoContent, R32(kManager) + kMapName, 1});
+    RunStartMenu(ctx, kButtonSave);
+}
+
 void RunPlayTest(PPCContext& ctx) {
     uint32_t mode = R32(kEditorHandler + kHandlerMode) == kModeEditing ? 2 : kModeEditing;
     CallGuest(ctx, kSetEditorMode, {kEditorHandler, mode});
@@ -416,6 +446,7 @@ void Run(PPCContext& ctx, const Command& c) {
         case Op::Pick: RunPick(ctx, c.value, c.item); break;
         case Op::StartMenu: RunStartMenu(ctx, uint32_t(c.value)); break;
         case Op::PlayTest: RunPlayTest(ctx); break;
+        case Op::Publish: RunPublish(ctx); break;
     }
 }
 
@@ -630,6 +661,18 @@ void Save() { Queue({Op::StartMenu, int(kButtonSave)}); }
 void ExitToMapManager() { Queue({Op::StartMenu, int(kButtonExit)}); }
 void ShowControllerLayout() { Queue({Op::StartMenu, int(kButtonControls)}); }
 void PlayTest() { Queue({Op::PlayTest}); }
+void PublishMap() { Queue({Op::Publish}); }
+
+// saved once, not published yet, and one multiplayer mode complete, as the map manager asks
+bool CanPublishMap() {
+    uint32_t info = MapInfo();
+    uint32_t share = info ? R32(info + kInfoShare) : 0;
+    if (!g_map_open || g_publishing || !share || R8(share + kShared) || MapName().empty()) return false;
+    for (uint32_t i = 0; i < kGameModeCount; i++) {
+        if (R8(kGameModes + i * kGameModeBytes + kGameModeComplete)) return true;
+    }
+    return false;
+}
 
 State Read() {
     State s;
@@ -803,6 +846,7 @@ PPC_EXTERN_FUNC(__imp__sub_820D0938);
 PPC_EXTERN_FUNC(__imp__sub_820C4818);
 PPC_EXTERN_FUNC(__imp__sub_820DFA90);
 PPC_EXTERN_FUNC(__imp__sub_820D6C38);
+PPC_EXTERN_FUNC(__imp__sub_8211FB70);
 PPC_EXTERN_FUNC(__imp__sub_8210DCD8);
 PPC_EXTERN_FUNC(__imp__sub_8210DDD8);
 PPC_EXTERN_FUNC(__imp__sub_82313E70);
@@ -880,6 +924,15 @@ PPC_FUNC(sub_820D6C38) {
         return;
     }
     __imp__sub_820D6C38(ctx, base);
+}
+
+// a map's save, on its own thread; after a publish the map is its own saved, unpublished package again
+PPC_FUNC(sub_8211FB70) {
+    __imp__sub_8211FB70(ctx, base);
+    uint32_t info = MapInfo();
+    if (!g_publishing.exchange(false) || !info) return;
+    std::memcpy(HostPtr(info + kInfoContent), g_saved_content.data(), kContentBytes);
+    W8(R32(info + kInfoShare) + kShared, 0);
 }
 
 // an undo command (r3) pushed; the stack keeps the last five

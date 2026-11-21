@@ -102,6 +102,8 @@ void Save();
 void ExitToMapManager();  // asks to save first
 void ShowControllerLayout();
 void PlayTest();
+void PublishMap();   // the map as a published copy, for multiplayer; the open map stays as it was saved
+bool CanPublishMap();
 
 // the Add Object tool's categories as last read on the editor's thread, with their object budgets
 struct Category {
