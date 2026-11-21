@@ -1,5 +1,6 @@
 // default.xex: the original Xbox profile list (P_Profile), left unopened by the 360 build, opened by OPTIONS again;
-// the first start names a profile and each one saves to profiles\<name>.bin, the current also to the gamer's settings
+// the first start names a profile and each one saves to profiles\<name>.bin, the current also to the gamer's settings,
+// and keeps its multiplayer stats in profiles\<name>.stats
 #include "game/profiles.h"
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include "core/log.h"
 #include "game/virtual_keyboard.h"
 #include "kernel/memory.h"
+#include "xam/xam.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -139,6 +141,11 @@ std::vector<uint32_t> Loaded() {
 fs::path Folder() { return app::ExeDir() / "profiles"; }
 fs::path FileFor(const std::string& name) { return Folder() / (name + ".bin"); }
 
+// the stats the game reads and writes are the profile in play's
+void UseStats(const std::string& name) {
+    xam::UseStatsFile(name.empty() ? std::string() : (Folder() / (name + ".stats")).string());
+}
+
 // a gamertag: a letter first, then letters, digits and single spaces, none at the end
 bool NameAllowed(const std::string& name) {
     if (name.empty() || !std::isalpha(uint8_t(name[0])) || name.back() == ' ') return false;
@@ -241,6 +248,7 @@ void SetCurrent(PPCContext& ctx, uint32_t profile) {
     CallGuest(ctx, SYM_ProfileManager_Select, {manager, user});
     CallGuest(ctx, SYM_ProfileManager_Apply, {manager});
     fcip::Get().profile = ProfileName(profile);
+    UseStats(fcip::Get().profile);
     app::Save();
     CallGuest(ctx, SYM_Profile_Save, {profile});
 }
@@ -275,6 +283,7 @@ bool OnFirstName(PPCContext& ctx, uint32_t text, uint32_t length) {
     if (!current) return true;
     for (size_t i = 0; i <= name.size(); i++) W16(current + kProfileName + uint32_t(i) * 2, uint8_t(name.c_str()[i]));
     fcip::Get().profile = name;
+    UseStats(name);
     app::Save();
     CallGuest(ctx, SYM_Profile_Save, {current});
     CallGuest(ctx, SYM_ProfileManager_Apply, {manager});
@@ -288,6 +297,7 @@ bool OnNewName(PPCContext& ctx, uint32_t text, uint32_t length) {
     uint32_t current = R32(Manager() + kManagerCurrent);
     if (fcip::Get().profile.empty() && current) {
         fcip::Get().profile = ProfileName(current);
+        UseStats(fcip::Get().profile);
         app::Save();
         CallGuest(ctx, SYM_Profile_Save, {current});
     }
@@ -311,7 +321,10 @@ bool ListShown(PPCContext& ctx, uint32_t menu) {
 
 }  // namespace
 
-void fcip::profiles::NoteMainMenu() { g_main_seen = true; }
+void fcip::profiles::NoteMainMenu() {
+    if (!g_main_seen) UseStats(Get().profile);
+    g_main_seen = true;
+}
 
 void fcip::profiles::Tick(PPCContext& ctx) {
     if (!g_main_seen || g_asked || !Get().profile.empty()) return;
