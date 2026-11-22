@@ -15,6 +15,7 @@
 #include "common/menu.h"
 #include "common/settings.h"
 #include "game/custom_campaign.h"
+#include "gpu/latency.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
 
@@ -132,6 +133,7 @@ PPC_FUNC(GUEST(LoadingScreen_Wait)) {
 
 // once a frame on the main thread, before the game runs its queued commands; r3 the game
 PPC_FUNC(GUEST(Game_Update)) {
+    gpu::latency::SimulationStart();
     IssueLevel(ctx, uint32_t(ctx.r[3]));
     GUEST_ORIG(Game_Update)(ctx, base);
 }
