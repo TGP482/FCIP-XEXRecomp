@@ -22,6 +22,7 @@
 #include <bit>
 #include <cmath>
 #include <utility>
+#include <vector>
 
 #include "common/render_pass.h"
 #include "common/settings.h"
@@ -70,6 +71,16 @@ constexpr uint32_t kEngineAmbientTint = 0x1200;
 constexpr uint32_t kEngineFade = 0x1424;  // its scale at +0x440
 constexpr uint32_t kFadeScale = 0x440;
 constexpr uint32_t kVisAreaAmbient = 0xDC;
+// vis area manager: the areas' begin and end, the portals VisArea_Find tests first at +0x18
+constexpr uint32_t kManagerAreas = 0x4;
+constexpr uint32_t kManagerAreasEnd = 0x8;
+// vis area: its box and outline as 825F8960 tests a point, and AffectedBySun as 825FBF80 reads it
+constexpr uint32_t kVisAreaBoxMin = 0x4;
+constexpr uint32_t kVisAreaBoxMax = 0x10;
+constexpr uint32_t kVisAreaPoints = 0xC8;  // begin and end of x, y, z points
+constexpr uint32_t kVisAreaPointsEnd = 0xCC;
+constexpr uint32_t kVisAreaSunlit = 0xE9;  // a byte
+constexpr uint32_t kVisAreaPointSize = 12;
 constexpr uint32_t kAmbientFloor = 0xC;  // past the outdoor addition at Ambient_pointer
 constexpr uint32_t kEngineSunRender = 0x51C;  // SunVectorRender as a point 10000 units out, the sky's sun
 constexpr uint32_t kEngineRain = 0xB60;       // the Rain node's switch, a byte
@@ -310,6 +321,69 @@ void Illuminate(PPCContext& ctx) {
     if (SceneArgs(a)) d3d::Illumination(R32(SYM_Device_pointer), a, SunView());
 }
 
+// a vis area the sun doesn't light and its box's squared distance from the camera
+struct Indoor {
+    float distance = 0;
+    uint32_t area = 0;
+};
+
+// the vis areas the sun doesn't light nearest the camera, whose air the fog's sun stays out of as the game's sun does
+void UpdateIndoors(const float world[16], float sea, gpu::FogView& v) {
+    uint32_t engine = R32(SYM_C3DEngine_pointer);
+    uint32_t manager = engine ? R32(engine + kEngineVisAreas) : 0;
+    if (!manager) return;
+    std::vector<Indoor> unlit;
+    uint32_t end = R32(manager + kManagerAreasEnd);
+    for (uint32_t at = R32(manager + kManagerAreas); at < end; at += 4) {
+        uint32_t area = R32(at);
+        if (R8(area + kVisAreaSunlit)) continue;
+        float distance = 0;
+        for (uint32_t i = 0; i < 3; i++) {
+            float camera = world[12 + i];
+            float below = GF(area + kVisAreaBoxMin + i * 4) - camera;
+            float above = camera - GF(area + kVisAreaBoxMax + i * 4);
+            float out = std::max({below, above, 0.0f});
+            distance += out * out;
+        }
+        unlit.push_back({distance, area});
+    }
+    std::sort(unlit.begin(), unlit.end(), [](const Indoor& a, const Indoor& b) { return a.distance < b.distance; });
+    gpu::FogIndoors& o = v.indoors;
+    for (uint32_t r = 0; r < 4; r++) {
+        o.world[r] = world[r * 4];
+        o.world[4 + r] = world[r * 4 + 1];
+    }
+    int areas = 0;
+    int used = 0;
+    for (const Indoor& u : unlit) {
+        if (areas == gpu::kFogIndoorAreas) break;
+        uint32_t points = R32(u.area + kVisAreaPoints);
+        int count = int((R32(u.area + kVisAreaPointsEnd) - points) / kVisAreaPointSize);
+        if (count < 3 || used + count > gpu::kFogIndoorPoints) continue;
+        float* box = o.boxes + areas * 8;
+        for (uint32_t i = 0; i < 3; i++) {
+            box[i] = GF(u.area + kVisAreaBoxMin + i * 4);
+            box[4 + i] = GF(u.area + kVisAreaBoxMax + i * 4);
+        }
+        box[2] -= sea;
+        box[6] -= sea;
+        box[3] = float(used);
+        box[7] = float(count);
+        for (int k = 0; k < count; k++) {
+            o.points[(used + k) * 2] = GF(points + k * kVisAreaPointSize);
+            o.points[(used + k) * 2 + 1] = GF(points + k * kVisAreaPointSize + 4);
+        }
+        used += count;
+        areas++;
+    }
+    o.count[0] = float(areas);
+    static size_t logged = size_t(-1);
+    if (unlit.size() != logged) {
+        LOGR("volumetric fog: %zu vis areas the sun doesn't light, %d nearest kept out", unlit.size(), areas);
+        logged = unlit.size();
+    }
+}
+
 // over the camera's list drawn so far, lit by the sun, as thick as the game's fog
 void Fog(const FogSplit& f) {
     gpu::OcclusionArgs a;
@@ -319,7 +393,11 @@ void Fog(const FogSplit& f) {
     gpu::FogView v = SunView(true);
     uint32_t dev = R32(SYM_Device_pointer);
     float world[16];
-    if (ViewToWorld(world)) fcip::UpdateTerrainShade(world, GF(dev + kDevVsConstants + kVsWaterLevel * 16), v);
+    if (ViewToWorld(world)) {
+        float sea = GF(dev + kDevVsConstants + kVsWaterLevel * 16);
+        fcip::UpdateTerrainShade(world, sea, v);
+        UpdateIndoors(world, sea, v);
+    }
     static float logged[3] = {-1, -1, -1};
     const float* c = v.sun_colour;
     if (std::fabs(c[0] - logged[0]) + std::fabs(c[1] - logged[1]) + std::fabs(c[2] - logged[2]) > 0.02f) {

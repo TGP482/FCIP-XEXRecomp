@@ -743,6 +743,10 @@ cbuffer A : register(b1) {
     float4 height;
     float4 suncolour;
     float4 terrain[2];
+    float4 indoor_world[2];    // the fog's FogIndoors
+    float4 indoors;
+    float4 indoor_box[16];
+    float4 indoor_points[32];
 };
 #ifdef MS
 Texture2DMS<float> depth : register(t0);
@@ -1115,7 +1119,8 @@ float4 gi_apply(float4 pos : SV_Position) : SV_Target {
 }
 )";
 // Volumetric fog in place of the game's: humid height fog marched through the sun map and the terrain shade, thickest
-// at the sea, over the sky too; lit by the fog colour around and the sun ahead, scattered forward as wet air does.
+// at the sea, over the sky too; lit by the fog colour around and the sun ahead, scattered forward as wet air does. The
+// sun stays out of the vis areas it doesn't light, as it does for the game's own lighting.
 // colour * transmittance + in scatter. opt.x: 1 with the sun map bound, opt.y with the terrain shade
 const char* kFogHlsl = R"(
 Texture2D<float4> haze : register(t1);  // in scatter, transmittance in a
@@ -1141,6 +1146,33 @@ float TerrainLit(float3 p, float up) {
     shade.GetDimensions(w, h);
     if (any(t < 0) || any(t >= int2(w, h))) return 1;
     return up + kGround >= shade.Load(int3(t, 0)) ? 1 : 0;
+}
+float2 IndoorPoint(int i) {
+    float4 pair = indoor_points[i / 2];
+    return (i & 1) ? pair.zw : pair.xy;
+}
+// within an outline over x and y, by the edges crossed to its right as 825F8860 counts them
+bool InOutline(float2 q, int first, int count) {
+    bool inside = false;
+    float2 a = IndoorPoint(first + count - 1);
+    for (int i = 0; i < count; i++) {
+        float2 b = IndoorPoint(first + i);
+        if ((a.y > q.y) != (b.y > q.y) && q.x <= a.x + (q.y - a.y) * (b.x - a.x) / (b.y - a.y)) inside = !inside;
+        a = b;
+    }
+    return inside;
+}
+// 0 inside a vis area the sun doesn't light
+float Outdoors(float3 p, float up) {
+    float4 at = float4(p, 1);
+    float3 w = float3(dot(at, indoor_world[0]), dot(at, indoor_world[1]), up);
+    for (int i = 0; i < int(indoors.x); i++) {
+        float4 lo = indoor_box[i * 2];
+        float4 hi = indoor_box[i * 2 + 1];
+        if (any(w < lo.xyz) || any(w > hi.xyz)) continue;
+        if (InOutline(w.xy, int(lo.w), int(hi.w))) return 0;
+    }
+    return 1;
 }
 // a pixel's view space point; the sky, depth 0, kSky away
 float3 Seen(float2 px) {
@@ -1172,7 +1204,7 @@ float4 fog_march(float4 pos : SV_Position) : SV_Target {
         float up = dot(float4(p, 1), height);
         // steps spread by s squared: this one spans (2i + 1) / kSteps^2 of the distance
         float ext = sigma * exp(-kThinning * max(up, 0)) * dist * (2 * i + 1) / (kSteps * kSteps);
-        light += trans * ext * (sunlight * FogSunLit(p) * TerrainLit(p, up) + ambient);
+        light += trans * ext * (sunlight * FogSunLit(p) * TerrainLit(p, up) * Outdoors(p, up) + ambient);
         trans *= exp(-ext);
     }
     return float4(light, trans);
@@ -1472,7 +1504,9 @@ float4 caustics_under(float4 pos : SV_Position) : SV_Target {
 constexpr float kGiRadius = 32.0f;  // world units the bounce reaches
 constexpr float kGiGamma = 2.2f;
 
-constexpr int kAoConstants = 64;  // kViewHlsl's b1
+constexpr int kFogIndoorConstants = 64;  // where kViewHlsl's b1 holds the fog's FogIndoors
+constexpr int kAoConstants = kFogIndoorConstants + int(sizeof(FogIndoors) / sizeof(float));
+static_assert(kFogIndoorAreas * 2 == 16 && kFogIndoorPoints / 2 == 32, "kViewHlsl's indoor arrays");
 constexpr DXGI_FORMAT kAoFormat = DXGI_FORMAT_R16G16_FLOAT;
 constexpr float kAoRadius = 0.8f;    // world units, the engine's are metres
 constexpr float kAoMaxSpan = 0.15f;  // of the view's height, the most one pixel's samples may cover
@@ -5122,6 +5156,7 @@ void D3D12Backend::VolumetricFog(const State& s, const OcclusionArgs& a) {
     std::copy(std::begin(view.height), std::end(view.height), c + 48);
     std::copy(std::begin(view.sun_colour), std::end(view.sun_colour), c + 52);
     std::copy(std::begin(view.terrain), std::end(view.terrain), c + 56);
+    std::memcpy(c + kFogIndoorConstants, &view.indoors, sizeof(view.indoors));
     AoPass march{.entry = "fog_march", .out = kGiFormat, .rtv = Rtv(kFogRtv + 1), .fog = true, .sun = sun,
                  .shade = shade, .half = true};
     AoPass across{.entry = "fog_blur", .out = kGiFormat, .rtv = Rtv(kFogRtv + 2), .src = fog_[1].Get(), .step_x = 1,

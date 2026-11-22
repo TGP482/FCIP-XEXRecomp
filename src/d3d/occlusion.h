@@ -54,6 +54,17 @@ struct OcclusionArgs {
     uint32_t method = 0;      // kAo*
 };
 
+// the vis areas the sun doesn't light (AffectedBySun clear) nearest the camera, which the volumetric fog keeps its sun
+// out of: a point is inside one in its box and within its outline over the world's x and y, as VisArea_Find tests it
+constexpr int kFogIndoorAreas = 8;
+constexpr int kFogIndoorPoints = 64;
+struct FogIndoors {
+    float world[8] = {};  // rows to the world's x and y, as FogView::height's
+    float count[4] = {};  // areas in x
+    float boxes[kFogIndoorAreas * 8] = {};  // least x, y, height over the sea, first point; most of each, point count
+    float points[kFogIndoorPoints * 2] = {};  // the outlines, x then y
+};
+
 // volumetric fog and global illumination's sun, from the renderer's view space (x right, y up, z the distance)
 struct FogView {
     float sun[16] = {};     // into the far sun map's clip space, column j from sun[j * 4]
@@ -62,6 +73,7 @@ struct FogView {
     float terrain[8] = {};  // into the terrain shade's texels, x then y
     bool shadowed = false;  // without a sun map the sun lights none of it
     bool shaded = false;    // with a terrain shade
+    FogIndoors indoors;     // the fog's only
 };
 // render thread: the view a kClearFog or kClearIllumination marker names
 FogView FogViewAt(uint32_t slot);
