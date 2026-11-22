@@ -29,6 +29,11 @@ void DrawShadowMaps(PPCContext& ctx, uint8_t* base);
 // object draw distance already cuts most past it
 constexpr uint32_t kSunMaps = 4;
 constexpr uint32_t kSunFetch = 8;       // SunShadowSampler in every receiver
+constexpr uint32_t kShadowFirstFetch = 5;  // light i's shadow map sampler 5 + i, i below 4 (82501C70)
+// a draw reading the far sun map: every shadow fetch reads the sharper maps when g_ext.y marks the far map bound to it,
+// its bits the sharper map count then one per sampler from kShadowFirstFetch
+constexpr uint32_t kSunOut = 24;
+constexpr uint32_t kSunCountBits = 3;
 constexpr uint32_t kSunFirstSlot = 27;  // the pixel shader views the sharper maps are bound to, through 30
 
 // the sun maps as the renderer reads them: receivers fetch the far one with kSunFetch, distance is its radius over the
@@ -54,8 +59,7 @@ SunMaps SunMapsDrawn();
 bool SunClip(float out[16]);
 // title thread: the same for the volumetric fog's own sun map
 bool FogClip(float out[16]);
-constexpr uint8_t kSunCascade = 1;     // ShaderOptions::tex_flags on a fetch of the far map
-constexpr uint8_t kSunSoft = 2;        // the same, with the soft filter on
+constexpr uint8_t kSunSoft = 2;        // ShaderOptions::tex_flags on a fetch of the far map, soft filter on
 constexpr uint8_t kShadowSoft = 4;     // another light's shadow map, soft
 constexpr uint8_t kShadowHalf = 8;     // that map drawn as one of four inside a vis area, 672 at stock
 constexpr uint8_t kSunPcss = 16;       // the far sun map with PCSS on

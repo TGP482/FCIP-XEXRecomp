@@ -2469,6 +2469,7 @@ private:
     std::unordered_map<uint32_t, Resolved> blocks_;     // by address: a resolve with the whole blocks it writes past
     Resolved* sun_[fcip::kSunMaps] = {};                // the sharper sun maps the draw's pixel shader reads
     fcip::SunMaps sun_maps_;
+    uint32_t sun_samplers_ = 0;  // a bit per shadow sampler the far map is bound to
     fcip::OceanLook ocean_;  // the original Xbox ocean's look while OceanFlags flags a draw
     // shadow map targets and their resolves by the shadow frame that last used them and their guest width: a new side,
     // distance or vis area leaves some behind
@@ -3846,7 +3847,7 @@ bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOpti
     fcip::SunMaps m = fcip::SunMapsDrawn();
     uint32_t filter = fcip::Get().shadow_filter;
     bool soft = filter == fcip::kFilterSoft || filter == fcip::kFilterPcss;
-    if ((!m.count && !soft) || info.textures.size() > fcip::kSunFirstSlot) return false;
+    if ((!m.count && !soft) || info.textures.size() > fcip::kSunOut) return false;
     // a missing map would read zero depth: it and the coarser ones are left to the far map
     Resolved* maps[fcip::kSunMaps] = {};
     uint32_t count = 0;
@@ -3856,6 +3857,7 @@ bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOpti
     }
     if (!count && !soft) return false;
     bool any = false;
+    uint32_t far_samplers = 0;
     for (uint32_t i = 0; i < info.textures.size(); i++) {
         const TextureBinding& b = info.textures[i];
         // light i binds its map at sampler 5 + i (82501C70), the sun at 8: vis areas read theirs through any of them
@@ -3864,11 +3866,17 @@ bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOpti
         ReadFetch(s, b.fetch, fetch);
         uint32_t base = xenos::DecodeTextureFetch(fetch).base;
         bool far_map = m.far_base && base == m.far_base;
-        if (far_map && count) opt.tex_flags[i] |= fcip::kSunCascade;
+        bool shadow_sampler = b.fetch >= fcip::kShadowFirstFetch && b.fetch <= fcip::kSunFetch;
+        if (far_map && shadow_sampler) far_samplers |= 1u << (b.fetch - fcip::kShadowFirstFetch);
+        static bool told = false;
+        if (far_map && !shadow_sampler && !std::exchange(told, true)) LOGR("sun: far map read through sampler %u", b.fetch);
         if (soft) opt.tex_flags[i] |= SoftShadow(base, far_map);
         any = any || (far_map && (count || soft));
     }
     if (!any) return false;
+    // which samplers hold the far map goes in a constant, so it makes no variant of its own
+    if (count) opt.tex_flags[fcip::kSunOut] = 1;
+    sun_samplers_ = far_samplers;
     std::copy(std::begin(maps), std::end(maps), sun_);
     sun_maps_ = m;
     sun_maps_.count = count;
@@ -4622,6 +4630,8 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     bool sun = s.ps && SunCascade(s, s.ps->info, ps_opt);
     std::fill(std::begin(ray_scenes_), std::end(ray_scenes_), 0);
     if (s.ps) RayShadows(s, s.ps->info, ps_opt);
+    // traced draws keep g_ext for the rays
+    if (ray_scenes_[0]) ps_opt.tex_flags[fcip::kSunOut] = 0;
     bool ocean = s.ps && !sun && !ray_scenes_[0] && OceanFlags(s, s.ps->info, ps_opt);
     fog_view_ = FogFlags(s, ps_opt) ? fog_[0].Get() : nullptr;
     bool caustics = s.ps && !sun && !ray_scenes_[0] && CausticsFlags(s, s.ps->info, ps_opt);
@@ -4707,7 +4717,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     if (Bits(k.su_mode, 11, 2)) c.ndc_offset[2] += s.RegF(kPaSuPolyOffsetFrontScale + 1);
     if (sun) {
         c.ext[0] = float(sun_maps_.distance);
-        c.ext[1] = float(sun_maps_.count);
+        c.ext[1] = std::bit_cast<float>(sun_maps_.count | sun_samplers_ << fcip::kSunCountBits);
         // both guest sides are multiples of 8 up to 8192: the far one's eighths whole, the near one's over 2048 below
         c.ext[2] = float(sun_maps_.side / 8) + float(sun_maps_.near_side / 8) / 2048;
         c.ext[3] = sun_maps_.depth_ratio;

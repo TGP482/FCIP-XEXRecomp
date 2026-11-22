@@ -622,7 +622,7 @@ private:
     void EmitVertexFetch(const Fetch& f, uint32_t address);
     void EmitTextureFetch(const Fetch& f);
     void OpenSunMap(const std::string& margin);
-    void EmitSunMaps(uint32_t t, bool weights);
+    void EmitSunMaps(uint32_t sampler, uint32_t t, bool weights);
     void EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags);
     void EmitRayShadow(uint32_t slot, bool weights, int32_t oy);
     void EmitExport(const Alu& a, bool vector, bool scalar);
@@ -646,6 +646,10 @@ private:
     bool Blur() const { return Pixel() && opt_.tex_flags[fcip::kBlurOut]; }
     // pixel: the index of the screen a water draw shows behind it, which takes the caustics' light, -1 none
     int CausticsScreen() const { return Pixel() ? int(opt_.tex_flags[fcip::kCausticsOut]) - 1 : -1; }
+    // pixel: a shadow sampler, which reads the sharper sun maps when the far one is bound to it
+    bool SunSampler(uint32_t fetch) const {
+        return Pixel() && opt_.tex_flags[fcip::kSunOut] && fetch >= fcip::kShadowFirstFetch && fetch <= fcip::kSunFetch;
+    }
     // pixel: colour 0 seen through the volumetric fog in front of it
     bool FogIn() const { return Pixel() && opt_.tex_flags[fcip::kFogOut] && (info_.exports & 1); }
 
@@ -981,7 +985,8 @@ void Translator::EmitTextureFetch(const Fetch& f) {
             EmitSunSoft(t, op == kGetWeights, oy, sun);
         } else {
             Line("float4 ft = " + fetch + ";");
-            if (sun_op && (sun & fcip::kSunCascade)) EmitSunMaps(t, op == kGetWeights);
+            bool shadow = Pixel() && dim == kDim2D && !f.Unnormalized() && SunSampler(info_.textures[t].fetch);
+            if (sun_op && shadow) EmitSunMaps(info_.textures[t].fetch, t, op == kGetWeights);
             if (op == kTextureFetch && int(t) == CausticsScreen()) Line("ft.rgb = Caustics(ft.rgb);");
             if (op == kTextureFetch && (sun & fcip::kAlbedoFetch) && f.ReadsBlue() && Albedo()) {
                 Open("if (!g_albedo_set)");
@@ -1007,14 +1012,16 @@ void Translator::EmitTextureFetch(const Fetch& f) {
 }
 
 // a fetch of the far sun map reads the sharper maps over it, coarsest first, each where it covers the point: g_ext.x
-// is the far map's radius over the stock one, g_ext.y the sharper map count, g_ext.z the far map's guest side and the
-// sharper maps' packed, map sk at 2^sk the stock radius. Scaled about the centre, the fetch's own offset kept in texels, a texel and a half inside its
-// edge for the taps around it
-void Translator::EmitSunMaps(uint32_t t, bool weights) {
+// is the far map's radius over the stock one, g_ext.y's bits the sharper map count and the samplers holding the far
+// map, g_ext.z the far map's guest side and the sharper maps' packed, map sk at 2^sk the stock radius. Scaled about
+// the centre, the fetch's own offset kept in texels, a texel and a half inside its edge for the taps around it
+void Translator::EmitSunMaps(uint32_t sampler, uint32_t t, bool weights) {
+    Open(F("if (asuint(g_ext.y) >> %u & 1)", fcip::kSunCountBits + sampler - fcip::kShadowFirstFetch));
     OpenSunMap("3 / ns");
     Open("if (nw > 0)");
     if (weights) Line("ft = lerp(ft, float4(frac(un * ns - 0.5), 0, 0), nw);");
     else Line(F("ft = lerp(ft, t_sun[sk].SampleLevel(s%u, un + (uv - tc.xy) * size / ns, 0), nw);", t));
+    Close();
     Close();
     Close();
     Close();
@@ -1025,7 +1032,7 @@ void Translator::EmitSunMaps(uint32_t t, bool weights) {
 void Translator::OpenSunMap(const std::string& margin) {
     sun_maps_ = true;
     Open(F("[unroll] for (int sk = %u; sk >= 0; sk--)", fcip::kSunMaps - 1));
-    Open("if (sk < g_ext.y)");
+    Open(F("if (sk < int(asuint(g_ext.y) & %uu))", (1u << fcip::kSunCountBits) - 1));
     Line("float2 ns; t_sun[sk].GetDimensions(ns.x, ns.y);");
     // the far map's guest side in eighths whole, the sharper maps' as the fraction
     Line("float2 sides = float2(floor(g_ext.z), frac(g_ext.z) * 2048) * 8;");
