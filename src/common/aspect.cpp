@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "app/app.h"
+#include "common/fps_counter.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -391,6 +392,7 @@ static bool IsPadIcon(uint32_t corner) {
 
 // r3 the font
 PPC_FUNC(GUEST(Font_Draw)) {
+    fcip::NoteFontDraw(ctx);
     NotePadIcons(uint32_t(ctx.r[3]));
     g_text = true;
     GUEST_ORIG(Font_Draw)(ctx, base);
