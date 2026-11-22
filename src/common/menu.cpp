@@ -65,6 +65,17 @@ constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, 360, app::k
 constexpr uint32_t kShadowSizes[] = {0, 1024, 1344, 2048, 3072, 4096, 6144, 8192};
 constexpr uint32_t kDistances[] = {1, 2, 4, 6, 8, 12, 16, 32};
 
+const char* LanguageName(uint32_t language) {
+    switch (language) {
+        case app::kEnglish: return "ENGLISH";
+        case app::kFrench: return "FRENCH";
+        case app::kGerman: return "GERMAN";
+        case app::kItalian: return "ITALIAN";
+        case app::kSpanish: return "SPANISH";
+        default: return "AUTOMATIC";
+    }
+}
+
 // rows::Choices reads a row's values by picking each index in turn; -1 steps as usual
 int g_pick = -1;
 int g_picks = 0;
@@ -132,7 +143,7 @@ enum RowId {
     kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection, kVolumetricClouds,
     kCaustics, kPadSensitivityX, kPadSensitivityY, kPadAimSensitivityX, kPadAimSensitivityY, kPadInvertX, kPadInvertY,
     kPadHoldAim, kGyroRecenter, kJoinIp, kPlayer1, kPlayer2, kPlayer3, kPlayer4, kMicrophone, kPushToTalk,
-    kPauseOnFocusLoss
+    kPauseOnFocusLoss, kLanguage
 };
 
 constexpr Row kSettingsRows[] = {
@@ -175,10 +186,11 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kDrawDistance, "DRAW DISTANCE",
      "Scales how far objects, grass and vegetation are drawn up to 8x and the area casting sun shadows up to 32x"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
-    {Kind::Heading, -1, "GENERAL", "Intros, pausing in the background, audio output, the online join address and voice chat"},
+    {Kind::Heading, -1, "GENERAL", "Intros, pausing in the background, language, audio output, the online join address and voice chat"},
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
     {Kind::Value, kPauseOnFocusLoss, "PAUSE ON FOCUS LOSS",
      "Pauses the game and its sound while the window is in the background or minimized, never in a network game"},
+    {Kind::Value, kLanguage, "LANGUAGE", "The game's language, automatic follows the Windows display language"},
     {Kind::Value, kAudioOutput, "AUDIO OUTPUT",
      "Mono, stereo or 5.1 surround, automatic follows the speakers set up in Windows"},
     {Kind::Text, kJoinIp, "ONLINE JOIN IP",
@@ -611,6 +623,20 @@ void StepPlayer(app::Settings& s, int player, int step) {
     SetPlayer(s.players, player, list[size_t(StepIndex(i, step, int(list.size())))]);
 }
 
+// automatic, then the game's languages; one other than the running one shows until a restart applies it
+void StepLanguage(app::Settings& s, int step, char (&text)[64]) {
+    std::vector<uint32_t> list = {0};
+    list.insert(list.end(), app::kGame.languages.begin(), app::kGame.languages.end());
+    int i = 0;
+    for (int k = 0; k < int(list.size()); k++) {
+        if (list[size_t(k)] == s.language) i = k;
+    }
+    if (step) s.language = list[size_t(StepIndex(i, step, int(list.size())))];
+    const char* name = LanguageName(s.language);
+    bool restart = app::ResolveLanguage(s.language) != app::BootLanguage();
+    std::snprintf(text, sizeof(text), restart ? "%s (RESTART)" : "%s", name);
+}
+
 void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
     switch (id) {
         case kPlayer1:
@@ -645,6 +671,9 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
         case kPauseOnFocusLoss:
             Flip(s.pause_on_focus_loss, step);
             std::snprintf(text, sizeof(text), "%s", OnOff(s.pause_on_focus_loss));
+            break;
+        case kLanguage:
+            StepLanguage(s, step, text);
             break;
         case kPushToTalk:
             Flip(s.push_to_talk, step);
@@ -803,6 +832,7 @@ void RestoreDefaults(int page) {
     s.audio_output = def.audio_output;
     s.push_to_talk = def.push_to_talk;
     s.pause_on_focus_loss = def.pause_on_focus_loss;
+    s.language = def.language;
     s.custom_textures = def.custom_textures;
     s.dump_textures = def.dump_textures;
     s.texture_dump_format = def.texture_dump_format;

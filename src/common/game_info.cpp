@@ -81,4 +81,5 @@ const app::GameInfo app::kGame = {
         .bar_full = Argb(fcip::kButtonHovered),
         .lit_text = Argb(fcip::kText),
     },
+    .languages = {app::kEnglish, app::kFrench, app::kGerman, app::kItalian, app::kSpanish},
 };
