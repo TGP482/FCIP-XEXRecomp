@@ -28,6 +28,9 @@
 // Each sun camera culls its casters to the part of its map a receiver can read: receivers lie in the view frustum, or
 // with water in its reflection, and a caster only shades what it covers along the sun. The camera's side planes are
 // pulled in to that span; its matrices keep the whole map, so only the engine's culling sees the narrower box.
+//
+// The snap sizes and places each map by the view's angle, read from m_fov, which stays stock outside the camera update
+// while the projection carries the FOV setting; it runs with the wider of the two, so the maps reach the screen edges.
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -228,6 +231,16 @@ bool ViewCorners(uint32_t eye, Vec (&at)[8]) {
     return true;
 }
 
+// the angle the snap sizes a map by: the projection's horizontal angle when wider than m_fov
+float SnapFov(uint32_t eye) {
+    uint32_t proj = eye + kCameraProjection;
+    float fov = GF(eye + kCameraFov);
+    double scale_x = std::abs(GF(proj));
+    if (!(scale_x > 0)) return fov;
+    double tan_x = (1 + std::abs(GF(proj + 8 * 4))) / scale_x;
+    return std::max(fov, float(2 * std::atan(tan_x)));
+}
+
 // the sun camera's side planes pulled in to the view's span, see the top of the file
 void CullToView(uint32_t view, uint32_t cam, uint32_t map_side) {
     Vec corners[8];
@@ -380,10 +393,8 @@ void LatchDepthRatio(uint32_t cam) {
     g_depth = float(range / GF(cam + kCameraOrthoWidth));
 }
 
-}  // namespace
-
 // sun shadow camera, texel snapping, r4 the view, r5 r6 the size, r7 the camera
-PPC_FUNC(GUEST(Shadow_Snap)) {
+void SnapSun(PPCContext& ctx, uint8_t* base) {
     uint32_t view = uint32_t(ctx.r[4]);
     uint32_t cam = uint32_t(ctx.r[7]);
     Pair(ctx, 5, 6);
@@ -447,6 +458,16 @@ PPC_FUNC(GUEST(Shadow_Snap)) {
     CallGuest(ctx, SYM_CCamera_Update, {cam});
     CullToView(view, cam, uint32_t(args[2]));
     LatchDepthRatio(cam);
+}
+
+}  // namespace
+
+PPC_FUNC(GUEST(Shadow_Snap)) {
+    uint32_t eye = R32(uint32_t(ctx.r[4]) + kViewCamera);
+    float fov = GF(eye + kCameraFov);
+    WF(eye + kCameraFov, SnapFov(eye));
+    SnapSun(ctx, base);
+    WF(eye + kCameraFov, fov);
 }
 
 // draw extent, vtable +0x1E8
