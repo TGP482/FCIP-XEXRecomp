@@ -40,6 +40,8 @@ public:
         float pos[3] = {};
         bool placed = false;
         bool taken = false;
+        bool matched = false;
+        bool moving = false;  // seen at another position, so a match may lie near it rather than on it
         uint32_t at = 0;  // first block in blocks
         uint64_t read[2] = {};
         uint32_t next = UINT32_MAX;  // the next draw of its signature
@@ -47,10 +49,11 @@ public:
 
     void Begin();
     // the blocks read marks, from the title's big endian bank; pos null for a draw without an object position
-    const Draw& Record(uint64_t signature, const float* pos, const uint64_t (&read)[2], const uint8_t* be);
-    // last frame's draw for a recorded one, null when none: of its signature and near its position, the one whose
-    // constants are nearest, since instances of one mesh share both and differ only in their constants
-    const Draw* Match(const Draw& now);
+    Draw& Record(uint64_t signature, const float* pos, const uint64_t (&read)[2], const uint8_t* be);
+    // last frame's draw for a placed one, null when none: of its signature, at its position or, for one that moves,
+    // near it, the one whose constants are nearest, since instances of one mesh share both and differ only in their
+    // constants. A copy that only came into view must not take a still neighbour's place
+    const Draw* Match(Draw& now);
     // a draw's blocks at their places in a 4 KB bank
     void Copy(const Draw& d, uint8_t* bank) const;
 
@@ -61,8 +64,13 @@ private:
         uint32_t last = 0;
         uint32_t frame = 0;
         uint64_t varying[2] = {};  // a bit per block of the draws' own, set where they differ
+        // kept across frames: two draws at one position (terrain sectors), so it names no object; ever two in a frame
+        bool shared = false;
+        bool multi = false;
     };
     static void MarkVarying(Chain& c, const uint8_t* first, const uint8_t* draw, size_t blocks);
+    Draw* Nearest(const Draw& now, const Chain& c, bool here);
+    void MarkStarted();
     struct Frame {
         std::vector<Draw> draws;
         std::vector<uint8_t> blocks;

@@ -12,7 +12,7 @@ namespace gpu {
 namespace {
 
 constexpr uint32_t kBlock = 32;          // two constants, a bit of ShaderInfo::constants
-constexpr float kMatchRadius = 4.0f;     // farther than an object moves in a frame, nearer than two of one mesh
+constexpr float kMatchRadius = 4.0f;     // farther than an object moves in a frame
 constexpr size_t kMaxCameras = 8;        // the render thread is at most a few frames behind
 
 std::mutex g_cameras_lock;
@@ -102,6 +102,7 @@ void MotionHistory::MarkVarying(Chain& c, const uint8_t* first, const uint8_t* d
 
 void MotionHistory::Begin() {
     constexpr size_t kStaleSignatures = 8;  // signatures kept per draw before the table starts over
+    MarkStarted();
     now_ ^= 1;
     Frame& f = frames_[now_];
     if (f.by_signature.size() > kStaleSignatures * (f.draws.size() + 64)) f.by_signature.clear();
@@ -128,30 +129,65 @@ float Gap(const uint8_t* a, const uint8_t* b, const uint64_t (&blocks)[2], float
     return sum;
 }
 
-const MotionHistory::Draw* MotionHistory::Match(const Draw& now) {
+// of last frame's draws in c, the one whose constants are nearest now's: at its position, else moving near it
+MotionHistory::Draw* MotionHistory::Nearest(const Draw& now, const Chain& c, bool here) {
     Frame& last = frames_[now_ ^ 1];
-    auto it = last.by_signature.find(now.signature);
-    if (it == last.by_signature.end() || it->second.frame != last.frame) return nullptr;
     const uint8_t* mine = frames_[now_].blocks.data() + size_t(now.at) * kBlock;
     // a block every candidate shares adds the same to each gap, so only the ones they differ in are compared
-    const uint64_t(&varying)[2] = it->second.varying;
+    const uint64_t(&varying)[2] = c.varying;
     Draw* best = nullptr;
     float best_gap = INFINITY;
-    for (uint32_t i = it->second.first; i != UINT32_MAX; i = last.draws[i].next) {
+    for (uint32_t i = c.first; i != UINT32_MAX; i = last.draws[i].next) {
         Draw& d = last.draws[i];
-        if (d.taken || d.placed != now.placed || d.read[0] != now.read[0] || d.read[1] != now.read[1]) continue;
-        if (now.placed && Distance2(d.pos, now.pos) > kMatchRadius * kMatchRadius) continue;
+        if (d.taken || !d.placed || d.read[0] != now.read[0] || d.read[1] != now.read[1]) continue;
+        float distance = Distance2(d.pos, now.pos);
+        // a signature never drawn twice in a frame can't take a sibling's place
+        bool lone = !c.multi && !frames_[now_].by_signature[now.signature].multi;
+        bool fits = here ? distance == 0 : (d.moving || lone) && distance <= kMatchRadius * kMatchRadius;
+        if (!fits) continue;
         float gap = Gap(mine, last.blocks.data() + size_t(d.at) * kBlock, varying, best_gap);
         if (gap >= best_gap) continue;
         best_gap = gap;
         best = &d;
     }
-    if (best) best->taken = true;
     return best;
 }
 
-const MotionHistory::Draw& MotionHistory::Record(uint64_t signature, const float* pos, const uint64_t (&read)[2],
-                                                 const uint8_t* be) {
+const MotionHistory::Draw* MotionHistory::Match(Draw& now) {
+    // without a position a draw can't be told from one that reused its buffers: the depth's reprojection takes it
+    if (!now.placed) return nullptr;
+    Frame& last = frames_[now_ ^ 1];
+    auto it = last.by_signature.find(now.signature);
+    if (it == last.by_signature.end() || it->second.frame != last.frame) return nullptr;
+    bool shared = it->second.shared || frames_[now_].by_signature[now.signature].shared;
+    // a shared position matches only a moving draw near it, the rest are left to the depth's reprojection
+    Draw* best = shared ? nullptr : Nearest(now, it->second, true);
+    if (!best) best = Nearest(now, it->second, false);
+    if (!best) return nullptr;
+    best->taken = true;
+    now.matched = true;
+    now.moving = best->moving || Distance2(best->pos, now.pos) > 0;
+    return best;
+}
+
+// a placed draw left unmatched where one of last frame's went untaken nearby: the same object, started moving
+void MotionHistory::MarkStarted() {
+    Frame& f = frames_[now_];
+    const Frame& last = frames_[now_ ^ 1];
+    for (Draw& d : f.draws) {
+        if (d.matched || !d.placed) continue;
+        auto it = last.by_signature.find(d.signature);
+        if (it == last.by_signature.end() || it->second.frame != last.frame) continue;
+        for (uint32_t i = it->second.first; i != UINT32_MAX && !d.moving; i = last.draws[i].next) {
+            const Draw& old = last.draws[i];
+            float distance = Distance2(old.pos, d.pos);
+            d.moving = !old.taken && old.placed && distance > 0 && distance <= kMatchRadius * kMatchRadius;
+        }
+    }
+}
+
+MotionHistory::Draw& MotionHistory::Record(uint64_t signature, const float* pos, const uint64_t (&read)[2],
+                                           const uint8_t* be) {
     Frame& f = frames_[now_];
     Draw d;
     d.signature = signature;
@@ -179,10 +215,18 @@ const MotionHistory::Draw& MotionHistory::Record(uint64_t signature, const float
     Chain& c = f.by_signature[signature];
     if (c.frame == f.frame) {
         f.draws[c.last].next = index;
+        c.multi = true;
         MarkVarying(c, f.blocks.data() + size_t(f.draws[c.first].at) * kBlock, f.blocks.data() + size_t(d.at) * kBlock,
                     blocks);
+        for (uint32_t i = c.first; i != index && d.placed && !c.shared; i = f.draws[i].next) {
+            c.shared = Distance2(f.draws[i].pos, d.pos) == 0;
+        }
     } else {
+        bool shared = c.shared;
+        bool multi = c.multi;
         c = {index, index, f.frame};
+        c.shared = shared;
+        c.multi = multi;
     }
     c.last = index;
     f.draws.push_back(d);

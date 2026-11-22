@@ -131,7 +131,7 @@ constexpr DXGI_FORMAT kAlbedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kGiFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 // a full float: the water's draws fade the light by the floor's distance less theirs, which half floats step through
 constexpr DXGI_FORMAT kCausticsFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
-constexpr float kNoMotion = 32768;  // the drawn motion's clear: no draw wrote the pixel
+constexpr float kNoMotion = 32768;  // the drawn motion's clear, and an unmatched draw's: the depth is reprojected there
 constexpr uint64_t kSceneTarget = 1ull << 62;  // targets_ key bit of a target at the scene's scale, before FSR
 constexpr DXGI_FORMAT kUpscaledFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
@@ -1681,7 +1681,9 @@ float Halton(uint32_t i, uint32_t b) {
 // b5 of a motion draw
 struct MotionConstants {
     float reproject[16];
-    uint32_t prev;  // run over the previous constants, else reproject
+    // 0 left to the depth's reprojection, 1 run over the previous constants, 2 its position held still in the world,
+    // 3 held still on screen
+    uint32_t prev;
     uint32_t unused[3];
 };
 
@@ -2167,6 +2169,7 @@ private:
     bool CopyCpuTexels(ComPtr<ID3D12Resource>& buffer, D3D12_PLACED_SUBRESOURCE_FOOTPRINT& fp);
     void RecordReadBack(ReadBack& rb, uint32_t base, uint64_t seq);
     void WriteResolved(const uint32_t fetch[6]);
+    void CopyResolvedOnHost(const xenos::TextureFetch& src, const xenos::TextureFetch& dst);
 
     // passes
     // Pass with its own vertex shader entry; false when its pipeline cannot be made
@@ -2246,7 +2249,8 @@ private:
     // motion vectors: as the scene's draws wrote them, then completed by reprojecting the depth where none did
     struct Motion {
         bool open = false;    // between kClearMotionBegin and the scene's end
-        bool active = false;  // open and not paused
+        bool active = false;  // open
+        bool still = false;   // over the ocean's layers, whose grid follows the camera: their water holds still
         uint64_t rt_key = 0;  // the scene's colour target
         ComPtr<ID3D12Resource> drawn;
         ComPtr<ID3D12Resource> done;
@@ -2258,7 +2262,7 @@ private:
         float last_clip[16] = {};
         bool has_last = false;
         float reproject[16] = {};
-        D3D12_GPU_VIRTUAL_ADDRESS consts[2] = {};  // b5: reprojected, then run over the previous constants
+        D3D12_GPU_VIRTUAL_ADDRESS consts[4] = {};  // b5 by MotionConstants::prev
         uint32_t draws = 0;
         uint32_t matched = 0;
     } motion_;
@@ -3217,6 +3221,17 @@ void FillBlend(const PipelineKey& k, D3D12_BLEND_DESC& d) {
         rt.RenderTargetWriteMask = UINT8(Bits(k.color_mask, 4 * i, 4));
     }
     if (k.motion) d.RenderTarget[kMotionTarget].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    // a blended draw's motion replaces what is behind only where its alpha covers (0 or 1 from the shader)
+    if (k.motion && d.RenderTarget[0].BlendEnable) {
+        D3D12_RENDER_TARGET_BLEND_DESC& m = d.RenderTarget[kMotionTarget];
+        m.BlendEnable = TRUE;
+        m.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        m.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        m.BlendOp = D3D12_BLEND_OP_ADD;
+        m.SrcBlendAlpha = D3D12_BLEND_ONE;
+        m.DestBlendAlpha = D3D12_BLEND_ZERO;
+        m.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    }
     if (k.depth_only) {
         for (D3D12_RENDER_TARGET_BLEND_DESC& rt : d.RenderTarget) rt.RenderTargetWriteMask = 0;
         return;
@@ -4725,8 +4740,8 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         return;
     }
     if (flags & (kClearMotionPause | kClearMotionResume)) {
-        motion_.active = motion_.open && (flags & kClearMotionResume);
-        if (cap_) std::fprintf(cap_, "motion %s\n", motion_.active ? "resumed" : "paused");
+        motion_.still = motion_.open && (flags & kClearMotionPause);
+        if (cap_) std::fprintf(cap_, "motion %s\n", motion_.still ? "held still" : "resumed");
         return;
     }
     if (flags & kClearSceneBegin) {
@@ -5339,6 +5354,7 @@ void D3D12Backend::TargetView(ID3D12Resource* res, DXGI_FORMAT fmt, uint32_t sam
 void D3D12Backend::BeginMotion(const State& s) {
     motion_.open = false;
     motion_.active = false;
+    motion_.still = false;
     MotionCamera camera;
     if (!TakeMotionCamera(camera)) return;
     Target* rt = ColorTarget(s, 0, TargetHeight(s));
@@ -5349,24 +5365,25 @@ void D3D12Backend::BeginMotion(const State& s) {
     motion_.camera = camera;
     float clip[16];
     ClipMatrix(camera, clip);
-    MotionConstants c{};
-    if (!motion_.has_last || !Reprojection(clip, motion_.last_clip, c.reproject)) {
-        std::fill(std::begin(c.reproject), std::end(c.reproject), 0.0f);
-        for (int i = 0; i < 4; i++) c.reproject[i * 5] = 1;
+    float* reproject = motion_.reproject;
+    if (!motion_.has_last || !Reprojection(clip, motion_.last_clip, reproject)) {
+        std::fill(reproject, reproject + 16, 0.0f);
+        for (int i = 0; i < 4; i++) reproject[i * 5] = 1;
     }
     if (!motion_.has_last) upscale_.reset = true;
     if (cap_) {
         const float* p = camera.proj;
         const float* v = camera.view;
-        const float* r = c.reproject;
+        const float* r = reproject;
         const char* last = motion_.has_last ? "with" : "no";
         std::fprintf(cap_, "motion begin: proj %g %g %g %g, view at %g %g %g, reproject %g %g %g %g, %s last\n",
                      p[0], p[5], p[10], p[14], v[12], v[13], v[14], r[0], r[5], r[10], r[15], last);
     }
     std::memcpy(motion_.last_clip, clip, sizeof(clip));
-    std::memcpy(motion_.reproject, c.reproject, sizeof(c.reproject));
     motion_.has_last = true;
-    for (uint32_t prev = 0; prev < 2; prev++) {
+    MotionConstants c{};
+    std::memcpy(c.reproject, reproject, sizeof(c.reproject));
+    for (uint32_t prev = 0; prev < 4; prev++) {
         c.prev = prev;
         motion_.consts[prev] = UploadConstants(&c, sizeof(c));
     }
@@ -5385,6 +5402,7 @@ void D3D12Backend::BeginMotion(const State& s) {
 void D3D12Backend::EndMotion(const State& s) {
     if (!std::exchange(motion_.open, false)) return;
     motion_.active = false;
+    motion_.still = false;
     uint32_t height = TargetHeight(s);
     Target* rt = ColorTarget(s, 0, height);
     Target* ds = DepthTarget(s, height);
@@ -5429,19 +5447,30 @@ bool D3D12Backend::EnsureMotionTargets(uint32_t w, uint32_t h) {
     return true;
 }
 
-// a draw that writes depth and its colour unblended
+// a draw that writes depth and its colour unblended, or a depth tested one blended by its alpha (foliage, grass)
 bool D3D12Backend::MotionWanted(const State& s, const ShaderInfo& ps) const {
+    constexpr uint32_t kOpaque = 0x00010001;
+    constexpr uint32_t kAlphaBlend = 0x07060706;  // src alpha, one minus src alpha
     if (!motion_.active || !(ps.exports & 1) || !Bits(s.Reg(kRbColorMask), 0, 4)) return false;
     uint32_t depth = s.Reg(kRbDepthControl);
-    bool writes_depth = Bits(depth, 1, 1) && Bits(depth, 2, 1);
-    bool blended = (s.Reg(kRbBlendControl0) & 0x1FFF1FFF) != 0x00010001;
-    return writes_depth && !blended;
+    bool tested = Bits(depth, 1, 1);
+    bool writes_depth = tested && Bits(depth, 2, 1);
+    uint32_t blend = s.Reg(kRbBlendControl0) & 0x1FFF1FFF;
+    if (blend == kAlphaBlend) return tested;
+    return writes_depth && blend == kOpaque;
 }
 
-// the draw's vertex constants last frame when a draw of the same signature and object matches, else its reprojection
+// the draw's vertex constants last frame when a draw of the same signature and object matches, else none
 void D3D12Backend::BindMotion(const State& s, const DrawArgs& a, const ShaderInfo& vs) {
-    constexpr uint32_t kObjectPosition = 128;  // the render item's position, 825019E0
-    constexpr uint32_t kPositionBit = kObjectPosition / 2;
+    if (motion_.still) {
+        D3D12_GPU_VIRTUAL_ADDRESS cur = const_gpu_[kRootVsConsts];
+        if (Latch(binds_.roots[kRootPrevConsts], cur)) cl_->SetGraphicsRootConstantBufferView(kRootPrevConsts, cur);
+        D3D12_GPU_VIRTUAL_ADDRESS mc = motion_.consts[2];
+        if (Latch(binds_.roots[kRootMotion], mc)) cl_->SetGraphicsRootConstantBufferView(kRootMotion, mc);
+        return;
+    }
+    constexpr uint32_t kObjectPosition = 128;  // a character's position, 825019E0
+    constexpr uint32_t kWorld = 88;  // the world matrix transposed, its translation in c88.w to c90.w (823815C0)
     uint64_t stream = 0;
     uint64_t first = 0;
     if (!vs.fetches.empty() && a.streams) {
@@ -5451,11 +5480,16 @@ void D3D12Backend::BindMotion(const State& s, const DrawArgs& a, const ShaderInf
     const uint64_t parts[6] = {uint64_t(uintptr_t(s.vs)), uint64_t(uintptr_t(a.indices)),
                                uint64_t(a.count) << 32 | a.start, uint64_t(uint32_t(a.base_vertex)), stream, first};
     uint64_t signature = Hash64(parts, sizeof(parts));
+    auto reads = [&](uint32_t constant) { return vs.constants[constant / 128] >> (constant / 2 % 64) & 1; };
+    // only characters set c128, other meshes leave the last one's there
+    bool world = reads(kWorld) && reads(kWorld + 2);
+    bool placed = world || reads(kObjectPosition);
     float pos[3];
-    bool placed = vs.constants[kPositionBit / 64] >> (kPositionBit % 64) & 1;
-    const uint8_t* at = s.consts + kObjectPosition * 16;
-    for (uint32_t i = 0; i < 3 && placed; i++) pos[i] = std::bit_cast<float>(Be32(at + i * 4));
-    const MotionHistory::Draw& now = motion_history_.Record(signature, placed ? pos : nullptr, vs.constants, s.consts);
+    for (uint32_t i = 0; i < 3 && placed; i++) {
+        const uint8_t* at = world ? s.consts + (kWorld + i) * 16 + 12 : s.consts + kObjectPosition * 16 + i * 4;
+        pos[i] = std::bit_cast<float>(Be32(at));
+    }
+    MotionHistory::Draw& now = motion_history_.Record(signature, placed ? pos : nullptr, vs.constants, s.consts);
     const MotionHistory::Draw* last = motion_history_.Match(now);
     D3D12_GPU_VIRTUAL_ADDRESS consts = const_gpu_[kRootVsConsts];
     if (last) {
@@ -5465,11 +5499,16 @@ void D3D12Backend::BindMotion(const State& s, const DrawArgs& a, const ShaderInf
         motion_.matched++;
         if (cap_) CapMotionMatch(vs.constants, s.consts, up.cpu, placed);
     } else if (cap_) {
-        std::fprintf(cap_, "     motion %s: no match, reprojected as still\n", placed ? "placed" : "in order");
+        std::fprintf(cap_, "     motion %s: no match, left to the depth's reprojection\n", placed ? "placed" : "in order");
     }
     motion_.draws++;
+    // the first person view's depth range (82502F48: 0.9 to 1) moves with the camera, which the depth can't reproject
+    uint32_t vte = s.Reg(kPaClVteCntl);
+    bool attached = Bits(vte, 5, 1) && s.RegF(kPaClVportXScale + 5) >= 0.5f;
+    uint32_t mode = last ? 1 : 0;
+    if (!last && attached) mode = 3;
     if (Latch(binds_.roots[kRootPrevConsts], consts)) cl_->SetGraphicsRootConstantBufferView(kRootPrevConsts, consts);
-    D3D12_GPU_VIRTUAL_ADDRESS mc = motion_.consts[last ? 1 : 0];
+    D3D12_GPU_VIRTUAL_ADDRESS mc = motion_.consts[mode];
     if (Latch(binds_.roots[kRootMotion], mc)) cl_->SetGraphicsRootConstantBufferView(kRootMotion, mc);
 }
 
@@ -6536,6 +6575,7 @@ void D3D12Backend::Copy(const CopyArgs& c) {
     std::unique_lock lock(g_cpu.lock);
     if (dst.base && !dst.mip_min) {
         DropResolved(dst.base);
+        CopyResolvedOnHost(xenos::DecodeTextureFetch(c.src), dst);
         // resolves there count again from here, as QueueCopy counts them
         g_cpu.done.erase(dst.base);
         if (auto read = g_cpu.read.find(dst.base); read != g_cpu.read.end()) {
@@ -6548,6 +6588,24 @@ void D3D12Backend::Copy(const CopyArgs& c) {
     g_cpu.run++;
     lock.unlock();
     g_cpu.ran.notify_all();
+}
+
+// A copy of a resolve to a texture of its size and format is exact, so dst keeps the resolve at its host scale as well
+// as the title texels the copy writes. Read at title size instead, the copy showed softer than the frame it came from.
+void D3D12Backend::CopyResolvedOnHost(const xenos::TextureFetch& src, const xenos::TextureFetch& dst) {
+    auto latest = latest_.find(src.base);
+    if (src.mip_min || latest == latest_.end()) return;
+    auto from = resolved_.find(latest->second);
+    if (from == resolved_.end() || !from->second.res) return;
+    Resolved& in = from->second;
+    if (in.format != HostTextureFormat(dst) || in.width != dst.width || in.height != dst.height) return;
+    uint64_t key = ResolvedKey(dst.base, 0);
+    Resolved& out = EnsureResolved(key, in.format, in.width, in.height, in.scale);
+    if (!out.res) return;
+    Transition(in.res.Get(), in.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Transition(out.res.Get(), out.state, D3D12_RESOURCE_STATE_COPY_DEST);
+    cl_->CopyResource(out.res.Get(), in.res.Get());
+    latest_[dst.base] = key;
 }
 
 // title texels in host order into guest memory as the texture lays them out, as far as its level's memory reaches

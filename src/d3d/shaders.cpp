@@ -414,7 +414,8 @@ float4 VertexFetch(uint k, float index) {
 
 )";
 
-// motion vertex shaders run again over the previous constants, or reproject the title's clip position
+// motion vertex shaders run again over the previous constants, hold their position still in the world or on screen,
+// or leave it to the scene end's reprojection of the depth
 const char* kMotionPrelude = R"(cbuffer PrevConsts : register(b4) { float4 cp[256]; };
 cbuffer Motion : register(b5) {
     row_major float4x4 g_reproject;
@@ -1355,13 +1356,13 @@ VOut main(uint id : SV_VertexID) {
     v.o = o;
     v.cur = v.pos;
     // the run over the previous constants overwrites every register, so it goes last
-    float4 prev = mul(pos, g_reproject);
-    if (g_prev) {
+    v.prev = g_prev == 2 ? HostClip(mul(pos, g_reproject)) : 0;
+    if (g_prev == 3) v.prev = v.pos;
+    if (g_prev == 1) {
         Restart(id);
         RunPrev();
-        prev = TitleClip(o_pos);
+        v.prev = HostClip(TitleClip(o_pos));
     }
-    v.prev = HostClip(prev);
     return v;
 }
 )";
@@ -1415,7 +1416,7 @@ struct POut {
     }
     if (info_.writes_depth) s += "    float depth : SV_Depth;\n";
     if (!info_.exports && !info_.writes_depth) s += "    float4 c0 : SV_Target0;\n";
-    if (opt_.motion) s += F("    float2 motion : SV_Target%u;\n", kMotionTarget);
+    if (opt_.motion) s += F("    float4 motion : SV_Target%u;\n", kMotionTarget);
     if (Albedo()) s += F("    float4 albedo : SV_Target%u;\n", fcip::kAlbedoTarget);
     s += R"(};
 
@@ -1460,7 +1461,10 @@ POut main(PIn i) {
     if (opt_.motion) {
         s += "    float2 mv = (i.prev.xy / i.prev.w - i.cur.xy / i.cur.w) * float2(0.5, -0.5);\n";
         // behind the camera last frame or past two screens: off screen, finite for FSR and half floats
-        s += "    o.motion = i.prev.w > 0 ? clamp(mv, -2, 2) : 2;\n";
+        // w: a blended draw's motion covers where its alpha is over half
+        s += "    o.motion = float4(i.prev.w > 0 ? clamp(mv, -2, 2) : 2, 0, oC[0].w >= 0.5);\n";
+        // no previous position: kNoMotion, the scene end reprojects the depth there
+        s += "    if (i.prev.w == 0) o.motion.xy = 32768;\n";
     }
     if (Albedo()) {
         std::string material = F("c[%u].rgb", fcip::kMaterialColour);
