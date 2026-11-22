@@ -86,6 +86,12 @@ void Finish(uint32_t error, uint32_t text, uint32_t length) {
     g_request = {};
 }
 
+// the entry ends unanswered
+void Cancel() {
+    if (g_request.overlapped) Finish(kErrorCancelled, 0, 0);
+    g_request = {};
+}
+
 bool AllSpaces(uint32_t text, uint32_t length) {
     for (uint32_t i = 0; i < length; i++) {
         if (R16(text + i * 2) != ' ') return false;
@@ -188,6 +194,11 @@ bool fcip::keyboard::Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32
 }
 
 void fcip::keyboard::Tick(PPCContext& ctx) {
+    // a level starting frees the menus' page (821B16A8) without its close
+    if (g_request.open && R32(SYM_VirtualKeyboard_pointer) != g_keyboard) {
+        LOGR("virtual keyboard: page freed while open");
+        Cancel();
+    }
     keys::SetTextEntry(g_request.open);
     if (!g_request.open) return;
     FollowCase(ctx);
@@ -218,8 +229,7 @@ PPC_FUNC(GUEST(XShowKeyboardUI)) {
 
 // the page's back out, and its close after an accept
 PPC_FUNC(GUEST(VirtualKeyboard_Close)) {
-    if (g_request.overlapped) Finish(kErrorCancelled, 0, 0);
-    g_request = {};
+    Cancel();
     GUEST_ORIG(VirtualKeyboard_Close)(ctx, base);
 }
 

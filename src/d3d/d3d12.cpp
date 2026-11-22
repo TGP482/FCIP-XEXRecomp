@@ -1284,8 +1284,12 @@ float Density(float3 p, bool billows) {
     float3 q = float3(p.xy + kWind * height.w, p.z + kGrowth * height.w);
     // the finer octave grows against the coarse one, so shapes change rather than scroll
     float3 against = float3(q.xy, q.z - 2.5 * kGrowth * height.w);
-    float shape = Noise(q / kCell) * 0.65 + Noise(against / (kCell * 0.37) + 7.1) * 0.35;
-    float d = saturate((shape - (1 - terrain[0].x) - 0.3 * r * r) * 6) * saturate(r * 10);
+    float need = 1 - terrain[0].x + 0.3 * r * r;
+    float coarse = Noise(q / kCell) * 0.65;
+    // the finer octave adds at most 0.35
+    if (coarse + 0.35 <= need) return 0;
+    float shape = coarse + Noise(against / (kCell * 0.37) + 7.1) * 0.35;
+    float d = saturate((shape - need) * 6) * saturate(r * 10);
     if (!billows || d <= 0) return d;
     q.z += kChurn * height.w;
     float billow = Noise(q / kBillow) * 0.6 + Noise(q / (kBillow * 0.4)) * 0.4;
@@ -1303,7 +1307,18 @@ float SunThrough(float3 p, float3 toward) {
     float tau = depth * kSigma;
     return max(exp(-tau), 0.3 * exp(-0.25 * tau));
 }
+// true when cloud_apply blends the march's texel p into a sky pixel: it reads p for full size pixels 2p - 1 to 2p + 2
+bool SkyNear(int2 p) {
+    for (int y = -1; y <= 2; y++) {
+        for (int x = -1; x <= 2; x++) {
+            int2 at = clamp(p * 2 + int2(x, y), int2(vp.xy), int2(vp.xy + vp.zw) - 1);
+            if (Raw(at) <= 0) return true;
+        }
+    }
+    return false;
+}
 float4 cloud_march(float4 pos : SV_Position) : SV_Target {
+    if (!SkyNear(int2(pos.xy))) return float4(0, 0, 0, 1);
     float2 n = pos.xy * 2 * ndc.xy + ndc.zw;
     float3 dir = ToSky(normalize(ToWorld(float3((n - proj.zw) * proj.xy, 1))));
     if (dir.z <= 0.005) return float4(0, 0, 0, 1);
