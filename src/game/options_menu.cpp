@@ -208,11 +208,6 @@ constexpr uint32_t kListSetSprite = 0x8246F7A0u;  // (list, row, column, sprite)
 constexpr int16_t kIconRect[4] = {0, 20, 1, 21};  // left, right, top, bottom in the 22 unit row
 constexpr int kNameShift = 24;
 constexpr uint32_t kMenuSprites = 0x14u;
-constexpr uint32_t kAddSprite = 0x8216C440u;   // (sprites, std::string* path, std::string* name, u16 texels[4])
-constexpr uint32_t kFindSprite = 0x8246E1C8u;  // (sprites, name crc)
-constexpr uint16_t kIconTexels[4] = {0, 64, 0, 64};  // left, right, top, bottom of the SPA's 64x64 pictures
-constexpr uint32_t kSpriteText = 0x40u;
-constexpr uint32_t kSpriteBlockBytes = 0x1Cu * 2 + 8 + kSpriteText * 2;  // two std::strings, the texels, their texts
 
 // The value list: P_PopupValues as the stock rows open it for an option with more than two values (0x821BB360),
 // listing one of our rows' values; its key up (0x821BAEA0) is ours while it does
@@ -415,33 +410,9 @@ Saved& SaveControls(uint32_t page, uint32_t widget, uint32_t list) {
     return saved;
 }
 
-void PutText(uint32_t addr, const std::string& text) {
-    uint32_t n = std::min<uint32_t>(uint32_t(text.size()), kSpriteText - 1);
-    std::memcpy(kernel::HostPtr(addr), text.data(), n);
-    kernel::W8(addr + n, 0);
-}
-
 // the SPA picture's sprite, made once per menu
 uint32_t SpriteFor(PPCContext& ctx, uint32_t image) {
-    static const uint32_t block = mem::AllocSystem(kSpriteBlockBytes);
-    uint32_t sprites = Read32(g_native.obj + kMenuSprites);
-    if (!block || !AddrOk(sprites) || !achievement_icons::Ensure(ctx)) return 0;
-    std::string path = achievement_icons::Path(image);
-    std::string name = "achievement_" + std::to_string(image);
-    uint32_t path_string = block;
-    uint32_t name_string = path_string + kStringBytes;
-    uint32_t texels = name_string + kStringBytes;
-    uint32_t path_text = texels + 8;
-    uint32_t name_text = path_text + kSpriteText;
-    for (uint32_t i = 0; i < 4; i++) kernel::W16(texels + i * 2, kIconTexels[i]);
-    PutText(path_text, path);
-    PutText(name_text, name);
-    kernel::CallGuest(ctx, kStringInit, {path_string, path_text});
-    kernel::CallGuest(ctx, kStringInit, {name_string, name_text});
-    kernel::CallGuest(ctx, kAddSprite, {sprites, path_string, name_string, texels});
-    kernel::CallGuest(ctx, kStringFree, {path_string, 1, 0});
-    kernel::CallGuest(ctx, kStringFree, {name_string, 1, 0});
-    return uint32_t(kernel::CallGuest(ctx, kFindSprite, {sprites, Crc32(name)}));
+    return achievement_icons::Sprite(ctx, Read32(g_native.obj + kMenuSprites), image);
 }
 
 int ColumnOf(uint32_t list, uint32_t crc) {
