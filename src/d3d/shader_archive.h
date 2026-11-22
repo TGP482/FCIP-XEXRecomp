@@ -8,5 +8,7 @@ namespace d3d {
 void PrecompileShaderArchive();
 // on a loading screen: true while the archive still compiles, its threads then taking every core
 bool ShaderArchiveBusy();
+// how much of the archive is done while a loading screen holds for it, else -1
+int ShaderArchivePercent();
 
 }  // namespace d3d

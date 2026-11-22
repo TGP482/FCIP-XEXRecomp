@@ -39,6 +39,7 @@ struct ArchiveShader {
 
 std::vector<ArchiveShader> g_shaders;
 std::atomic<size_t> g_next{0};
+std::atomic<size_t> g_done{0};
 std::atomic<uint32_t> g_running{0};
 std::atomic<bool> g_loading{false};
 std::chrono::steady_clock::time_point g_start;
@@ -117,6 +118,7 @@ void CompileArchive() {
         bool motion = fcip::Temporal() && fsr::Upscaling();
         CompileArchiveShader(g_shaders[i], false);
         if (motion) CompileArchiveShader(g_shaders[i], true);
+        g_done++;
     }
     if (--g_running) return;
     float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - g_start).count();
@@ -138,6 +140,11 @@ void PrecompileShaderArchive() {
 bool ShaderArchiveBusy() {
     g_loading = true;
     return g_running > 0;
+}
+
+int ShaderArchivePercent() {
+    if (!g_loading || !g_running || g_shaders.empty()) return -1;
+    return int(g_done * 100 / g_shaders.size());
 }
 
 }  // namespace d3d

@@ -3963,6 +3963,8 @@ void D3D12Backend::FillKeyStates(const State& s, PipelineKey& k) const {
     uint32_t sr = s.Reg(kRbStencilRefMask);
     k.stencil = Bits(sr, 8, 8) | Bits(sr, 16, 8) << 8;
     k.su_mode = s.Reg(kPaSuScModeCntl) & 0x9FFF;
+    // the fog's map: a caster blocks the sun whichever way it faces
+    if (fog_map_) k.su_mode &= ~3u;
     if (Bits(k.su_mode, 11, 2)) k.poly_scale = s.RegF(kPaSuPolyOffsetFrontScale);
 }
 
@@ -4566,6 +4568,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         const Rect& p = s.predicated;
         std::fprintf(cap_, "     scissor %ld,%ld,%ld,%ld tiles %d,%d,%d,%d\n", sc.left, sc.top, sc.right, sc.bottom, p.x1,
                      p.y1, p.x2, p.y2);
+        std::fprintf(cap_, "     su mode %04x blend %08x\n", s.Reg(kPaSuScModeCntl) & 0xFFFF, s.Reg(kRbBlendControl0));
         if (gi_.mode) CapIllumination(s, k, bound, caster);
         CapTextures(s, ps_info);
     }
@@ -4874,7 +4877,7 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
 
 // Volumetric fog
 
-// fog marched through its own sun map, else the far one, blended over the bound colour target
+// fog marched through its own sun map, blended over the bound colour target
 void D3D12Backend::VolumetricFog(const State& s, const OcclusionArgs& a) {
     uint32_t height = TargetHeight(s);
     Target* rt = ColorTarget(s, 0, height);
@@ -4888,8 +4891,7 @@ void D3D12Backend::VolumetricFog(const State& s, const OcclusionArgs& a) {
     if (rect.right <= rect.left || rect.bottom <= rect.top) return;
     FogView view = FogViewAt(a.method);
     fcip::SunMaps maps = fcip::SunMapsDrawn();
-    uint32_t map = maps.fog_base ? maps.fog_base : maps.far_base;
-    Resolved* sun = view.shadowed ? SunMap(map) : nullptr;
+    Resolved* sun = view.shadowed && maps.fog_base ? SunMap(maps.fog_base) : nullptr;
     ID3D12Resource* shade = view.shaded ? ShadeTexture() : nullptr;
     float c[kAoConstants];
     OcclusionConstants(a, d, rect, rt->w, rt->h, c);

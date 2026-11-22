@@ -35,7 +35,7 @@ constexpr uint32_t kSunFirstSlot = 27;  // the pixel shader views the sharper ma
 // stock one
 struct SunMaps {
     uint32_t far_base = 0;
-    uint32_t fog_base = 0;  // the far map with every object casting, 0 when none was drawn for the fog
+    uint32_t fog_base = 0;  // the fog's map, every object casting, 0 when none was drawn
     uint32_t bases[kSunMaps] = {};
     uint32_t count = 0;
     uint32_t distance = 0;
@@ -52,6 +52,8 @@ SunMaps SunMapsDrawn();
 // title thread: world space into the far sun map as its last pass drew it, row major with the pass's depth flip, so
 // nearer the sun is deeper; false before one was drawn
 bool SunClip(float out[16]);
+// title thread: the same for the volumetric fog's own sun map
+bool FogClip(float out[16]);
 constexpr uint8_t kSunCascade = 1;     // ShaderOptions::tex_flags on a fetch of the far map
 constexpr uint8_t kSunSoft = 2;        // the same, with the soft filter on
 constexpr uint8_t kShadowSoft = 4;     // another light's shadow map, soft

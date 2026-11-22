@@ -21,8 +21,9 @@
 // one that covers the point. Ray traced shadows read the far map's casters, not its texels, so no sharper map is
 // drawn for them. Inside a vis area the far run draws the game's four light frustums, the sun among them;
 // the sharper runs draw one frustum, the top scored light, normally the sun. Only the sun's resolves are recorded.
-// With volumetric fog on, one more run before the far one draws the far map again with every object casting, those
-// without CastShadowMaps too; only the fog reads it, so ray traced shadows build no scene from it.
+// With volumetric fog on, one more run before the far one draws a map with every object casting, those without
+// CastShadowMaps too, at least as wide as the fog marches into the sky; off a map counts as lit, so a narrower one lets
+// the sun through every caster past its edge. Only the fog reads it, so ray traced shadows build no scene from it.
 //
 // Each sun camera culls its casters to the part of its map a receiver can read: receivers lie in the view frustum, or
 // with water in its reflection, and a caster only shades what it covers along the sun. The camera's side planes are
@@ -105,7 +106,8 @@ thread_local bool t_scene = false;  // the camera's pass FSR upscales, until its
 // sharper maps by index, map i at 2^i times the stock radius, then the far one
 constexpr int kNoMap = -1;
 constexpr int kFarMap = int(fcip::kSunMaps);
-constexpr int kFogMap = kFarMap + 1;  // the far map again with every object casting, for the volumetric fog
+constexpr int kFogMap = kFarMap + 1;  // every object casting, for the volumetric fog
+constexpr float kFogReach = 250;     // the fog map's least radius: the fog shader's kSky
 thread_local int t_map = kNoMap;
 thread_local bool t_sun = false;
 
@@ -117,6 +119,8 @@ uint32_t g_pool_side = 0;             // the sun map side the pool's surfaces we
 std::atomic<float> g_water{std::numeric_limits<float>::quiet_NaN()};  // the last reflection's water height
 float g_sun_clip[16] = {};  // title thread, SunClip's
 bool g_sun_clip_set = false;
+float g_fog_clip[16] = {};  // title thread, FogClip's
+bool g_fog_clip_set = false;
 std::mutex g_view_clip_lock;  // ViewClip's, read on other threads
 float g_view_clip[16] = {};
 float g_view_position[3] = {};
@@ -332,8 +336,8 @@ PPC_FUNC(GUEST(Shadow_Viewport)) {
 
 namespace {
 
-// the far sun camera's view times its projection, then the pass's flip 823B0580: z = w - z
-void LatchSunClip(uint32_t cam) {
+// a sun camera's view times its projection, then the pass's flip 823B0580: z = w - z
+void LatchSunClip(uint32_t cam, float (&out)[16]) {
     for (uint32_t r = 0; r < 4; r++) {
         for (uint32_t c = 0; c < 4; c++) {
             float sum = 0;
@@ -341,11 +345,10 @@ void LatchSunClip(uint32_t cam) {
                 float view = GF(cam + kCameraView + (r * 4 + k) * 4);
                 sum += view * GF(cam + kCameraProjection + (k * 4 + c) * 4);
             }
-            g_sun_clip[r * 4 + c] = sum;
+            out[r * 4 + c] = sum;
         }
-        g_sun_clip[r * 4 + 2] = g_sun_clip[r * 4 + 3] - g_sun_clip[r * 4 + 2];
+        out[r * 4 + 2] = out[r * 4 + 3] - out[r * 4 + 2];
     }
-    g_sun_clip_set = true;
 }
 
 // the camera pass's view times its projection
@@ -386,6 +389,17 @@ PPC_FUNC(GUEST(Shadow_Snap)) {
     Pair(ctx, 5, 6);
     t_sun = true;
     g_side = uint32_t(ctx.r[5]);
+    if (t_map == kFogMap) {
+        uint32_t map_side = uint32_t(ctx.r[5]);
+        float radius = GF(view + kViewShadowRadius);
+        // the snap widens the radius to 2 sin(fov / 2) times itself when that is more
+        float widen = std::max(1.0f, 2 * std::sin(GF(R32(view + kViewCamera) + kCameraFov) / 2));
+        WF(view + kViewShadowRadius, std::max(radius, kFogReach / widen));
+        GUEST_ORIG(Shadow_Snap)(ctx, base);
+        WF(view + kViewShadowRadius, radius);
+        CullToView(view, cam, map_side);
+        return;
+    }
     uint32_t distance = g_distance.load();
     if (t_map == kNoMap || !distance) {
         uint32_t map_side = uint32_t(ctx.r[5]);
@@ -450,7 +464,15 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
     t_pass_type = ok ? R32(pass + kPassType) : 0;
     t_under_water = ok && (R32(pass + kPassFlags) & 1);
     if (ok && t_pass_type <= fcip::kPassReflection) g_water = GF(pass + kPassWaterHeight);
-    if (ok && t_pass_type == fcip::kPassShadow && t_sun && t_map == kFarMap) LatchSunClip(R32(pass));
+    bool sun = ok && t_pass_type == fcip::kPassShadow && t_sun;
+    if (sun && t_map == kFarMap) {
+        LatchSunClip(R32(pass), g_sun_clip);
+        g_sun_clip_set = true;
+    }
+    if (sun && t_map == kFogMap) {
+        LatchSunClip(R32(pass), g_fog_clip);
+        g_fog_clip_set = true;
+    }
     if (ok && t_pass_type == fcip::kPassCamera) LatchViewClip(R32(pass));
     uint32_t w = ok ? R32(pass + kPassWidth) : 0;
     uint32_t h = ok ? R32(pass + kPassHeight) : 0;
@@ -560,7 +582,6 @@ bool fcip::FogMapRun() { return t_map == kFogMap; }
 void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     uint32_t distance = Get().draw_distance;
     bool rays = Get().shadow_filter >= kFilterRay && gpu::RayTracing();
-    bool every = rays && Get().shadow_filter == kFilterRayUltra;
     // the far map's texel grid must hold whole texels of each sharper map
     uint32_t maps = 0;
     while (!rays && maps < kSunMaps && (1u << maps) < distance && distance % (1u << maps) == 0) maps++;
@@ -569,8 +590,7 @@ void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     uint64_t quad = ctx.r[6];
     ctx.r[6] = 0;  // one frustum: the sharper maps hold only the sun
     for (uint32_t i = 0; i < maps; i++) RunCascade(ctx, base, int(i));
-    // ray traced ultra already makes every object cast into the far map
-    if (Get().volumetric_fog && !every) RunFogMap(ctx, base);
+    if (Get().volumetric_fog) RunFogMap(ctx, base);
     ctx.r[6] = quad;
     RunShadowMaps(ctx, base, kFarMap);
 }
@@ -607,6 +627,11 @@ fcip::SunMaps fcip::SunMapsDrawn() { return g_drawn; }
 bool fcip::SunClip(float out[16]) {
     std::copy(std::begin(g_sun_clip), std::end(g_sun_clip), out);
     return g_sun_clip_set;
+}
+
+bool fcip::FogClip(float out[16]) {
+    std::copy(std::begin(g_fog_clip), std::end(g_fog_clip), out);
+    return g_fog_clip_set;
 }
 
 bool fcip::ViewClip(float out[16]) {

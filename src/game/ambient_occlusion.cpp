@@ -273,8 +273,9 @@ bool ViewToWorld(float out[16]) {
     return true;
 }
 
-// the renderer's view space into the far sun map's clip space and up to the height over the sea, by column
-void FogMatrices(gpu::FogView& v) {
+// the renderer's view space into the far sun map's clip space, or the fog's own map's, and up to the height over the
+// sea, by column
+void FogMatrices(gpu::FogView& v, bool fog_map) {
     float world[16];
     float sun[16];
     if (!ViewToWorld(world)) return;
@@ -282,7 +283,8 @@ void FogMatrices(gpu::FogView& v) {
     float sea = GF(dev + kDevVsConstants + kVsWaterLevel * 16);
     for (uint32_t r = 0; r < 4; r++) v.height[r] = world[r * 4 + 2];
     v.height[3] -= sea;
-    if (!fcip::SunClip(sun)) return;
+    bool clip = fog_map ? fcip::FogClip(sun) : fcip::SunClip(sun);
+    if (!clip) return;
     for (uint32_t r = 0; r < 4; r++) {
         for (uint32_t c = 0; c < 4; c++) {
             float sum = 0;
@@ -294,9 +296,9 @@ void FogMatrices(gpu::FogView& v) {
 }
 
 // the sun as the receivers read its colour
-gpu::FogView SunView() {
+gpu::FogView SunView(bool fog_map = false) {
     gpu::FogView v;
-    FogMatrices(v);
+    FogMatrices(v, fog_map);
     uint32_t dev = R32(SYM_Device_pointer);
     for (uint32_t i = 0; i < 3; i++) v.sun_colour[i] = GF(dev + kDevPsConstants + kPsSunColour * 16 + i * 4);
     return v;
@@ -314,7 +316,7 @@ void Fog(const FogSplit& f) {
     if (!SceneArgs(a)) return;
     a.fog_scale = std::bit_cast<float>(f.scale);
     a.fog_bias = std::bit_cast<float>(f.bias);
-    gpu::FogView v = SunView();
+    gpu::FogView v = SunView(true);
     uint32_t dev = R32(SYM_Device_pointer);
     float world[16];
     if (ViewToWorld(world)) fcip::UpdateTerrainShade(world, GF(dev + kDevVsConstants + kVsWaterLevel * 16), v);
