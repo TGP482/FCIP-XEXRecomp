@@ -61,6 +61,7 @@ struct Variant {
     std::vector<uint8_t> dxil;
     uint64_t key = 0;  // of the DXIL, so a cached pipeline of other DXIL never matches
     std::atomic<bool> building{false};  // compiling on a build thread; dxil and key are read once it is done
+    std::string why;  // its options past the plain ones, logged when it is built in play
 };
 
 struct Shader {
@@ -2507,6 +2508,7 @@ private:
     // since the last log line
     uint32_t posted_shaders_ = 0;
     uint32_t skipped_draws_ = 0;
+    uint32_t motionless_draws_ = 0;
     uint32_t made_pipelines_ = 0;
     uint32_t posted_pipelines_ = 0;
     float pipeline_ms_ = 0;
@@ -3213,6 +3215,24 @@ Shader* D3D12Backend::CreateShader(ShaderStage stage, const uint32_t* code, size
 
 Variant* D3D12Backend::EnsureVariant(Shader* s, const ShaderOptions& opt) { return Compiled(VariantFor(s, opt)); }
 
+// the stage, the shader and what its options add to the plain variant the shader archive builds
+std::string BuildReason(const Shader& s, const ShaderOptions& opt) {
+    char head[32];
+    std::snprintf(head, sizeof(head), "%s %016llx", s.stage == ShaderStage::Pixel ? "pixel" : "vertex",
+                  static_cast<unsigned long long>(s.hash));
+    std::string why = head;
+    static const ShaderOptions kPlain;
+    if (std::memcmp(opt.export_map, kPlain.export_map, sizeof(opt.export_map)) != 0) why += ", linked";
+    if (opt.alpha_test) why += ", alpha test";
+    if (opt.vpos_reg >= 0) why += ", vpos";
+    if (opt.motion) why += ", motion";
+    for (uint32_t i = 0; i < 32; i++) {
+        if (opt.tex_flags[i]) why += ", flag " + std::to_string(i) + "=" + std::to_string(opt.tex_flags[i]);
+        if (opt.flat[i]) why += ", flat " + std::to_string(i);
+    }
+    return why;
+}
+
 // translated only: its info is known, its DXIL is made once a draw uses it
 Variant* D3D12Backend::VariantFor(Shader* s, const ShaderOptions& opt) {
     if (!s->last || std::memcmp(&s->last_opt, &opt, sizeof(opt)) != 0) {
@@ -3245,6 +3265,7 @@ Variant* D3D12Backend::FindVariant(Shader* s, const ShaderOptions& opt) {
     }
     v->hlsl = std::move(hlsl);
     v->profile = profile;
+    v->why = BuildReason(*s, opt);
     return v.get();
 }
 
@@ -3255,7 +3276,10 @@ Variant* D3D12Backend::Compiled(Variant* v) {
         g_perf.shaders++;
         if (FindHlsl(hlsl, v->profile, v->dxil)) {
             v->key = Hash64(v->dxil.data(), v->dxil.size());
-        } else if (Async()) {
+            return v;
+        }
+        LOGR("shader built in play: %s", v->why.c_str());
+        if (Async()) {
             v->building = true;
             posted_shaders_++;
             Post([v, hlsl = std::move(hlsl), profile = v->profile] { BuildVariant(*v, hlsl, profile); });
@@ -3263,10 +3287,7 @@ Variant* D3D12Backend::Compiled(Variant* v) {
             BuildVariant(*v, hlsl, v->profile);
         }
     }
-    if (v->building.load(std::memory_order_acquire)) {
-        skipped_draws_++;
-        return nullptr;
-    }
+    if (v->building.load(std::memory_order_acquire)) return nullptr;
     return v->dxil.empty() ? nullptr : v;
 }
 
@@ -4635,9 +4656,16 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     // only the variants drawn with are compiled
     vs = Compiled(vs);
     ps = ps ? Compiled(ps) : nullptr;
-    if (!vs || (s.ps && !ps)) return;
-    k.vs = vs->key;
-    k.ps = ps ? ps->key : 0;
+    bool ready = vs && (!s.ps || ps);
+    bool motion_later = bound.motion && Async();
+    if (!ready && !motion_later) {
+        skipped_draws_++;
+        return;
+    }
+    if (ready) {
+        k.vs = vs->key;
+        k.ps = ps ? ps->key : 0;
+    }
     D3D12_PRIMITIVE_TOPOLOGY topo;
     uint32_t count = 0;
     uint32_t min = 0;
@@ -4648,15 +4676,19 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     }
     if (!UploadIndices(a, topo, count, min, max)) return;
     FinishKey(s, topo, k);
-    // its motion vector pipeline still being made, the draw shows without motion vectors meanwhile
-    if (bound.motion && Async() && !PipelineReady(k, *vs, ps)) {
+    // its motion vector shaders or pipeline still being made, the draw shows without motion vectors meanwhile
+    if (motion_later && (!ready || !PipelineReady(k, *vs, ps))) {
         k = unbound;
         if (!BindDrawTargets(s, ps_info, k, bound, false, albedo)) return;
         vs_opt.motion = false;
         ps_opt.motion = false;
         vs = Compiled(VariantFor(s.vs, vs_opt));
         ps = Compiled(VariantFor(s.ps, ps_opt));
-        if (!vs || !ps) return;
+        if (!vs || !ps) {
+            skipped_draws_++;
+            return;
+        }
+        motionless_draws_++;
         k.vs = vs->key;
         k.ps = ps->key;
         FinishKey(s, topo, k);
@@ -7294,11 +7326,12 @@ void D3D12Backend::Present(const uint32_t front[6]) {
         fps_ = fps_frames_ / secs;
         fps_frames_ = 0;
         fps_start_ = now;
-        if (posted_shaders_ || skipped_draws_ || made_pipelines_ || posted_pipelines_) {
-            LOGR("async shaders: %u shaders started, %u draws waited, %u pipelines made in %.0f ms, %u built behind",
-                 posted_shaders_, skipped_draws_, made_pipelines_, pipeline_ms_, posted_pipelines_);
+        if (posted_shaders_ || skipped_draws_ || made_pipelines_ || posted_pipelines_ || motionless_draws_) {
+            LOGR("async shaders: %u shaders started, %u draws skipped, %u without motion vectors, %u pipelines made in %.0f ms, %u built behind",
+                 posted_shaders_, skipped_draws_, motionless_draws_, made_pipelines_, pipeline_ms_, posted_pipelines_);
             posted_shaders_ = 0;
             skipped_draws_ = 0;
+            motionless_draws_ = 0;
             made_pipelines_ = 0;
             posted_pipelines_ = 0;
             pipeline_ms_ = 0;
