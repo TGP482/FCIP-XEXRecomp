@@ -37,6 +37,7 @@
 #include "d3d/motion.h"
 #include "d3d/occlusion.h"
 #include "d3d/readback.h"
+#include "d3d/shader_archive.h"
 #include "d3d/cas_shader.h"
 #include "d3d/smaa_shader.h"
 #include "d3d/smaa_textures.h"
@@ -50,8 +51,22 @@
 namespace gpu {
 
 std::atomic<bool> g_ray_tracing{false};
+std::atomic<bool> g_helper_lanes{false};  // shader model 6.6: traced shadows skip the pixels kept for derivatives
 
 bool RayTracing() { return g_ray_tracing; }
+
+std::string VariantHlsl(ShaderStage stage, const uint32_t* code, size_t dwords, const ShaderOptions& opt,
+                        ShaderInfo& info, const wchar_t*& profile) {
+    std::string hlsl = TranslateShader(stage, code, dwords, opt, info);
+    bool rays = stage == ShaderStage::Pixel && opt.tex_flags[fcip::kShadowOut] == fcip::kShadowTraced;
+    profile = L"vs_6_0";
+    if (stage == ShaderStage::Pixel) profile = rays ? L"ps_6_5" : L"ps_6_0";
+    if (rays && g_helper_lanes) {
+        profile = L"ps_6_6";
+        hlsl = "#define HELPER_LANES\n" + hlsl;
+    }
+    return hlsl;
+}
 
 // a translation of the title's microcode for one set of options
 struct Variant {
@@ -2449,7 +2464,6 @@ private:
     uint64_t frame_ = 0;
     uint64_t presents_ = 0;
     bool tearing_ = false;
-    bool helper_lanes_ = false;  // shader model 6.6: ray traced shadows skip the pixels drawn only for derivatives
     uint32_t swap_w_ = 0, swap_h_ = 0;
     uint32_t guest_w_ = 0, guest_h_ = 0;
     float scale_ = 1;
@@ -2644,8 +2658,8 @@ bool D3D12Backend::CreateDevice() {
     if (o5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1) dev_.As(&dev5_);
     g_ray_tracing = dev5_ != nullptr;
     D3D12_FEATURE_DATA_SHADER_MODEL sm{D3D_SHADER_MODEL_6_6};
-    helper_lanes_ = SUCCEEDED(dev_->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))) &&
-                    sm.HighestShaderModel >= D3D_SHADER_MODEL_6_6;
+    g_helper_lanes = SUCCEEDED(dev_->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))) &&
+                     sm.HighestShaderModel >= D3D_SHADER_MODEL_6_6;
     LOGR("D3D12: RTAO %s", dev5_ ? "available" : "unavailable, GTAO in its place");
     return true;
 }
@@ -3255,16 +3269,7 @@ Variant* D3D12Backend::FindVariant(Shader* s, const ShaderOptions& opt) {
     auto& v = s->variants[key];
     if (v) return v.get();
     v = std::make_unique<Variant>();
-    std::string hlsl = TranslateShader(s->stage, s->code.data(), s->code.size(), opt, v->info);
-    bool rays = s->stage == ShaderStage::Pixel && opt.tex_flags[fcip::kShadowOut] == fcip::kShadowTraced;
-    const wchar_t* profile = L"vs_6_0";
-    if (s->stage == ShaderStage::Pixel) profile = rays ? L"ps_6_5" : L"ps_6_0";
-    if (rays && helper_lanes_) {
-        profile = L"ps_6_6";
-        hlsl = "#define HELPER_LANES\n" + hlsl;
-    }
-    v->hlsl = std::move(hlsl);
-    v->profile = profile;
+    v->hlsl = VariantHlsl(s->stage, s->code.data(), s->code.size(), opt, v->info, v->profile);
     v->why = BuildReason(*s, opt);
     return v.get();
 }

@@ -17,9 +17,11 @@
 #include <thread>
 #include <vector>
 
+#include "common/render_pass.h"
 #include "common/settings.h"
 #include "core/log.h"
 #include "d3d/fsr.h"
+#include "d3d/occlusion.h"
 #include "gpu/compiler.h"
 #include "gpu/shaders.h"
 #include "kernel/kernel.h"
@@ -94,24 +96,63 @@ std::vector<ArchiveShader> ReadArchive(const std::vector<uint8_t>& file) {
     return shaders;
 }
 
+void Compile(const ArchiveShader& a, const gpu::ShaderOptions& opt, gpu::ShaderInfo& info) {
+    gpu::ShaderStage stage = a.vertex ? gpu::ShaderStage::Vertex : gpu::ShaderStage::Pixel;
+    const wchar_t* profile = nullptr;
+    std::string hlsl = gpu::VariantHlsl(stage, a.code.data(), a.code.size(), opt, info, profile);
+    std::vector<uint8_t> dxil;
+    gpu::CompileHlsl(hlsl, profile, dxil);
+}
+
+// a light's shadow sampler, which draws give a kShadowOut mode whichever map they bind to it
+bool ReadsShadows(const gpu::ShaderInfo& info) {
+    if (info.textures.size() > fcip::kShadowOut) return false;
+    auto shadow = [](const gpu::TextureBinding& b) {
+        return b.dimension <= 1 && b.fetch >= fcip::kShadowFirstFetch && b.fetch <= fcip::kSunFetch;
+    };
+    return std::any_of(info.textures.begin(), info.textures.end(), shadow);
+}
+
+// the kShadowOut modes the settings draw shadows with: the sharper sun maps past 1x shadow distance, traced with ray
+// traced shadows. Soft filters flag each map apart, so their variants are left to the draws
+std::vector<uint8_t> ShadowModes() {
+    const fcip::Settings& s = fcip::Get();
+    bool soft = s.shadow_filter == fcip::kFilterSoft || s.shadow_filter == fcip::kFilterPcss;
+    std::vector<uint8_t> modes;
+    if (s.draw_distance > 1 && !soft) modes.push_back(fcip::kShadowCascades);
+    if (s.shadow_filter >= fcip::kFilterRay && gpu::RayTracing()) modes.push_back(fcip::kShadowTraced);
+    return modes;
+}
+
 // the variants a first draw asks for: a vertex shader linked straight through, a pixel shader with and without its
-// alpha test
+// alpha test, and for a shadow receiver its shadow modes, a traced alpha test with its depth pass
 void CompileArchiveShader(const ArchiveShader& a, bool motion) {
     gpu::ShaderOptions opt;
     opt.motion = motion;
-    std::vector<uint8_t> dxil;
+    gpu::ShaderInfo info;
     if (a.vertex) {
-        gpu::ShaderInfo info;
-        std::string hlsl = gpu::TranslateShader(gpu::ShaderStage::Vertex, a.code.data(), a.code.size(), opt, info);
-        gpu::CompileHlsl(hlsl, L"vs_6_0", dxil);
+        Compile(a, opt, info);
         return;
     }
     opt.vpos_reg = a.vpos;
+    bool ultra = fcip::Get().shadow_filter == fcip::kFilterRayUltra;
     for (bool alpha : {false, true}) {
         opt.alpha_test = alpha;
-        gpu::ShaderInfo info;
-        std::string hlsl = gpu::TranslateShader(gpu::ShaderStage::Pixel, a.code.data(), a.code.size(), opt, info);
-        gpu::CompileHlsl(hlsl, L"ps_6_0", dxil);
+        Compile(a, opt, info);
+        if (!ReadsShadows(info)) continue;
+        for (uint8_t mode : ShadowModes()) {
+            gpu::ShaderOptions shadow = opt;
+            shadow.tex_flags[fcip::kShadowOut] = mode;
+            bool traced = mode == fcip::kShadowTraced;
+            if (traced && alpha && ultra) shadow.tex_flags[fcip::kRayCoarseOut] = 1;
+            gpu::ShaderInfo shadow_info;
+            Compile(a, shadow, shadow_info);
+            if (!traced || !alpha) continue;
+            gpu::ShaderOptions depth = shadow;
+            depth.tex_flags[fcip::kShadowOut] = 0;
+            depth.tex_flags[fcip::kDepthOut] = 1;
+            Compile(a, depth, shadow_info);
+        }
     }
 }
 
