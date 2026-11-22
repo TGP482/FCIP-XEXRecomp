@@ -37,12 +37,23 @@ struct ArchiveShader {
     std::vector<uint32_t> code;
 };
 
+// the variants the settings draw with first, which loading screens wait for; then, with FSR's DLLs loaded, the
+// motion vector variants the settings leave out, so turning FSR or TAA on later finds them built
 std::vector<ArchiveShader> g_shaders;
+bool g_motion_first = false;
+size_t g_jobs = 0;
 std::atomic<size_t> g_next{0};
-std::atomic<size_t> g_done{0};
-std::atomic<uint32_t> g_running{0};
+std::atomic<size_t> g_done{0};  // of the first pass
+std::atomic<size_t> g_motion_done{0};
 std::atomic<bool> g_loading{false};
 std::chrono::steady_clock::time_point g_start;
+
+bool FirstPassDone() { return g_done >= g_shaders.size(); }
+
+void LogReady(const char* what) {
+    float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - g_start).count();
+    LOGR("d3d: %zu archive shaders ready%s in %.1f s", g_shaders.size(), what, seconds);
+}
 
 uint32_t Be32(const std::vector<uint8_t>& b, size_t at) {
     uint32_t v;
@@ -104,25 +115,26 @@ void CompileArchiveShader(const ArchiveShader& a, bool motion) {
     }
 }
 
-// the game's threads come first, except on a loading screen, where it only draws the screen
+// the game's threads come first, except on a loading screen holding for the first pass, where it only draws the screen
 void CompileArchive() {
     SetThreadDescription(GetCurrentThread(), L"shader archive");
-    bool loading = false;
+    bool hold = false;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
-    for (size_t i = g_next++; i < g_shaders.size(); i = g_next++) {
-        if (loading != g_loading) {
-            loading = g_loading;
-            SetThreadPriority(GetCurrentThread(), loading ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_LOWEST);
+    size_t count = g_shaders.size();
+    for (size_t j = g_next++; j < g_jobs; j = g_next++) {
+        if (hold != (g_loading && !FirstPassDone())) {
+            hold = !hold;
+            SetThreadPriority(GetCurrentThread(), hold ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_LOWEST);
         }
-        // motion vectors as Draw adds them: FSR or TAA on and FSR's DLLs loaded
-        bool motion = fcip::Temporal() && fsr::Upscaling();
-        CompileArchiveShader(g_shaders[i], false);
-        if (motion) CompileArchiveShader(g_shaders[i], true);
-        g_done++;
+        if (j >= count) {
+            CompileArchiveShader(g_shaders[j - count], !g_motion_first);
+            if (++g_motion_done == count) LogReady(" with motion vectors");
+            continue;
+        }
+        CompileArchiveShader(g_shaders[j], false);
+        if (g_motion_first) CompileArchiveShader(g_shaders[j], true);
+        if (++g_done == count) LogReady("");
     }
-    if (--g_running) return;
-    float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - g_start).count();
-    LOGR("d3d: %zu archive shaders ready in %.1f s", g_shaders.size(), seconds);
 }
 
 }  // namespace
@@ -131,19 +143,21 @@ void PrecompileShaderArchive() {
     std::vector<uint8_t> file;
     if (!kernel::ReadGameFile(kShaderArchive, file)) return;
     g_shaders = ReadArchive(file);
+    // motion vectors as Draw adds them: FSR or TAA on and FSR's DLLs loaded
+    g_motion_first = fcip::Temporal() && fsr::Upscaling();
+    g_jobs = g_shaders.size() * (fsr::Upscaling() && !g_motion_first ? 2 : 1);
     g_start = std::chrono::steady_clock::now();
     uint32_t threads = std::max(1u, std::thread::hardware_concurrency());
-    g_running = threads;
     for (uint32_t t = 0; t < threads; t++) std::thread(CompileArchive).detach();
 }
 
 bool ShaderArchiveBusy() {
     g_loading = true;
-    return g_running > 0;
+    return !FirstPassDone();
 }
 
 int ShaderArchivePercent() {
-    if (!g_loading || !g_running || g_shaders.empty()) return -1;
+    if (!g_loading || FirstPassDone()) return -1;
     return int(g_done * 100 / g_shaders.size());
 }
 
