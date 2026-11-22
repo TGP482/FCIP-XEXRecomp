@@ -4,6 +4,7 @@
 #include <mutex>
 
 #include "common/menu.h"
+#include "common/translations.h"
 #include "core/log.h"
 #include "image_symbols.h"
 #include "kernel/kernel.h"
@@ -70,9 +71,11 @@ bool EnsureText() {
 }
 
 // big endian UTF-16 (the setter measures it with wcslen); units written, the terminator included
+// our text in the game's language
 uint32_t WriteUtf16(uint32_t addr, const char* text) {
-    uint32_t n = 0;
-    for (; text[n] && n + 1 < kTextUnits; n++) kernel::W16(addr + n * 2, uint8_t(text[n]));
+    std::u16string wide = Utf16(Translate(text));
+    uint32_t n = std::min<uint32_t>(uint32_t(wide.size()), kTextUnits - 1);
+    for (uint32_t i = 0; i < n; i++) kernel::W16(addr + i * 2, wide[i]);
     kernel::W16(addr + n * 2, 0);
     return n + 1;
 }

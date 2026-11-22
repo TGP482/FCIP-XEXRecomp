@@ -31,6 +31,7 @@
 #include "common/monitor.h"
 #include "common/panel_colors.h"
 #include "common/settings.h"
+#include "common/translations.h"
 #include "core/input.h"
 #include "d3d/fsr.h"
 #include "d3d/occlusion.h"
@@ -858,7 +859,7 @@ void Section(const char* title) {
     float em = ImGui::GetFontSize();
     ImGui::Dummy(ImVec2(0, em * 0.5f));
     ImGui::PushStyleColor(ImGuiCol_Text, kHeading);
-    ImGui::TextUnformatted(title);
+    ImGui::TextUnformatted(Translate(title).c_str());
     ImGui::PopStyleColor();
     ImGui::Separator();
     ImGui::Dummy(ImVec2(0, em * 0.2f));
@@ -887,16 +888,17 @@ int OptionRow(const char* label, const char* value) {
     }
     ImGui::SetCursorPos(ImVec2(row_x + style.ItemInnerSpacing.x, row_y));
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
+    ImGui::TextUnformatted(Translate(label).c_str());
     ImGui::PushItemFlag(ImGuiItemFlags_NoNav | ImGuiItemFlags_ButtonRepeat, true);  // held arrows keep stepping
     float block_x = row_x + row_w - block_w;
     ImGui::SetCursorPos(ImVec2(block_x, row_y));
     if (ImGui::ArrowButton("##dec", ImGuiDir_Left)) step = -1;
     float value_x = block_x + row_h + style.ItemSpacing.x;
-    float pad = (value_w - ImGui::CalcTextSize(value).x) * 0.5f;
+    std::string shown = Translate(value);
+    float pad = (value_w - ImGui::CalcTextSize(shown.c_str()).x) * 0.5f;
     ImGui::SetCursorPos(ImVec2(value_x + std::max(pad, 0.0f), row_y));
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(value);
+    ImGui::TextUnformatted(shown.c_str());
     ImGui::SetCursorPos(ImVec2(value_x + value_w + style.ItemSpacing.x, row_y));
     if (ImGui::ArrowButton("##inc", ImGuiDir_Right)) step = 1;
     ImGui::PopItemFlag();
@@ -921,7 +923,7 @@ WideRow BeginWideRow(const char* label) {
     ImGui::PushID(label);
     ImGui::SetCursorPos(ImVec2(r.x + style.ItemInnerSpacing.x, r.y));
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
+    ImGui::TextUnformatted(Translate(label).c_str());
     ImGui::SetCursorPos(ImVec2(r.x + r.w - block_w, r.y));
     ImGui::SetNextItemWidth(block_w);
     return r;
@@ -940,10 +942,10 @@ void PlayerRow(const Row& r) {
     WideRow box = BeginWideRow(r.label);
     // opaque: the rows under the list showed through
     ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(kPanelBg.x, kPanelBg.y, kPanelBg.z, 1.0f));
-    if (ImGui::BeginCombo("##device", PortText(s.players[player]).c_str())) {
+    if (ImGui::BeginCombo("##device", Translate(PortText(s.players[player])).c_str())) {
         for (const app::Port& c : PlayerList(s, player)) {
             bool current = SamePort(c, s.players[player]);
-            bool picked = ImGui::Selectable(ChoiceText(s, player, c).c_str(), current) && !current;
+            bool picked = ImGui::Selectable(Translate(ChoiceText(s, player, c)).c_str(), current) && !current;
             if (picked && SetPlayer(s.players, player, c)) Changed(false);
             if (current) ImGui::SetItemDefaultFocus();
         }
@@ -959,7 +961,7 @@ void MicrophoneRow(const Row& r) {
     app::Settings& s = app::Get();
     WideRow box = BeginWideRow(r.label);
     ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(kPanelBg.x, kPanelBg.y, kPanelBg.z, 1.0f));
-    if (ImGui::BeginCombo("##device", RowText(kMicrophone, 0).c_str())) {
+    if (ImGui::BeginCombo("##device", Translate(RowText(kMicrophone, 0)).c_str())) {
         if (ImGui::IsWindowAppearing()) devices = xam::Microphones();
         std::vector<std::string> list = devices;
         list.insert(list.begin(), std::string());
@@ -969,7 +971,7 @@ void MicrophoneRow(const Row& r) {
             bool current = name == s.microphone;
             std::string text = name.empty() ? "SYSTEM DEFAULT" : name;
             if (current && gone) text += "  (UNPLUGGED)";
-            if (ImGui::Selectable(text.c_str(), current) && !current) {
+            if (ImGui::Selectable(Translate(text).c_str(), current) && !current) {
                 s.microphone = name;
                 Changed(false);
             }
@@ -1023,7 +1025,7 @@ void BindRow(const Row& r) {
     ImGui::PushID(r.label);
     ImGui::SetCursorPos(ImVec2(row_x + style.ItemInnerSpacing.x, row_y));
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(r.label);
+    ImGui::TextUnformatted(Translate(r.label).c_str());
     for (int slot = 0; slot < 2; slot++) {
         float x = value_end - float(2 - slot) * box_w - float(1 - slot) * style.ItemSpacing.x;
         ImGui::SetCursorPos(ImVec2(x, row_y));
@@ -1045,6 +1047,7 @@ void BindRow(const Row& r) {
                                                   ImGui::GetColorU32(lit ? ImGuiCol_Header : ImGuiCol_FrameBg));
         std::string value = capturing ? "PRESS A KEY" : keys::KeyLabel(keys::Key(r.id, slot));
         if (!capturing && slot == 0 && value.empty()) value = "UNBOUND";
+        value = Translate(value);
         float pad = (box_w - ImGui::CalcTextSize(value.c_str()).x) * 0.5f;
         ImGui::SetCursorPos(ImVec2(x + std::max(pad, 0.0f), row_y));
         ImGui::AlignTextToFramePadding();
@@ -1167,7 +1170,8 @@ void DrawTabs() {
         float w = (ImGui::GetContentRegionAvail().x - gaps) / float(count);
         for (int i = 0; i < count; i++) {
             ImGui::SetNextItemWidth(w);
-            if (ImGui::BeginTabItem(kPages[i], nullptr, set && i == g_page ? ImGuiTabItemFlags_SetSelected : 0)) {
+            std::string tab = Translate(kPages[i]) + "###" + kPages[i];
+            if (ImGui::BeginTabItem(tab.c_str(), nullptr, set && i == g_page ? ImGuiTabItemFlags_SetSelected : 0)) {
                 if (!set) g_page = i;
                 ImGui::EndTabItem();
             }
@@ -1185,15 +1189,15 @@ void ConfirmDefaults() {
     ImGui::OpenPopup("##defaults");
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (!ImGui::BeginPopupModal("##defaults", nullptr, kFlags)) return;
-    ImGui::TextUnformatted("Restore every setting on this page to its default?");
+    ImGui::TextUnformatted(Translate("Restore every setting on this page to its default?").c_str());
     float bw = ImGui::GetFontSize() * 8;
-    if (ImGui::Button("Yes", ImVec2(bw, 0))) {
+    if (ImGui::Button(Translate("Yes").c_str(), ImVec2(bw, 0))) {
         g_display_held = false;
         RestoreDefaults(g_page);
         g_confirm = false;
     }
     ImGui::SameLine();
-    if (ImGui::Button("No", ImVec2(bw, 0))) g_confirm = false;
+    if (ImGui::Button(Translate("No").c_str(), ImVec2(bw, 0))) g_confirm = false;
     if (!g_confirm) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 }
@@ -1211,10 +1215,10 @@ void DrawPanel() {
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar;
     if (ImGui::Begin("##settings", nullptr, kFlags)) {
-        const char* title = "SETTINGS";
-        float title_pad = (ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(title).x) * 0.5f;
+        std::string title = Translate("SETTINGS");
+        float title_pad = (ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(title.c_str()).x) * 0.5f;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(title_pad, 0.0f));
-        ImGui::TextUnformatted(title);
+        ImGui::TextUnformatted(title.c_str());
         DrawTabs();
         float footer = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeightWithSpacing() + em;
         ImGui::BeginChild("##rows", ImVec2(0, -footer), ImGuiChildFlags_NavFlattened);
@@ -1226,17 +1230,17 @@ void DrawPanel() {
         if (g_capture >= 0) hint = "Press a key or mouse button to bind, Escape cancels";
         else if (g_page == kKeyboardPage) hint = "Enter or a click rebinds, right click or Delete clears the key";
         else if (g_page == kDebugPage) hint = "Enter or a click loads the level, from the main menu or in game";
-        ImGui::TextUnformatted(hint);
+        ImGui::TextUnformatted(Translate(hint).c_str());
         ImGui::PopStyleColor();
         float bw = em * 8;
         float buttons_pad = ImGui::GetContentRegionAvail().x - bw * 3 - ImGui::GetStyle().ItemSpacing.x * 2;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(buttons_pad, 0.0f));
-        if (ImGui::Button("Back", ImVec2(bw, 0))) ToggleMenu();
+        if (ImGui::Button(Translate("Back").c_str(), ImVec2(bw, 0))) ToggleMenu();
         ImGui::SameLine();
-        if (ImGui::Button("Defaults", ImVec2(bw, 0)) && g_capture < 0) g_confirm = true;
+        if (ImGui::Button(Translate("Defaults").c_str(), ImVec2(bw, 0)) && g_capture < 0) g_confirm = true;
         ImGui::SameLine();
         ImGui::BeginDisabled(!g_display_held);
-        if (ImGui::Button("Apply", ImVec2(bw, 0))) Apply();
+        if (ImGui::Button(Translate("Apply").c_str(), ImVec2(bw, 0))) Apply();
         ImGui::EndDisabled();
         ConfirmDefaults();
     }

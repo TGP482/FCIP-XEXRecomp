@@ -14,6 +14,7 @@
 
 #include "app/app.h"
 #include "common/settings.h"
+#include "common/translations.h"
 #include "core/log.h"
 #include "game/virtual_keyboard.h"
 #include "kernel/memory.h"
@@ -98,8 +99,9 @@ uint32_t Scratch() {
 
 uint32_t GuestText(uint32_t slot, const std::string& text) {
     uint32_t addr = Scratch() + slot * kTextUnits * 2;
-    uint32_t n = std::min<uint32_t>(uint32_t(text.size()), kTextUnits - 1);
-    for (uint32_t i = 0; i < n; i++) W16(addr + i * 2, uint8_t(text[i]));
+    std::u16string wide = fcip::Utf16(text);
+    uint32_t n = std::min<uint32_t>(uint32_t(wide.size()), kTextUnits - 1);
+    for (uint32_t i = 0; i < n; i++) W16(addr + i * 2, wide[i]);
     W16(addr + n * 2, 0);
     return addr;
 }
@@ -276,7 +278,7 @@ bool CheckName(PPCContext& ctx, const std::string& name, uint32_t self) {
     const char* refusal = nullptr;
     if (!NameAllowed(name)) refusal = kNameRefused;
     else if (NameTaken(name, self)) refusal = kNameTaken;
-    if (refusal) fcip::keyboard::SetInfo(ctx, GuestText(1, refusal));
+    if (refusal) fcip::keyboard::SetInfo(ctx, GuestText(1, fcip::Translate(refusal)));
     return !refusal;
 }
 
@@ -316,7 +318,7 @@ bool OnNewName(PPCContext& ctx, uint32_t text, uint32_t length) {
 }
 
 bool AskName(PPCContext& ctx, fcip::keyboard::Accept accept) {
-    return fcip::keyboard::Open(ctx, GuestText(0, kDefaultName), GuestText(1, kCreateTitle), kMaxName, accept);
+    return fcip::keyboard::Open(ctx, GuestText(0, kDefaultName), GuestText(1, fcip::Translate(kCreateTitle)), kMaxName, accept);
 }
 
 bool ListShown(PPCContext& ctx, uint32_t menu) {
