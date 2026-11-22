@@ -197,6 +197,10 @@ LoadingScreen_Wait = 0x82156AB0
 Player_SetProperty = 0x8210A788
 SaveManager_NewStory = 0x8222AE98
 
+# CryGame, level loading (level_loading.cpp): a level's load under its loading screen, and one frame of that screen
+Game_LoadLevel = 0x82210920
+LoadingScreen_Draw = 0x82333228
+
 # custom levels (custom_level_start.cpp): a level's pack opened, a script file run or text loaded and run, the
 # mission's string table
 Streaming_OpenLevelPack = 0x823EEE18          # (streaming, level folder, from user content)

@@ -24,7 +24,6 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -429,14 +428,6 @@ struct CachedPipeline {
     D3D12_SHADER_BYTECODE vs{};
     D3D12_SHADER_BYTECODE ps{};
     D3D12_CACHED_PIPELINE_STATE blob{};
-};
-
-// a pipeline for a build thread to make, handed back with what it made
-struct BuiltPipeline {
-    PipelineKey key;
-    D3D12_SHADER_BYTECODE vs{};
-    D3D12_SHADER_BYTECODE ps{};
-    ComPtr<ID3D12PipelineState> pso;
 };
 
 
@@ -1953,8 +1944,8 @@ private:
     ID3D12PipelineState* EnsureDepthPass(const State& s, const ShaderOptions& ps_opt, const Variant& vs,
                                          PipelineKey& k);
     ID3D12PipelineState* FindPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps);
-    ComPtr<ID3D12PipelineState> MakePipeline(const BuiltPipeline& b) const;
-    void TakeBuilt();
+    ComPtr<ID3D12PipelineState> MakePipeline(const PipelineKey& k, D3D12_SHADER_BYTECODE vs,
+                                             D3D12_SHADER_BYTECODE ps) const;
     bool Async() const { return app::Get().async_shaders && !cap_; }
     void FillPipelineDesc(const PipelineKey& k, D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
     ID3D12PipelineState* EnsureResolvePipeline(DXGI_FORMAT rtv, bool ms, bool filter = false);
@@ -2426,15 +2417,11 @@ private:
     std::unordered_map<uint64_t, uint32_t> sampler_sets_;
     uint32_t samplers_used_ = 0;
     std::ofstream pipeline_cache_;  // each pipeline appended as it is made
-    // async shaders: pipelines on the build threads and those they made
-    std::unordered_set<uint64_t> building_;
-    std::vector<BuiltPipeline> built_;
-    std::mutex built_lock_;
-    std::atomic<bool> built_ready_{false};
     // since the last log line
     uint32_t posted_shaders_ = 0;
-    uint32_t posted_pipelines_ = 0;
     uint32_t skipped_draws_ = 0;
+    uint32_t made_pipelines_ = 0;
+    float pipeline_ms_ = 0;
 
     // the last constant blocks bound, skipped when unchanged; no address means upload again
     uint8_t const_last_[kRootCount][kConstBytes] = {};
@@ -3298,57 +3285,35 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PipelineKey& k, const Va
     return last_pso_;
 }
 
+// made at once even with async shaders: its shaders are built, and a draw skipped for it would vanish
 ID3D12PipelineState* D3D12Backend::FindPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps) {
-    if (built_ready_.load(std::memory_order_acquire)) TakeBuilt();
     uint64_t key = Hash64(&k, sizeof(k));
     auto it = pipelines_.find(key);
     if (it != pipelines_.end()) return it->second.Get();
-    BuiltPipeline b{k, {vs.dxil.data(), vs.dxil.size()}};
-    if (ps) b.ps = {ps->dxil.data(), ps->dxil.size()};
-    if (Async()) {
-        skipped_draws_++;
-        if (!building_.insert(key).second) return nullptr;
-        g_perf.pipelines++;
-        posted_pipelines_++;
-        Post([this, b]() mutable {
-            b.pso = MakePipeline(b);
-            std::lock_guard lock(built_lock_);
-            built_.push_back(std::move(b));
-            built_ready_.store(true, std::memory_order_release);
-        });
-        return nullptr;
-    }
+    D3D12_SHADER_BYTECODE vs_code{vs.dxil.data(), vs.dxil.size()};
+    D3D12_SHADER_BYTECODE ps_code{};
+    if (ps) ps_code = {ps->dxil.data(), ps->dxil.size()};
+    auto start = std::chrono::steady_clock::now();
     g_perf.pipelines++;
-    b.pso = MakePipeline(b);
-    if (b.pso) StorePipeline(b.key, b.vs, b.ps, b.pso.Get());
-    pipelines_[key] = b.pso;
-    return b.pso.Get();
+    ComPtr<ID3D12PipelineState> pso = MakePipeline(k, vs_code, ps_code);
+    made_pipelines_++;
+    pipeline_ms_ += std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (pso) StorePipeline(k, vs_code, ps_code, pso.Get());
+    pipelines_[key] = pso;
+    return pso.Get();
 }
 
-// any thread
-ComPtr<ID3D12PipelineState> D3D12Backend::MakePipeline(const BuiltPipeline& b) const {
+ComPtr<ID3D12PipelineState> D3D12Backend::MakePipeline(const PipelineKey& k, D3D12_SHADER_BYTECODE vs,
+                                                       D3D12_SHADER_BYTECODE ps) const {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
-    FillPipelineDesc(b.key, d);
-    d.VS = b.vs;
-    d.PS = b.ps;
+    FillPipelineDesc(k, d);
+    d.VS = vs;
+    d.PS = ps;
     ComPtr<ID3D12PipelineState> pso;
     if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) {
-        LOGE("D3D12: pipeline %016llx failed", static_cast<unsigned long long>(Hash64(&b.key, sizeof(b.key))));
+        LOGE("D3D12: pipeline %016llx failed", static_cast<unsigned long long>(Hash64(&k, sizeof(k))));
     }
     return pso;
-}
-
-// what the build threads made, kept and written to the cache on the render thread
-void D3D12Backend::TakeBuilt() {
-    std::lock_guard lock(built_lock_);
-    built_ready_ = false;
-    for (BuiltPipeline& b : built_) {
-        uint64_t key = Hash64(&b.key, sizeof(b.key));
-        building_.erase(key);
-        if (b.pso) StorePipeline(b.key, b.vs, b.ps, b.pso.Get());
-        pipelines_[key] = std::move(b.pso);
-    }
-    built_.clear();
 }
 
 ID3D12PipelineState* D3D12Backend::EnsureResolvePipeline(DXGI_FORMAT rtv, bool ms, bool filter) {
@@ -7052,12 +7017,13 @@ void D3D12Backend::Present(const uint32_t front[6]) {
         fps_ = fps_frames_ / secs;
         fps_frames_ = 0;
         fps_start_ = now;
-        if (posted_shaders_ || posted_pipelines_ || skipped_draws_) {
-            LOGR("async shaders: %u shaders and %u pipelines started, %u draws waited", posted_shaders_,
-                 posted_pipelines_, skipped_draws_);
+        if (posted_shaders_ || skipped_draws_ || made_pipelines_) {
+            LOGR("async shaders: %u shaders started, %u draws waited, %u pipelines made in %.0f ms", posted_shaders_,
+                 skipped_draws_, made_pipelines_, pipeline_ms_);
             posted_shaders_ = 0;
-            posted_pipelines_ = 0;
             skipped_draws_ = 0;
+            made_pipelines_ = 0;
+            pipeline_ms_ = 0;
         }
     }
     if (diag::Perf()) LogPerf();
