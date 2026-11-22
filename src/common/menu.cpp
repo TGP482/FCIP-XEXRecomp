@@ -23,6 +23,7 @@
 #include <imgui.h>
 
 #include "app/app.h"
+#include "common/achievements.h"
 #include "audio/xaudio2.h"
 #include "common/custom_levels.h"
 #include "common/gyro.h"
@@ -1216,7 +1217,8 @@ bool BoundTo(int action, uint8_t key) { return key && (key == keys::Key(action, 
 }  // namespace
 
 bool MenuOpen() {
-    return g_open.load(std::memory_order_relaxed) || g_editor_typing.load(std::memory_order_relaxed);
+    return g_open.load(std::memory_order_relaxed) || g_editor_typing.load(std::memory_order_relaxed) ||
+           achievements::IsOpen();
 }
 
 uint32_t SettingsRevision() { return g_revision; }
@@ -1248,12 +1250,13 @@ void DrawUi(double fps) {
     if (g_capture >= 0) io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     else io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     g_editor_mouse = g_editor_ui && g_editor_ui(fps);
+    achievements::Draw();
     if (!g_open) return;
     PollCapture();
     DrawPanel();
 }
 
-// the settings panel key opens and closes the panel, Escape closes it; a capture takes every key
+// the settings panel key opens and closes the panel, Escape closes it or the achievements; a capture takes every key
 bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
     // onto the MONITOR setting's monitor first, the host then sizes the window on the monitor it is on
     if (msg == WM_CREATE) {
@@ -1276,6 +1279,11 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
     }
     if (key_down && !capturing && (panel_key || (wp == VK_ESCAPE && g_open))) {
         ToggleMenu();
+        *result = 0;
+        return true;
+    }
+    if (key_down && !capturing && wp == VK_ESCAPE && achievements::IsOpen()) {
+        achievements::Close();
         *result = 0;
         return true;
     }

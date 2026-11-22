@@ -16,6 +16,7 @@ constexpr uint32_t kCrcExit = 0x5C6EA6F2u;  // B_Exit
 constexpr uint32_t kCrcCustomCampaign = 0x16D94647u;  // B_CustomCampaign
 constexpr uint32_t kCrcOnline = 0x9B680E53u;  // B_Live, MULTIPLAYER's ONLINE
 constexpr uint32_t kCrcStatistics = 0x02CF2666u;  // B_Statistics, the Live menu's, our MULTIPLAYER entry
+constexpr uint32_t kCrcAchievements = 0xED50CBB6u;  // B_Achievements
 
 // CUIWidget
 constexpr uint32_t kWidgetNameCrc = 0x04u;

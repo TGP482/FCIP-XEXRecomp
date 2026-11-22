@@ -1,10 +1,12 @@
 // default.xex: the settings entries in the User page and the pause menu's OPTIONS, the pages they open inside
-// CONTROLLER OPTIONS, EXIT and CUSTOM CAMPAIGN on the main menu and the main menu watermark
+// CONTROLLER OPTIONS, EXIT and CUSTOM CAMPAIGN on the main menu, ACHIEVEMENTS on the main and pause menus and the main
+// menu watermark
 #include <algorithm>
 #include <iterator>
 #include <string>
 #include <vector>
 
+#include "common/achievements.h"
 #include "common/custom_levels.h"
 #include "common/keys.h"
 #include "common/menu.h"
@@ -44,6 +46,17 @@ constexpr uint32_t kSystemLink = 0xF65128AAu;   // B_SystemLink
 constexpr uint32_t kSplitScreen = 0x8FA9611Fu;  // B_SplitScreen
 constexpr uint32_t kMapManager = 0x68328DDEu;   // B_MapManager
 constexpr uint32_t kMultiplayerRows[] = {kCrcOnline, kSystemLink, kSplitScreen, kMapManager};
+// the pause menu, P_StartMenu, its rows top to bottom (press 821AE910)
+constexpr uint32_t kCrcPausePage = 0xA3E9B4F1u;
+constexpr uint32_t kCrcQuitToMenu = 0xDC334718u;  // B_Quit_to_Menu
+constexpr uint32_t kPauseRows[] = {
+    0x0DA8F792u,  // B_Resume
+    0x58EF6748u,  // B_Restart_Level
+    0x15F3847Du,  // B_Revert_Save
+    kCrcOptions, kCrcQuitToMenu,
+    0xA3AAFBC8u,  // B_CheatMenu
+    0xC4E8B388u,  // B_LiveMenu
+};
 
 // primary vtables of the two menu classes
 constexpr uint32_t kVtProfile = 0x8205CBA8u;  // CryProfile, P_EditProfile is pages[1]
@@ -61,6 +74,11 @@ uint32_t ProfilePage(uint32_t self, uint32_t index) {
 uint32_t MainPage(uint32_t self) {
     uint32_t page = Read32(Read32(self + kProfilePages) + 4);
     return page && Read32(page + kPageNameCrc) == kCrcMainPage ? page : 0;
+}
+
+uint32_t PausePage(uint32_t self) {
+    uint32_t page = Read32(Read32(self + kProfilePages));
+    return page && Read32(page + kPageNameCrc) == kCrcPausePage ? page : 0;
 }
 
 uint32_t MultiplayerPage(uint32_t self) {
@@ -101,13 +119,17 @@ void AddEntriesFor(PPCContext& ctx, uint32_t self) {
         uint32_t page = ProfilePage(self, 4);
         AddEntries(ctx, page, FindWidget(page, kCrcVideo), kCrcVideo, kCrcControlSetup,
                    {kCrcRecompSettings, kCrcMouseKeyboard, kCrcControllerSettings});
+        if (uint32_t pause = PausePage(self)) {
+            AddEntries(ctx, pause, LastRow(pause, kPauseRows), kCrcQuitToMenu, kCrcOptions, {kCrcAchievements});
+        }
     } else if (vtable == kVtPreGame) {
         uint32_t page = MainPage(self);
         // CUSTOM CAMPAIGN only with custom levels to play
         if (FindCustomLevels().empty()) {
-            AddEntries(ctx, page, LastRow(page, kMainRows), kCrcCredits, kCrcOptions, {kCrcExit});
+            AddEntries(ctx, page, LastRow(page, kMainRows), kCrcCredits, kCrcOptions, {kCrcAchievements, kCrcExit});
         } else {
-            AddEntries(ctx, page, LastRow(page, kMainRows), kCrcCredits, kCrcOptions, {kCrcCustomCampaign, kCrcExit});
+            AddEntries(ctx, page, LastRow(page, kMainRows), kCrcCredits, kCrcOptions,
+                       {kCrcCustomCampaign, kCrcAchievements, kCrcExit});
         }
         // STATISTICS under MULTIPLAYER's last row, as the Live menu had it
         if (uint32_t mp = MultiplayerPage(self)) {
@@ -685,6 +707,7 @@ PPC_EXTERN_FUNC(__imp__sub_821D6200);
 PPC_EXTERN_FUNC(__imp__sub_821D65F0);
 PPC_EXTERN_FUNC(__imp__sub_821BBA70);
 PPC_EXTERN_FUNC(__imp__sub_821BAEA0);
+PPC_EXTERN_FUNC(__imp__sub_821AE910);
 
 // base menu init: resolves the pages, attaches listeners and widgets; the pages exist from here on
 PPC_FUNC(sub_8216FA60) {
@@ -705,7 +728,8 @@ PPC_FUNC(sub_8216F570) {
     uint32_t page = uint32_t(ctx.r[4]);
     __imp__sub_8216F570(ctx, base);
     uint32_t crc = Read32(page + kPageNameCrc);
-    if (crc == kCrcEditProfile || crc == kCrcMainPage || crc == kCrcMultiplayerPage) SetEntryCaptions(ctx, page);
+    bool ours = crc == kCrcEditProfile || crc == kCrcMainPage || crc == kCrcMultiplayerPage || crc == kCrcPausePage;
+    if (ours) SetEntryCaptions(ctx, page);
 }
 
 // User page help text
@@ -742,6 +766,16 @@ PPC_FUNC(sub_821AF940) {
         return;
     }
     OpenNative(ctx, base, ProfilePage(uint32_t(ctx.r[3]), 4), page, __imp__sub_821AF940);
+}
+
+// pause menu press, r4 the widget
+PPC_FUNC(sub_821AE910) {
+    if (Read32(uint32_t(ctx.r[4]) + kWidgetNameCrc) != kCrcAchievements) {
+        __imp__sub_821AE910(ctx, base);
+        return;
+    }
+    achievements::Open();
+    ctx.r[3] = 0;
 }
 
 // CONTROLLER OPTIONS open (vtable +0x24), r3 the page object

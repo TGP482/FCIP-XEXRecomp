@@ -2,7 +2,7 @@
 // presses STORY MODE, or EXPANSION CAMPAIGN for an Evolution level, so the game's own new game and save slot pages
 // run, and the level they start becomes the first custom level. Its page reads CUSTOM CAMPAIGN and LOAD A MAP lists
 // the custom levels. MULTIPLAYER's ONLINE reads ONLINE JOIN IP and types the system link join address on the virtual
-// keyboard, and its STATISTICS opens the Live menu's stats pages.
+// keyboard, and its STATISTICS opens the Live menu's stats pages. ACHIEVEMENTS opens the achievements dialog.
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -17,6 +17,7 @@
 #include <string>
 
 #include "app/app.h"
+#include "common/achievements.h"
 #include "common/custom_levels.h"
 #include "common/menu.h"
 #include "common/widgets.h"
@@ -233,6 +234,10 @@ PPC_FUNC(sub_821B1FD0) {
         OpenStatistics(ctx);
         return;
     }
+    if (crc == kCrcAchievements) {
+        fcip::achievements::Open();
+        return;
+    }
     if (crc != kCrcCustomCampaign) {
         __imp__sub_821B1FD0(ctx, base);
         return;
@@ -267,7 +272,7 @@ PPC_FUNC(sub_821B7B40) {
         if (help) kernel::CallGuest(ctx, kSetPageHelp, {self, TopPage(ctx, self), help, 0});
         return;
     }
-    if (crc != kCrcExit && crc != kCrcCustomCampaign) return;
+    if (crc != kCrcExit && crc != kCrcCustomCampaign && crc != kCrcAchievements) return;
     if (uint32_t help = View(HelpFor(crc))) kernel::CallGuest(ctx, kSetPageHelp, {self, page, help, 0});
 }
 
