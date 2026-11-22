@@ -29,8 +29,11 @@
 // with water in its reflection, and a caster only shades what it covers along the sun. The camera's side planes are
 // pulled in to that span; its matrices keep the whole map, so only the engine's culling sees the narrower box.
 //
-// The snap sizes and places each map by the view's angle, read from m_fov, which stays stock outside the camera update
-// while the projection carries the FOV setting; it runs with the wider of the two, so the maps reach the screen edges.
+// The snap sizes a map by m_fov, which stays stock outside the camera update, and puts the eye on its back edge, which
+// holds the view's ground out to the radius only at 90 degrees looking ahead. Off a map counts as lit, so the view's
+// rays out to the radius, flattened at the eye's height, must fit: a lone map is grown and moved over them, in eighths
+// of its side so its texels don't swim; with sharper maps only the far map reaches further, by whole steps of the grid
+// that holds every map's texels, so the sharper maps keep their stock size and the shared centre.
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -85,6 +88,7 @@ constexpr uint32_t kPlaneSize = 0x10;
 constexpr uint32_t kPlaneD = 0xC;
 constexpr double kSideCos = 0.99;      // a side plane's normal lies along the map's right or up
 constexpr double kReceiverTexels = 3;  // the receivers' taps reach past the texel they fall on
+constexpr double kFitSteps = 8;        // a fitted lone map grows in eighths of its side
 // the view the sun camera follows: its camera and the shadow radius
 constexpr uint32_t kViewCamera = 0x0;
 constexpr uint32_t kViewShadowRadius = 0x34;
@@ -114,7 +118,8 @@ constexpr float kFogReach = 250;     // the fog map's least radius: the fog shad
 thread_local int t_map = kNoMap;
 thread_local bool t_sun = false;
 
-std::atomic<uint32_t> g_distance{0};  // the far map's radius over the stock one, 0 without sharper maps
+std::atomic<uint32_t> g_distance{0};  // the shadow distance setting, 0 without sharper maps
+std::atomic<uint32_t> g_reach{0};     // the far map's radius over the stock one, at least the distance
 std::atomic<uint32_t> g_maps{0};      // sharper maps drawn
 std::atomic<uint32_t> g_side{0};      // the sun map's guest side, as ShadowMatrix takes it
 std::atomic<float> g_depth{0};        // the far sun camera's depth range over its width
@@ -149,7 +154,7 @@ fcip::SunMaps g_drawn;    // render thread
 uint32_t g_fog_base = 0;  // render thread, the fog map until its far map resolves
 
 // a map's radius over the stock one
-uint32_t Reach(int map) { return map >= kFarMap ? g_distance.load() : 1u << map; }
+uint32_t Reach(int map) { return map >= kFarMap ? g_reach.load() : 1u << map; }
 
 // the replacement side, 0 when this is not the shadow map or the side stays
 uint32_t Wanted(uint32_t side) {
@@ -231,14 +236,81 @@ bool ViewCorners(uint32_t eye, Vec (&at)[8]) {
     return true;
 }
 
-// the angle the snap sizes a map by: the projection's horizontal angle when wider than m_fov
-float SnapFov(uint32_t eye) {
-    uint32_t proj = eye + kCameraProjection;
-    float fov = GF(eye + kCameraFov);
-    double scale_x = std::abs(GF(proj));
-    if (!(scale_x > 0)) return fov;
-    double tan_x = (1 + std::abs(GF(proj + 8 * 4))) / scale_x;
-    return std::max(fov, float(2 * std::atan(tan_x)));
+// the view's rays out to the shadow radius, flattened at the eye's height, as offsets from a sun camera's centre along
+// its right and up
+bool ViewSpan(uint32_t view, uint32_t cam, Span& across, Span& down) {
+    Vec at[8];
+    if (!ViewCorners(R32(view + kViewCamera), at)) return false;
+    double radius = GF(view + kViewShadowRadius);
+    Vec forward = Unit(GV(cam + kCameraForward));
+    Vec right = Unit(Cross(forward, GV(cam + kCameraUp)));
+    Vec up = Cross(right, forward);
+    Vec centre = GV(cam + kCameraPosition);
+    Vec eye = at[0];  // a near plane corner, the eye to within the near distance
+    auto add_point = [&](Vec point) {
+        Vec offset = Madd(point, centre, -1);
+        across.Add(Dot(right, offset));
+        down.Add(Dot(up, offset));
+    };
+    auto add = [&](Vec ray) {
+        Vec u = Unit(ray);
+        add_point({eye.x + u.x * radius, eye.y + u.y * radius, eye.z});
+    };
+    Vec d[4];
+    for (int i = 0; i < 4; i++) {
+        d[i] = Unit(Madd(at[i + 4], at[i], -1));
+        add(d[i]);
+    }
+    // corners by index: bit 0 right, bit 1 up
+    add(Madd(d[0], d[1], 1));
+    add(Madd(d[2], d[3], 1));
+    add(Madd(d[0], d[2], 1));
+    add(Madd(d[1], d[3], 1));
+    add(Madd(Madd(d[0], d[1], 1), Madd(d[2], d[3], 1), 1));
+    add_point(eye);
+    return true;
+}
+
+// a lone sun map grown and moved over the view, its centre on the new texel grid, see the top of the file
+void FitToView(PPCContext& ctx, uint32_t view, uint32_t cam, uint32_t map_side) {
+    Span across;
+    Span down;
+    if (!map_side || !ViewSpan(view, cam, across, down)) return;
+    double side = GF(cam + kCameraOrthoWidth);
+    double half = side / 2;
+    double slack = half + kReceiverTexels * side / map_side;
+    if (across.lo >= -slack && across.hi <= slack && down.lo >= -slack && down.hi <= slack) return;
+    double left = std::min(across.lo, -half);
+    double right_edge = std::max(across.hi, half);
+    double bottom = std::min(down.lo, -half);
+    double top = std::max(down.hi, half);
+    double need = std::max(right_edge - left, top - bottom) / side;
+    side *= std::ceil(need * kFitSteps) / kFitSteps;
+    Vec forward = Unit(GV(cam + kCameraForward));
+    Vec up = Unit(GV(cam + kCameraUp));
+    Vec right = Unit(Cross(forward, up));
+    Vec p = GV(cam + kCameraPosition);
+    p = Madd(Madd(p, right, (left + right_edge) / 2), up, (bottom + top) / 2);
+    SnapAlong(p, right, side / map_side, 0);
+    SnapAlong(p, up, side / map_side, 0);
+    WF(cam + kCameraPosition, float(p.x));
+    WF(cam + kCameraPosition + 4, float(p.y));
+    WF(cam + kCameraPosition + 8, float(p.z));
+    WF(cam + kCameraOrthoWidth, float(side));
+    WF(cam + kCameraOrthoHeight, float(side));
+    CallGuest(ctx, SYM_CCamera_Update, {cam});
+}
+
+// the far map's radius over the stock one: the distance, raised in steps of grid to hold the view about the shared
+// centre of maps a stock radius wide
+uint32_t FarReach(uint32_t view, uint32_t cam, uint32_t distance, uint32_t grid) {
+    Span across;
+    Span down;
+    if (!ViewSpan(view, cam, across, down)) return distance;
+    double half = std::max({-across.lo, across.hi, -down.lo, down.hi});
+    double need = 2 * half / GF(cam + kCameraOrthoWidth);
+    uint32_t steps = uint32_t(std::ceil(need / grid));
+    return std::max(distance, steps * grid);
 }
 
 // the sun camera's side planes pulled in to the view's span, see the top of the file
@@ -393,8 +465,10 @@ void LatchDepthRatio(uint32_t cam) {
     g_depth = float(range / GF(cam + kCameraOrthoWidth));
 }
 
+}  // namespace
+
 // sun shadow camera, texel snapping, r4 the view, r5 r6 the size, r7 the camera
-void SnapSun(PPCContext& ctx, uint8_t* base) {
+PPC_FUNC(GUEST(Shadow_Snap)) {
     uint32_t view = uint32_t(ctx.r[4]);
     uint32_t cam = uint32_t(ctx.r[7]);
     Pair(ctx, 5, 6);
@@ -415,6 +489,7 @@ void SnapSun(PPCContext& ctx, uint8_t* base) {
     if (t_map == kNoMap || !distance) {
         uint32_t map_side = uint32_t(ctx.r[5]);
         GUEST_ORIG(Shadow_Snap)(ctx, base);
+        FitToView(ctx, view, cam, map_side);
         CullToView(view, cam, map_side);
         LatchDepthRatio(cam);
         return;
@@ -437,7 +512,10 @@ void SnapSun(PPCContext& ctx, uint8_t* base) {
 
     // the far map inside a vis area has half the side: its grid holds every map's, so all runs share one centre
     double width = GF(cam + kCameraOrthoWidth);
-    double far_texel = 2.0 * width * distance / double(fcip::SunShadowSide());
+    // every run gets the same reach, a multiple of the coarsest sharper map's so the far grid still holds its texels
+    uint32_t reach = FarReach(view, cam, distance, Reach(int(g_maps.load()) - 1));
+    g_reach = reach;
+    double far_texel = 2.0 * width * reach / double(fcip::SunShadowSide());
     // the runs arrive snapped to the stock grid of their own side, both on the far grid's lines; half a full side
     // stock texel keeps the floor off those lines, so float error never splits the runs a far texel apart
     double bias = 0.5 * width / double(fcip::SunShadowSide());
@@ -458,16 +536,6 @@ void SnapSun(PPCContext& ctx, uint8_t* base) {
     CallGuest(ctx, SYM_CCamera_Update, {cam});
     CullToView(view, cam, uint32_t(args[2]));
     LatchDepthRatio(cam);
-}
-
-}  // namespace
-
-PPC_FUNC(GUEST(Shadow_Snap)) {
-    uint32_t eye = R32(uint32_t(ctx.r[4]) + kViewCamera);
-    float fov = GF(eye + kCameraFov);
-    WF(eye + kCameraFov, SnapFov(eye));
-    SnapSun(ctx, base);
-    WF(eye + kCameraFov, fov);
 }
 
 // draw extent, vtable +0x1E8
@@ -551,7 +619,7 @@ PPC_FUNC(GUEST(Shadow_Resolve)) {
     if (ok && w == h && t_sun && t_map != kNoMap) {
         uint32_t at = mem::PhysicalFromVirtual(R32(tex + XDK_Texture_FetchConstant + kFetchAddress) & 0xFFFFF000);
         uint32_t n = g_issued.load(std::memory_order_relaxed);
-        g_ring[n % kResolveRing] = {at, t_map, g_maps, g_distance, g_side, g_depth};
+        g_ring[n % kResolveRing] = {at, t_map, g_maps, g_reach, g_side, g_depth};
         g_issued.store(n + 1, std::memory_order_release);
         t_sun = false;  // the lights after the sun in a quad run
     }
@@ -608,6 +676,7 @@ void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     uint32_t maps = 0;
     while (!rays && maps < kSunMaps && (1u << maps) < distance && distance % (1u << maps) == 0) maps++;
     g_distance = maps ? distance : 0;
+    g_reach = g_distance.load();
     g_maps = maps;
     uint64_t quad = ctx.r[6];
     ctx.r[6] = 0;  // one frustum: the sharper maps hold only the sun
