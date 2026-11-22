@@ -481,10 +481,11 @@ PPC_FUNC(GUEST(Shadow_Pass)) {
         W32(pass + kPassWidth, side);
         W32(pass + kPassHeight, side);
     }
-    // FSR and TAA draw the camera's pass on its own targets, resolved at its end; the editor names no device
+    // FSR and TAA draw the camera's pass on its own targets, resolved at its end, where frame generation takes its
+    // depth and motion; the editor names no device
 #if HAS_Device_pointer
     bool outer_scene = t_scene;
-    t_scene = t_pass_type == fcip::kPassCamera && fcip::Temporal();
+    t_scene = t_pass_type == fcip::kPassCamera && fcip::Motion();
     if (t_scene) d3d::SceneBegin(R32(SYM_Device_pointer));
     GUEST_ORIG(Shadow_Pass)(ctx, base);
     t_scene = outer_scene;

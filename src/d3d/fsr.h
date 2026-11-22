@@ -94,6 +94,8 @@ struct Generation {
     uint64_t index = 0;     // counts presents
     bool enabled = false;   // frames generated between this one and the last
     uint32_t frames = 1;    // how many, 1 to kMaxGenerated
+    uint32_t render_w = 0;  // the frame's depth and motion, 0 keeps the last
+    uint32_t render_h = 0;
     uint32_t rect[4] = {};  // the frame's part of the back buffer, x, y, width, height
     uint32_t w = 0;         // the back buffer
     uint32_t h = 0;

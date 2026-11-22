@@ -165,7 +165,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kAntiAliasing, "ANTI ALIASING",
      "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, or TAA or AMD FSR 3 from the render resolution, both sharpened by AMD CAS"},
     {Kind::Value, kFrameGeneration, "FRAME GENERATION",
-     "Generates one, two or three frames between each two rendered ones (2X, 3X or 4X) with AMD FSR Frame Generation, with FSR on"},
+     "Generates one, two or three frames between each two rendered ones (2X, 3X or 4X) with AMD FSR Frame Generation"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},

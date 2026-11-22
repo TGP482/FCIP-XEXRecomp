@@ -42,6 +42,8 @@ ffxContext g_generate = nullptr;
 uint32_t g_generate_w = 0;  // the back buffer it was made for
 uint32_t g_generate_h = 0;
 uint32_t g_generate_format = 0;
+uint32_t g_generate_render_w = 0;  // the largest depth and motion it takes
+uint32_t g_generate_render_h = 0;
 uint64_t g_frame_time = 0;  // ns, the last Upscale
 float g_delta_ms = 0;       // from the Upscale before
 std::atomic<uint32_t> g_generated{0};  // frames the last frame set up generated between it and the one before
@@ -110,7 +112,11 @@ bool EnsureUpscale(uint32_t w, uint32_t h) {
 // frame generation for a back buffer, made again when it changes
 bool EnsureGeneration(const Generation& g) {
     bool same = g_generate_w == g.w && g_generate_h == g.h && g_generate_format == g.format;
-    if (g_generate && same) return true;
+    // a render resolution over 100% draws the scene past the back buffer
+    bool fits = g.render_w <= g_generate_render_w && g.render_h <= g_generate_render_h;
+    if (g_generate && same && fits) return true;
+    uint32_t render_w = std::max(g.w, g.render_w);
+    uint32_t render_h = std::max(g.h, g.render_h);
     Destroy(g_generate);
     ffxCreateBackendDX12Desc backend{};
     backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
@@ -129,7 +135,7 @@ bool EnsureGeneration(const Generation& g) {
     d.flags = FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED;
     if (g.hdr) d.flags |= FFX_FRAMEGENERATION_ENABLE_HIGH_DYNAMIC_RANGE;
     d.displaySize = {g.w, g.h};
-    d.maxRenderSize = {g.w, g.h};
+    d.maxRenderSize = {render_w, render_h};
     d.backBufferFormat = ffxApiGetSurfaceFormatDX12(DXGI_FORMAT(g.format));
     if (ffxReturnCode_t r = ffxCreateContext(&g_generate, &d.header, nullptr); r != FFX_API_RETURN_OK) {
         LOGE("FSR: no frame generation for %ux%u (result %u)", g.w, g.h, r);
@@ -139,6 +145,8 @@ bool EnsureGeneration(const Generation& g) {
     g_generate_w = g.w;
     g_generate_h = g.h;
     g_generate_format = g.format;
+    g_generate_render_w = render_w;
+    g_generate_render_h = render_h;
     LogVersion(&g_generate, "frame generation");
     return true;
 }

@@ -143,8 +143,8 @@ void PrecompileShaderArchive() {
     std::vector<uint8_t> file;
     if (!kernel::ReadGameFile(kShaderArchive, file)) return;
     g_shaders = ReadArchive(file);
-    // motion vectors as Draw adds them: FSR or TAA on and FSR's DLLs loaded
-    g_motion_first = fcip::Temporal() && fsr::Upscaling();
+    // motion vectors as Draw adds them: FSR, TAA or frame generation on and FSR's shaders present
+    g_motion_first = fcip::Motion() && fsr::Upscaling();
     g_jobs = g_shaders.size() * (fsr::Upscaling() && !g_motion_first ? 2 : 1);
     g_start = std::chrono::steady_clock::now();
     uint32_t threads = std::max(1u, std::thread::hardware_concurrency());
