@@ -1,6 +1,6 @@
-// default.xex: an unlocked achievement shows in the HUD's contextual help box, as the game writes its own hints
-// (821FC620 from 8214C540), one at a time while playing, held for 5 seconds on the right side of the screen with its
-// picture left of the title and the description below it; F4 shows the next one in the list as a test
+// default.xex: an unlocked achievement shows in our copy of the HUD's contextual help box on the right side of the
+// screen, written as the game writes its own hints (821FC620 from 8214C540), one at a time while playing, held for 5
+// seconds with its picture left of the title and the description below it
 #include "game/achievement_toast.h"
 
 #include <chrono>
@@ -31,7 +31,8 @@ constexpr uint32_t kGameClientCount = 0x68u;
 constexpr uint32_t kClientHudId = 0x38u;  // low 16 bits
 constexpr uint32_t kGameHuds = 0x340u;    // its +0x08 finds a HUD by id, vtable +0x38
 constexpr uint32_t kFindHud = 0x38u;
-constexpr uint32_t kHudHelp = 0x821FC620u;  // (hud, const std::wstring* text, 1)
+constexpr uint32_t kHudHelp = 0x821FC620u;  // (hud, const std::wstring* text, 1), writes the box at kHudHelpBox
+constexpr uint32_t kHudPage = 0x50u;  // the HUD page behind one pointer, holding ai_contextual_1 (821F99D4)
 constexpr uint32_t kHudSprites = 0x14u;
 constexpr uint32_t kHudSelector = 0x32Cu;  // ai_selector, whose i_item1 picture the icon copies
 
@@ -68,16 +69,18 @@ constexpr int kDescTop = 24;  // a title line and a small gap
 constexpr auto kHold = 5s;
 constexpr auto kGap = kHold + 1s;
 
-// the box while it shows ours, moved to the right
+// our box, made once per HUD
 struct Box {
+    uint32_t hud = 0;
     uint32_t widget = 0;
     uint32_t element = 0;
-    int screen = 0;
 };
 
 std::deque<uint16_t> g_queue;
 Clock::time_point g_shown;
 Box g_box;
+bool g_showing = false;
+bool g_game_box_visible = true;  // as the game left it before ours showed
 // our widgets in the box: the icon and the description, and the box's own text they fade with
 struct Extras {
     uint32_t icon = 0;
@@ -85,7 +88,6 @@ struct Extras {
     uint32_t text = 0;
 };
 Extras g_extras;
-size_t g_test = 0;
 
 const xam::Achievement* Find(const std::vector<xam::Achievement>& list, uint16_t id) {
     for (const xam::Achievement& a : list) {
@@ -101,12 +103,6 @@ uint32_t Hud(PPCContext& ctx, uint32_t game) {
     if (!client || !huds) return 0;
     uint32_t id = kernel::R32(client + kClientHudId) & 0xFFFF;
     return uint32_t(kernel::CallGuest(ctx, kernel::R32(kernel::R32(huds) + kFindHud), {huds, id}));
-}
-
-void QueueTest() {
-    std::vector<xam::Achievement> list = xam::Achievements();
-    if (list.empty()) return;
-    g_queue.push_back(list[g_test++ % list.size()].id);
 }
 
 void SetVisible(uint32_t widget, bool on) {
@@ -173,34 +169,63 @@ void FadeIcon() {
     SetPictureColour(g_extras.icon, (Read32(state + kTextColour) & ~kWhite) | kWhite);
 }
 
-// held at full until kHold is up, then back on the left once faded; a new HUD has its own box
+// the game's box draws the children it shares with ours even when idle, in whatever state ours left them
+void HideIdleGameBox(uint32_t hud, bool showing) {
+    uint32_t game_box = Read32(hud + kHudHelpBox);
+    uint32_t element = AddrOk(game_box) ? Read32(game_box + kWidgetElement) : 0;
+    if (AddrOk(element)) SetVisible(game_box, showing ? Read8(element + kElementPlaying) != 0 : g_game_box_visible);
+}
+
+// held at full until kHold is up, then left to fade; a new HUD needs a new box
 void UpdateBox(PPCContext& ctx, uint32_t game, Clock::time_point now) {
-    if (!g_box.widget) return;
+    if (!g_box.hud) return;
     uint32_t hud = game ? Hud(ctx, game) : 0;
-    if (!hud || kernel::R32(hud + kHudHelpBox) != g_box.widget) {
+    if (hud != g_box.hud) {
         g_box = {};
+        g_extras = {};
+        g_showing = false;
         return;
     }
+    if (!g_showing) return;
+    HideIdleGameBox(hud, true);
+    FadeIcon();
     uint32_t per_key = kernel::R16(kernel::R32(g_box.element + kElementArea) + kAreaFramesPerKey);
     uint32_t frame = kernel::R32(g_box.element + kElementFrame);
-    FadeIcon();
     if (now - g_shown < kHold) {
         if (frame >= per_key * (kFadeKey - 1)) kernel::W32(g_box.element + kElementFrame, per_key * kShownKey);
         return;
     }
     if (kernel::R8(g_box.element + kElementPlaying)) return;
-    MirrorX(g_box.widget, kBoxWidth, g_box.screen);
     SetVisible(g_extras.icon, false);
     SetVisible(g_extras.desc, false);
-    g_box = {};
+    HideIdleGameBox(hud, false);
+    g_showing = false;
+}
+
+// a copy of ai_contextual_1 in the HUD page, moved to the right; the game keeps its own box for its hints. Both boxes
+// share one area of children, whose texts each element sets apart, so the game's sets our description to nothing
+bool EnsureBox(PPCContext& ctx, uint32_t hud) {
+    if (g_box.hud == hud) return g_box.widget != 0;
+    g_box = {hud};
+    g_extras = {};
+    uint32_t game_box = kernel::R32(hud + kHudHelpBox);
+    uint32_t page = kernel::R32(kernel::R32(hud + kHudPage));
+    uint32_t widget = game_box && page ? CloneChild(ctx, page, game_box) : 0;
+    uint32_t element = widget ? kernel::R32(widget + kWidgetElement) : 0;
+    uint32_t system = kernel::R32(SYM_UISystem_pointer);
+    int screen = system ? int16_t(kernel::R16(system + kUiVirtualWidth)) : 0;
+    if (!element || element == kernel::R32(game_box + kWidgetElement) || screen <= 0) return false;
+    KeepShown(widget);
+    MirrorX(widget, kBoxWidth, screen);
+    g_box = {hud, widget, element};
+    g_extras = MakeExtras(ctx, hud, Read32(element + kElementArea));
+    kernel::CallGuest(ctx, kSetText, {kernel::R32(game_box + kWidgetElement), kCrcDesc, Text("")});
+    return true;
 }
 
 void Show(PPCContext& ctx, uint32_t hud, const xam::Achievement& a) {
-    uint32_t widget = kernel::R32(hud + kHudHelpBox);
-    if (!widget) return;
-    uint32_t element = kernel::R32(widget + kWidgetElement);
-    KeepShown(widget);
-    g_extras = MakeExtras(ctx, hud, Read32(element + kElementArea));
+    if (!EnsureBox(ctx, hud)) return;
+    uint32_t element = g_box.element;
     uint32_t sprite = a.image ? fcip::achievement_icons::Sprite(ctx, Read32(hud + kHudSprites), a.image) : 0;
     if (g_extras.icon) {
         kernel::CallGuest(ctx, kSetPicture, {element, kCrcItem, sprite});
@@ -214,19 +239,20 @@ void Show(PPCContext& ctx, uint32_t hud, const xam::Achievement& a) {
     std::string title = "Achievement unlocked: " + a.name;
     if (!g_extras.desc) title += "\n" + a.description;
     uint32_t text = View(title.c_str());  // after Text(): they share one buffer
-    if (text) kernel::CallGuest(ctx, kHudHelp, {hud, text, 1});
-    uint32_t system = kernel::R32(SYM_UISystem_pointer);
-    int screen = system ? int16_t(kernel::R16(system + kUiVirtualWidth)) : 0;
-    if (screen <= 0) return;
-    if (!g_box.widget) MirrorX(widget, kBoxWidth, screen);
-    g_box = {widget, element, screen};
+    if (!text) return;
+    uint32_t game_box = kernel::R32(hud + kHudHelpBox);
+    kernel::W32(hud + kHudHelpBox, g_box.widget);
+    kernel::CallGuest(ctx, kHudHelp, {hud, text, 1});
+    kernel::W32(hud + kHudHelpBox, game_box);
+    if (!g_showing) g_game_box_visible = Read8(game_box + kWidgetVisible) & 0x80;
+    HideIdleGameBox(hud, true);
+    g_showing = true;
 }
 
 }  // namespace
 
 void fcip::achievement_toast::Tick(PPCContext& ctx) {
     for (uint16_t id : xam::TakeUnlocked()) g_queue.push_back(id);
-    if (g_debug_toast.exchange(false)) QueueTest();
     auto now = Clock::now();
     uint32_t game = kernel::R32(SYM_Game_pointer);
     UpdateBox(ctx, game, now);

@@ -31,6 +31,8 @@ uint32_t LocalPlayer();  // the CPlayer ProcessView last ran for
 // default.xex's noclip: port 0 after the keys merged in, then the local player before its view is built
 inline void (*g_noclip_pad)(input::Pad& pad) = nullptr;
 inline void (*g_noclip_move)(PPCContext& ctx, uint32_t player, uint32_t cmd) = nullptr;
+// default.xex's achievement notifications: each frame the local player's view is built
+inline void (*g_play_tick)(PPCContext& ctx) = nullptr;
 // FCIPEditor.exe's desktop UI: port 0 after the keys and noclip
 inline void (*g_editor_pad)(input::Pad& pad) = nullptr;
 

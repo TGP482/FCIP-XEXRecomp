@@ -727,6 +727,7 @@ PPC_FUNC(GUEST(CPlayer_UpdateView)) {
     bool local = player && player == g_local_player;
     uint32_t cmd = g_local_cmd;
     if (local && cmd && fcip::g_noclip_move) fcip::g_noclip_move(ctx, player, cmd);
+    if (local && fcip::g_play_tick) fcip::g_play_tick(ctx);
     GUEST_ORIG(CPlayer_UpdateView)(ctx, base);
     if (!local || !RawLook()) return;
     WF(player + kPlayerYawDelta, 0.0f);

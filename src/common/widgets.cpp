@@ -29,6 +29,7 @@ constexpr uint32_t kWidgetListeners = 0x30u;  // [+0x30, +0x34), refcount at lis
 constexpr uint32_t kElementTransform = 0x04u;
 constexpr uint32_t kTransformX = 0x10u;  // s16
 constexpr uint32_t kTransformY = 0x12u;
+constexpr uint32_t kRect = 0x10u;  // a text or picture's s16 left, right, top, bottom where buttons keep x and y
 constexpr uint32_t kVisitorBytes = 0x28u;
 
 constexpr const char* kRecompCaption = "RECOMP SETTINGS";
@@ -162,15 +163,39 @@ void CopyListeners(PPCContext& ctx, uint32_t from, uint32_t to) {
     }
 }
 
-// the game's widget copy visitor, as the layout loader builds it on its stack
-uint32_t CloneWidget(PPCContext& ctx, uint32_t page, uint32_t source) {
+// the game's widget copy visitor, as the layout loader builds it on its stack; the widget's accept (vtable +0x04) picks
+// the visit for its class, UIWidget_Clone for buttons and text
+uint32_t CloneAny(PPCContext& ctx, uint32_t page, uint32_t source) {
+    constexpr uint32_t kWidgetAccept = 0x04u;
     Write32(g_scratch, SYM_UICloneVisitor_vtable);
     Write32(g_scratch + 0x04, page);
     Write32(g_scratch + 0x08, page);
     for (uint32_t off = 0x0C; off < kVisitorBytes; off += 4) Write32(g_scratch + off, 0);
-    kernel::CallGuest(ctx, SYM_UIWidget_Clone, {g_scratch, source});
-    uint32_t widget = Read32(g_scratch + 0x0C);
+    kernel::CallGuest(ctx, Read32(Read32(source) + kWidgetAccept), {source, g_scratch});
+    return Read32(g_scratch + 0x0C);
+}
+
+uint32_t CloneWidget(PPCContext& ctx, uint32_t page, uint32_t source) {
+    uint32_t widget = CloneAny(ctx, page, source);
     return WidgetOk(widget) ? widget : 0;
+}
+
+// the transform and every keyframe state
+template <typename F>
+void ForEachRect(uint32_t widget, F&& fn) {
+    uint32_t element = Read32(widget + kWidgetElement);
+    if (!ElementOk(element)) return;
+    if (uint32_t transform = Read32(element + kElementTransform)) fn(transform);
+    uint32_t track = Read32(widget + kWidgetTrack);
+    uint32_t first = Read32(track + 0x04);
+    uint32_t last = Read32(track + 0x08);
+    if (!first || !RangeOk(first, last, kMaxKeyframes)) return;
+    uint32_t previous = 0;
+    for (uint32_t it = first; it < last; it += 4) {
+        uint32_t state = Read32(Read32(it) + 0x04);
+        if (AddrOk(state) && state != previous) fn(state);  // keys may share a state
+        previous = state;
+    }
 }
 
 // the container's child vector sits at +0x04
@@ -214,6 +239,40 @@ uint32_t FindWidget(uint32_t container, uint32_t name_crc) {
         if (widget && Read32(widget + kWidgetNameCrc) == name_crc) return widget;
     }
     return 0;
+}
+
+uint32_t CloneChild(PPCContext& ctx, uint32_t container, uint32_t source) {
+    if (!EnsureText() || !AddrOk(source) || !InImage(Read32(source))) return 0;
+    uint32_t widget = CloneAny(ctx, container, source);
+    if (!AddrOk(widget) || !InImage(Read32(widget))) return 0;
+    PushChild(ctx, container, widget);
+    return widget;
+}
+
+void SetRect(uint32_t widget, const int16_t (&rect)[4]) {
+    ForEachRect(widget, [&](uint32_t state) {
+        for (uint32_t i = 0; i < 4; i++) WriteS16(state + kRect + i * 2, rect[i]);
+    });
+}
+
+void MirrorX(uint32_t widget, int width, int screen) {
+    ForEachRect(widget, [&](uint32_t state) {
+        WriteS16(state + kTransformX, screen - width - ReadS16(state + kTransformX));
+    });
+}
+
+void SetPictureColour(uint32_t widget, uint32_t argb) {
+    constexpr uint32_t kPictureCorners = 0x28u;  // four ARGB, read by the picture draw (823C7D30)
+    ForEachRect(widget, [&](uint32_t state) {
+        for (uint32_t i = 0; i < 4; i++) Write32(state + kPictureCorners + i * 4, argb);
+    });
+}
+
+void ShiftRect(uint32_t widget, int dx) {
+    ForEachRect(widget, [&](uint32_t state) {
+        WriteS16(state + kRect, ReadS16(state + kRect) + dx);
+        WriteS16(state + kRect + 2, ReadS16(state + kRect + 2) + dx);
+    });
 }
 
 uint32_t Text(const char* text) {

@@ -45,6 +45,15 @@ void SetCaption(PPCContext& ctx, uint32_t element, const char* text);
 void HideWidget(uint32_t widget);
 // widget moved to where place rests
 void MoveWidget(uint32_t widget, uint32_t place);
+// a copy of any widget pushed into the container, 0 when it failed
+uint32_t CloneChild(PPCContext& ctx, uint32_t container, uint32_t source);
+// a text or picture widget's left, right, top and bottom
+void SetRect(uint32_t widget, const int16_t (&rect)[4]);
+void ShiftRect(uint32_t widget, int dx);  // left and right
+// a placed widget width wide moved to the other side of a screen that wide; twice puts it back
+void MirrorX(uint32_t widget, int width, int screen);
+// a picture widget's colour on all four corners
+void SetPictureColour(uint32_t widget, uint32_t argb);
 
 // our entries: caption, help and the panel page they open, by widget name; nullptr / -1 when not ours
 const char* CaptionFor(uint32_t crc);
