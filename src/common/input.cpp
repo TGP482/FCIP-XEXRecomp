@@ -85,6 +85,8 @@ constexpr uint32_t kEntrySlot = 0x08;
 // cl_aimingHelper and cl_display_hud: ICVars the game object holds, their value through an int pointer at +0x10
 constexpr uint32_t kCVarValuePtr = 0x10;
 
+constexpr uint32_t kMaxClients = 4;  // split screen
+
 // the guest stops calling CAimHelper::Update in menus and on loading screens
 constexpr uint64_t kGameplayTimeoutMs = 250;
 constexpr UINT_PTR kCursorTimer = 0x46435552;  // "FCUR", no other timer on the window
@@ -93,8 +95,10 @@ constexpr float kDegreesPerPixel = 0.05f;  // at sensitivity 1
 constexpr float kMaxDeltaDegrees = 180.0f;
 
 std::atomic<uint64_t> g_gameplay_ms{0};
-std::atomic<uint32_t> g_local_cmd{0};     // CPlayer::ProcessMovements also runs for every AI
-std::atomic<uint32_t> g_local_player{0};  // set by ProcessView, which only runs for the local player
+// the keyboard's client; CPlayer::ProcessMovements also runs for every AI
+std::atomic<uint32_t> g_local_cmd{0};
+std::atomic<uint32_t> g_local_player{0};  // set by ProcessView, which only runs for local players
+uint32_t g_slot_players[kMaxClients] = {};  // each split screen client's player, guest thread only
 // which half of the X button the keys asked for this poll
 std::atomic<bool> g_reload_only{false};
 std::atomic<bool> g_interact_only{false};
@@ -118,6 +122,35 @@ void WF(uint32_t addr, float value) {
 }
 
 bool Local(uint32_t player, uint32_t cmd) { return cmd && cmd == g_local_cmd && GuestOk(player); }
+
+int KeysPort() { return std::max(input::KeyboardPort(), 0); }
+
+// the split screen client the game is updating, with the pad port it polls
+struct Client {
+    uint32_t slot = 0;
+    uint32_t port = 0;
+    bool split = false;
+};
+
+Client UpdatingClient() {
+    Client client;
+#if HAS_Game_ClientCount && HAS_Game_Input
+    // the slot of the client being updated, 0x30 byte slots holding the port each polls
+    constexpr uint32_t kInputSlot = 0xCC;
+    constexpr uint32_t kInputSlotSize = 0x30;
+    constexpr uint32_t kSlotPort = 0x1C;
+    uint32_t game = R32(SYM_Game_pointer);
+    uint32_t in = game ? R32(game + SYM_Game_Input) : 0;
+    if (!GuestOk(in) || R32(game + SYM_Game_ClientCount) < 2) return client;
+    uint32_t slot = R32(in + kInputSlot);
+    if (slot >= kMaxClients) return client;
+    client = {slot, R32(in + slot * kInputSlotSize + kSlotPort), true};
+#endif
+    return client;
+}
+
+// keyboard and mouse drive the client on their port, or the only one
+bool KeysClient(const Client& client) { return !client.split || client.port == uint32_t(KeysPort()); }
 
 // Pad merge
 
@@ -300,23 +333,23 @@ void MouseLook(uint32_t cmd) {
     WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) + pitch);
 }
 
-// the pad's turn this frame at the controller sensitivity; the look keys ride the pad's stick, so only while the pad
-// leads
-void PadLook(uint32_t cmd) {
-    if (!cmd || K::KbmActive()) return;
+// the pad's turn this frame at the controller sensitivity
+void PadLook(uint32_t cmd, uint32_t player) {
+    if (!cmd) return;
     const fcip::Settings& s = fcip::Get();
-    bool aiming = Zoomed(g_local_player);
+    bool aiming = Zoomed(player);
     float kx = aiming ? s.pad_aim_sensitivity_x : s.pad_sensitivity_x;
     float ky = aiming ? s.pad_aim_sensitivity_y : s.pad_sensitivity_y;
     WF(cmd + kCmdYaw, GF(cmd + kCmdYaw) * kx);
     WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) * ky);
 }
 
-// the controller's gyro turns the view beside the right stick, its recenter button levels it
-void GyroLook(uint32_t cmd) {
+// the controller's gyro turns the view beside the right stick, its recenter button levels it; off in split screen,
+// where its pad's port is unknown
+void GyroLook(uint32_t cmd, bool split) {
     const fcip::Settings& s = fcip::Get();
     gyro::Turn turn = gyro::Take(s.gyro);
-    if (!cmd || fcip::MenuOpen() || InCutscene(g_local_player)) return;
+    if (!cmd || split || fcip::MenuOpen() || InCutscene(g_local_player)) return;
     if (turn.recenter) WF(cmd + kCmdPitch, -std::remainder(GF(cmd + kCmdAnglePitch), 360.0f));
     if (turn.yaw == 0.0f && turn.pitch == 0.0f) return;
     // the gyro turns left positive, the command right positive; both pitch down positive
@@ -458,7 +491,7 @@ void PressStart() {
 void GamePad(int port, input::Pad& pad) {
     int keyboard = input::KeyboardPort();
     // the keyboard's port, or player 1's when no player has it
-    if (port != std::max(keyboard, 0)) return;
+    if (port != KeysPort()) return;
     bool start = std::chrono::steady_clock::now().time_since_epoch().count() < g_start_until;
     K::TrackKeys(pad.connected && !Neutral(pad), MenuOpen());
     g_pad_y = pad.buttons & input::kY;
@@ -488,8 +521,8 @@ void GamePad(int port, input::Pad& pad) {
     if (g_editor_pad) g_editor_pad(pad);
 }
 
-void GameRumble(int, uint16_t& left, uint16_t& right) {
-    if (K::KbmActive()) left = right = 0;
+void GameRumble(int port, uint16_t& left, uint16_t& right) {
+    if (port == KeysPort() && K::KbmActive()) left = right = 0;
 }
 
 // the cursor the client area shows: none while the mouse looks; false while the panel keeps its own
@@ -680,7 +713,8 @@ PPC_FUNC(GUEST(CPlayer_Feral)) {
 
 // (helper, player, ...): turns the weapon toward the target; with the flag clear it takes its reset path
 PPC_FUNC(GUEST(CAimHelper_AutoAim)) {
-    AutoAimOverride over = SuppressAutoAim(uint32_t(ctx.r[4]));
+    bool keys = KeysClient(UpdatingClient());
+    AutoAimOverride over = keys ? SuppressAutoAim(uint32_t(ctx.r[4])) : AutoAimOverride{};
     GUEST_ORIG(CAimHelper_AutoAim)(ctx, base);
     RestoreAutoAim(over);
 }
@@ -694,23 +728,30 @@ PPC_FUNC(GUEST(CPlayer_FireWeapon)) {
 }
 
 // (helper, cmd): the pad's look scaled, then mouse look and the gyro add this frame's turn; the aiming helper is off
-// for the call while the keyboard or mouse is in use
+// for the call while the keyboard or mouse is in use. A split screen client on another port gets its pad alone.
 PPC_FUNC(GUEST(CAimHelper_Update)) {
     uint32_t cmd = uint32_t(ctx.r[4]);
+    Client client = UpdatingClient();
+    if (!KeysClient(client)) {
+        GUEST_ORIG(CAimHelper_Update)(ctx, base);
+        PadLook(cmd, g_slot_players[client.slot]);
+        return;
+    }
     g_local_cmd = cmd;
     HelperOverride helper = SuppressAimingHelper();
     GUEST_ORIG(CAimHelper_Update)(ctx, base);
     if (helper.slot) W32(helper.slot, helper.saved);
-    PadLook(cmd);
+    // the look keys ride the pad's stick, so only while the pad leads
+    if (!K::KbmActive()) PadLook(cmd, g_local_player);
     MouseLook(cmd);
-    GyroLook(cmd);
+    GyroLook(cmd, client.split);
 }
 
 // (this), local player only: looking with the mouse, a second pass sees no pitch change, so the lag stays zero and
 // the lean steps once
 PPC_FUNC(GUEST(CPlayer_UpdateLookBones)) {
     uint32_t player = uint32_t(ctx.r[3]);
-    bool raw = player && RawLook();
+    bool raw = player && player == g_local_player && RawLook();
     float lean = raw ? GF(player + kPlayerLean) : 0.0f;
     GUEST_ORIG(CPlayer_UpdateLookBones)(ctx, base);
     if (!raw) return;
@@ -737,6 +778,9 @@ PPC_FUNC(GUEST(CPlayer_UpdateView)) {
 // (this, cmd) applies this frame's look to the entity; the camera, the weapon yaw and the look bones were already built
 // from last frame's, so all of them show it next frame, as on the console
 PPC_FUNC(GUEST(CPlayer_ProcessView)) {
-    g_local_player = uint32_t(ctx.r[3]);
+    uint32_t player = uint32_t(ctx.r[3]);
+    Client client = UpdatingClient();
+    g_slot_players[client.slot] = player;
+    if (KeysClient(client)) g_local_player = player;
     GUEST_ORIG(CPlayer_ProcessView)(ctx, base);
 }
