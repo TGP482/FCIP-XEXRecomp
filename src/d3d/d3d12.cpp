@@ -3450,7 +3450,13 @@ ComPtr<ID3D12PipelineState> D3D12Backend::MakePipeline(const PipelineKey& k, D3D
 bool D3D12Backend::PipelineReady(const PipelineKey& k, const Variant& vs, const Variant* ps) {
     TakeBuilt();
     uint64_t key = Hash64(&k, sizeof(k));
-    if (pipelines_.count(key)) return true;
+    auto it = pipelines_.find(key);
+    if (it != pipelines_.end()) {
+        // EnsurePipeline then finds it without a second lookup
+        last_key_ = k;
+        last_pso_ = it->second.Get();
+        return true;
+    }
     if (!building_.insert(key).second) return false;
     BuiltPipeline b{k, {vs.dxil.data(), vs.dxil.size()}};
     if (ps) b.ps = {ps->dxil.data(), ps->dxil.size()};
@@ -4672,8 +4678,12 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     vs = Compiled(vs);
     ps = ps ? Compiled(ps) : nullptr;
     bool ready = vs && (!s.ps || ps);
-    // what a heavy pipeline adds, which the draw goes without until a build thread made it
-    bool extras_later = (bound.motion || traced) && Async();
+    // what the renderer adds to the console's draw, which the draw goes without until its shaders and pipeline are made
+    auto flagged = [](const ShaderOptions& o) {
+        return std::any_of(std::begin(o.tex_flags), std::end(o.tex_flags), [](uint8_t f) { return f != 0; });
+    };
+    bool extras = bound.motion || bound.albedo || flagged(vs_opt) || flagged(ps_opt);
+    bool extras_later = extras && Async();
     if (!ready && !extras_later) {
         skipped_draws_++;
         return;
@@ -4696,16 +4706,15 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     uint32_t caster_vertices = CasterVertices(s, a, k, topo, count, bound, ps_opt.alpha_test, caster);
     k.stream_out = caster.stream;
     extras_later = extras_later || (caster_vertices && Async());
-    // its motion vectors, traced shadows or streamed casters still being made, the draw shows without them meanwhile
-    if (extras_later && (!ready || !PipelineReady(k, *vs, ps))) {
+    bool made = last_pso_ && std::memcmp(&k, &last_key_, sizeof(k)) == 0;
+    // the console's own draw meanwhile, whose variants the shader archive built and whose pipeline it drew with before
+    if (extras_later && (!ready || (!made && !PipelineReady(k, *vs, ps)))) {
         k = unbound;
-        if (!BindDrawTargets(s, ps_info, k, bound, false, albedo)) return;
+        if (!BindDrawTargets(s, ps_info, k, bound, false, false)) return;
         vs_opt.motion = false;
         ps_opt.motion = false;
-        if (traced) {
-            ps_opt.tex_flags[fcip::kShadowOut] = 0;
-            ps_opt.tex_flags[fcip::kRayCoarseOut] = 0;
-        }
+        std::fill(std::begin(vs_opt.tex_flags), std::end(vs_opt.tex_flags), uint8_t(0));
+        std::fill(std::begin(ps_opt.tex_flags), std::end(ps_opt.tex_flags), uint8_t(0));
         vs = Compiled(VariantFor(s.vs, vs_opt));
         ps = s.ps ? Compiled(VariantFor(s.ps, ps_opt)) : nullptr;
         if (!vs || (s.ps && !ps)) {
