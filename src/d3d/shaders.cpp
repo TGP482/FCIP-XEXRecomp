@@ -622,7 +622,7 @@ private:
     void EmitVertexFetch(const Fetch& f, uint32_t address);
     void EmitTextureFetch(const Fetch& f);
     void OpenSunMap(const std::string& margin);
-    void EmitSunMaps(uint32_t sampler, uint32_t t, bool weights);
+    void EmitSunMaps(uint32_t slot, uint32_t t, bool weights);
     void EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags);
     void EmitRayShadow(uint32_t slot, bool weights, int32_t oy);
     void EmitExport(const Alu& a, bool vector, bool scalar);
@@ -646,9 +646,10 @@ private:
     bool Blur() const { return Pixel() && opt_.tex_flags[fcip::kBlurOut]; }
     // pixel: the index of the screen a water draw shows behind it, which takes the caustics' light, -1 none
     int CausticsScreen() const { return Pixel() ? int(opt_.tex_flags[fcip::kCausticsOut]) - 1 : -1; }
-    // pixel: a shadow sampler, which reads the sharper sun maps when the far one is bound to it
-    bool SunSampler(uint32_t fetch) const {
-        return Pixel() && opt_.tex_flags[fcip::kSunOut] && fetch >= fcip::kShadowFirstFetch && fetch <= fcip::kSunFetch;
+    // pixel: what a shadow sampler's fetches do, fcip::kShadowOut
+    uint8_t ShadowSampler(uint32_t fetch) const {
+        bool shadow = fetch >= fcip::kShadowFirstFetch && fetch <= fcip::kSunFetch;
+        return Pixel() && shadow ? opt_.tex_flags[fcip::kShadowOut] : 0;
     }
     // pixel: colour 0 seen through the volumetric fog in front of it
     bool FogIn() const { return Pixel() && opt_.tex_flags[fcip::kFogOut] && (info_.exports & 1); }
@@ -979,14 +980,22 @@ void Translator::EmitTextureFetch(const Fetch& f) {
         bool sun_op = op == kTextureFetch || op == kGetWeights;
         uint8_t sun = Pixel() && dim == kDim2D && !f.Unnormalized() ? opt_.tex_flags[t & 31] : 0;
         bool soft = sun_op && (sun & (fcip::kSunSoft | fcip::kShadowSoft)) && (op == kGetWeights || oy);
-        if (sun_op && (sun & fcip::kShadowRay)) {
-            EmitRayShadow(sun >> fcip::kRaySlotShift, op == kGetWeights, oy);
+        uint32_t sampler = info_.textures[t].fetch;
+        uint8_t shadow = sun_op && dim == kDim2D && !f.Unnormalized() ? ShadowSampler(sampler) : 0;
+        uint32_t slot = sampler - fcip::kShadowFirstFetch;
+        if (shadow == fcip::kShadowTraced) {
+            Line("float4 ft;");
+            Open(F("[branch] if (g_ext.%c != 0)", kComp[slot]));
+            EmitRayShadow(slot, op == kGetWeights, oy);
+            Close();
+            Open("else");
+            Line("ft = " + fetch + ";");
+            Close();
         } else if (soft) {
             EmitSunSoft(t, op == kGetWeights, oy, sun);
         } else {
             Line("float4 ft = " + fetch + ";");
-            bool shadow = Pixel() && dim == kDim2D && !f.Unnormalized() && SunSampler(info_.textures[t].fetch);
-            if (sun_op && shadow) EmitSunMaps(info_.textures[t].fetch, t, op == kGetWeights);
+            if (shadow == fcip::kShadowCascades) EmitSunMaps(slot, t, op == kGetWeights);
             if (op == kTextureFetch && int(t) == CausticsScreen()) Line("ft.rgb = Caustics(ft.rgb);");
             if (op == kTextureFetch && (sun & fcip::kAlbedoFetch) && f.ReadsBlue() && Albedo()) {
                 Open("if (!g_albedo_set)");
@@ -1015,8 +1024,8 @@ void Translator::EmitTextureFetch(const Fetch& f) {
 // is the far map's radius over the stock one, g_ext.y's bits the sharper map count and the samplers holding the far
 // map, g_ext.z the far map's guest side and the sharper maps' packed, map sk at 2^sk the stock radius. Scaled about
 // the centre, the fetch's own offset kept in texels, a texel and a half inside its edge for the taps around it
-void Translator::EmitSunMaps(uint32_t sampler, uint32_t t, bool weights) {
-    Open(F("if (asuint(g_ext.y) >> %u & 1)", fcip::kSunCountBits + sampler - fcip::kShadowFirstFetch));
+void Translator::EmitSunMaps(uint32_t slot, uint32_t t, bool weights) {
+    Open(F("if (asuint(g_ext.y) >> %u & 1)", fcip::kSunCountBits + slot));
     OpenSunMap("3 / ns");
     Open("if (nw > 0)");
     if (weights) Line("ft = lerp(ft, float4(frac(un * ns - 0.5), 0, 0), nw);");
@@ -1100,7 +1109,7 @@ void Translator::EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags
 void Translator::EmitRayShadow(uint32_t slot, bool weights, int32_t oy) {
     ray_slots_ |= 1u << slot;
     if (!weights && oy) {
-        Line(F("float4 ft = (tc.z %c 1).xxxx;", oy > 0 ? '+' : '-'));
+        Line(F("ft = (tc.z %c 1).xxxx;", oy > 0 ? '+' : '-'));
         return;
     }
     Line(F("float tmin = fwidth(tc.z) * %g + %g;", kRayPixels, kRayBias));
@@ -1109,8 +1118,8 @@ void Translator::EmitRayShadow(uint32_t slot, bool weights, int32_t oy) {
     Line(F("g_ray_at[%u] = tc;", slot));
     Line(F("g_ray_lit[%u] = RayShare(t_ray%u, tc, tmin, g_ext.%c);", slot, slot, kComp[slot]));
     Close();
-    if (weights) Line(F("float4 ft = float4(0, 1 - g_ray_lit[%u], 0, 0);", slot));
-    else Line(F("float4 ft = (tc.z + (g_ray_lit[%u] >= 0.5 ? -1 : 1)).xxxx;", slot));
+    if (weights) Line(F("ft = float4(0, 1 - g_ray_lit[%u], 0, 0);", slot));
+    else Line(F("ft = (tc.z + (g_ray_lit[%u] >= 0.5 ? -1 : 1)).xxxx;", slot));
 }
 
 void Translator::EmitExec(const Cf& cf) {

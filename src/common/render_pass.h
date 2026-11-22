@@ -30,9 +30,11 @@ void DrawShadowMaps(PPCContext& ctx, uint8_t* base);
 constexpr uint32_t kSunMaps = 4;
 constexpr uint32_t kSunFetch = 8;       // SunShadowSampler in every receiver
 constexpr uint32_t kShadowFirstFetch = 5;  // light i's shadow map sampler 5 + i, i below 4 (82501C70)
-// a draw reading the far sun map: every shadow fetch reads the sharper maps when g_ext.y marks the far map bound to it,
-// its bits the sharper map count then one per sampler from kShadowFirstFetch
-constexpr uint32_t kSunOut = 24;
+// on kShadowOut what every shadow sampler fetch does, whichever map a draw binds to it: cascades read the sharper sun
+// maps where g_ext.y's bits (the sharper map count, then one per sampler) mark the far map; traced takes the scene of
+// slot sampler - kShadowFirstFetch where that slot's g_ext spread is not 0
+constexpr uint32_t kShadowOut = 24;
+enum : uint8_t { kShadowCascades = 1, kShadowTraced = 2 };
 constexpr uint32_t kSunCountBits = 3;
 constexpr uint32_t kSunFirstSlot = 27;  // the pixel shader views the sharper maps are bound to, through 30
 
@@ -63,9 +65,7 @@ constexpr uint8_t kSunSoft = 2;        // ShaderOptions::tex_flags on a fetch of
 constexpr uint8_t kShadowSoft = 4;     // another light's shadow map, soft
 constexpr uint8_t kShadowHalf = 8;     // that map drawn as one of four inside a vis area, 672 at stock
 constexpr uint8_t kSunPcss = 16;       // the far sun map with PCSS on
-constexpr uint8_t kShadowRay = 32;     // any shadow map, traced against its casters; the scene's slot in the top bits
-constexpr uint32_t kRaySlotShift = 6;
-constexpr uint32_t kRayScenes = 4;      // shadow maps one draw traces at most
+constexpr uint32_t kRayScenes = 4;      // one per shadow sampler
 constexpr uint32_t kRayFirstSlot = 25;  // pixel shader views: casters, their records, then the scenes through 30
 // set on a ray traced draw's depth pass, past the textures such a draw may have: its shader keeps only the alpha test
 constexpr uint32_t kDepthOut = 25;

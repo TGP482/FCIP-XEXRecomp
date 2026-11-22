@@ -2206,7 +2206,7 @@ private:
     void BeginDivide();
     void DivideRecords(uint32_t first, uint32_t count, const float scale_offset[4], uint32_t view);
     void EndDivide();
-    void RayShadows(const State& s, const ShaderInfo& info, ShaderOptions& opt);
+    bool RayShadows(const State& s, const ShaderInfo& info, ShaderOptions& opt);
     void RayViews(uint32_t table, const D3D12_GPU_VIRTUAL_ADDRESS* rays);
     void CasterViews(uint32_t at);
     float RaySpread(uint32_t base, const fcip::SunMaps& sun) const;
@@ -3256,8 +3256,7 @@ Variant* D3D12Backend::FindVariant(Shader* s, const ShaderOptions& opt) {
     if (v) return v.get();
     v = std::make_unique<Variant>();
     std::string hlsl = TranslateShader(s->stage, s->code.data(), s->code.size(), opt, v->info);
-    auto traced = [](uint8_t flags) { return (flags & fcip::kShadowRay) != 0; };
-    bool rays = std::any_of(std::begin(opt.tex_flags), std::end(opt.tex_flags), traced);
+    bool rays = s->stage == ShaderStage::Pixel && opt.tex_flags[fcip::kShadowOut] == fcip::kShadowTraced;
     const wchar_t* profile = L"vs_6_0";
     if (s->stage == ShaderStage::Pixel) profile = rays ? L"ps_6_5" : L"ps_6_0";
     if (rays && helper_lanes_) {
@@ -3847,7 +3846,7 @@ bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOpti
     fcip::SunMaps m = fcip::SunMapsDrawn();
     uint32_t filter = fcip::Get().shadow_filter;
     bool soft = filter == fcip::kFilterSoft || filter == fcip::kFilterPcss;
-    if ((!m.count && !soft) || info.textures.size() > fcip::kSunOut) return false;
+    if ((!m.count && !soft) || info.textures.size() > fcip::kShadowOut) return false;
     // a missing map would read zero depth: it and the coarser ones are left to the far map
     Resolved* maps[fcip::kSunMaps] = {};
     uint32_t count = 0;
@@ -3875,7 +3874,7 @@ bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOpti
     }
     if (!any) return false;
     // which samplers hold the far map goes in a constant, so it makes no variant of its own
-    if (count) opt.tex_flags[fcip::kSunOut] = 1;
+    if (count) opt.tex_flags[fcip::kShadowOut] = fcip::kShadowCascades;
     sun_samplers_ = far_samplers;
     std::copy(std::begin(maps), std::end(maps), sun_);
     sun_maps_ = m;
@@ -4629,12 +4628,10 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     std::fill(std::begin(sun_), std::end(sun_), nullptr);
     bool sun = s.ps && SunCascade(s, s.ps->info, ps_opt);
     std::fill(std::begin(ray_scenes_), std::end(ray_scenes_), 0);
-    if (s.ps) RayShadows(s, s.ps->info, ps_opt);
-    // traced draws keep g_ext for the rays
-    if (ray_scenes_[0]) ps_opt.tex_flags[fcip::kSunOut] = 0;
-    bool ocean = s.ps && !sun && !ray_scenes_[0] && OceanFlags(s, s.ps->info, ps_opt);
+    bool traced = s.ps && RayShadows(s, s.ps->info, ps_opt);
+    bool ocean = s.ps && !sun && !traced && OceanFlags(s, s.ps->info, ps_opt);
     fog_view_ = FogFlags(s, ps_opt) ? fog_[0].Get() : nullptr;
-    bool caustics = s.ps && !sun && !ray_scenes_[0] && CausticsFlags(s, s.ps->info, ps_opt);
+    bool caustics = s.ps && !sun && !traced && CausticsFlags(s, s.ps->info, ps_opt);
     caustics_view_ = caustics ? caustics_.Get() : nullptr;
     bool blur = s.ps && BlurFlags(s, s.ps->info, ps_opt);
     Variant* vs = VariantFor(s.vs, vs_opt);
@@ -4722,7 +4719,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         c.ext[2] = float(sun_maps_.side / 8) + float(sun_maps_.near_side / 8) / 2048;
         c.ext[3] = sun_maps_.depth_ratio;
     }
-    if (ray_scenes_[0]) std::copy(std::begin(ray_spread_), std::end(ray_spread_), c.ext);
+    if (traced) std::copy(std::begin(ray_spread_), std::end(ray_spread_), c.ext);
     if (ocean) {
         c.ext[0] = ocean_.amount;
         c.ext[1] = ocean_.pivot;
@@ -6475,35 +6472,40 @@ void D3D12Backend::EndDivide() {
     Unbind();
 }
 
-// pixel shader fetches of a shadow map whose scene this frame built are traced, each flagged with its scene's slot
-void D3D12Backend::RayShadows(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
-    if (ray_shadows_.empty() || fcip::Get().shadow_filter < fcip::kFilterRay) return;
-    if (info.textures.size() > fcip::kRayFirstSlot) return;
+// a shadow sampler holding a map whose scene this frame built is traced in its sampler's slot, the others fetch; false
+// when none is
+bool D3D12Backend::RayShadows(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
+    if (ray_shadows_.empty() || fcip::Get().shadow_filter < fcip::kFilterRay) return false;
+    if (info.textures.size() > fcip::kShadowOut) return false;
     fcip::SunMaps sun = fcip::SunMapsDrawn();
-    uint32_t bases[fcip::kRayScenes] = {};
-    uint32_t used = 0;
+    std::fill(std::begin(ray_spread_), std::end(ray_spread_), 0.0f);
+    bool any = false;
     for (uint32_t i = 0; i < info.textures.size(); i++) {
-        if (info.textures[i].dimension > 1) continue;
+        const TextureBinding& b = info.textures[i];
+        if (b.dimension > 1) continue;
         uint32_t fetch[6];
-        ReadFetch(s, info.textures[i].fetch, fetch);
+        ReadFetch(s, b.fetch, fetch);
         uint32_t base = xenos::DecodeTextureFetch(fetch).base;
         auto scene = ray_shadows_.find(base);
         if (scene == ray_shadows_.end() || scene->second.frame != frame_) continue;
-        uint32_t slot = uint32_t(std::find(bases, bases + used, base) - bases);
-        if (slot == fcip::kRayScenes) continue;
-        if (slot == used) {
-            bases[used++] = base;
-            ray_scenes_[slot] = scene->second.top->GetGPUVirtualAddress();
-            ray_spread_[slot] = RaySpread(base, sun);
-        }
-        opt.tex_flags[i] |= uint8_t(fcip::kShadowRay | slot << fcip::kRaySlotShift);
+        bool shadow_sampler = b.fetch >= fcip::kShadowFirstFetch && b.fetch <= fcip::kSunFetch;
+        static bool told = false;
+        if (!shadow_sampler && !std::exchange(told, true)) LOGR("rays: shadow map read through sampler %u", b.fetch);
+        if (!shadow_sampler) continue;
+        uint32_t slot = b.fetch - fcip::kShadowFirstFetch;
+        ray_scenes_[slot] = scene->second.top->GetGPUVirtualAddress();
+        ray_spread_[slot] = RaySpread(base, sun);
+        any = true;
     }
-    if (!used) return;
+    if (!any) return false;
+    // which samplers are traced goes in the spreads, so it makes no variant of its own
+    opt.tex_flags[fcip::kShadowOut] = fcip::kShadowTraced;
     // ultra's alpha tested receivers, the bushes among them, take no penumbra refinement
     bool coarse = opt.alpha_test && fcip::Get().shadow_filter == fcip::kFilterRayUltra;
     opt.tex_flags[fcip::kRayCoarseOut] = coarse ? 1 : 0;
     Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    return true;
 }
 
 // an alpha tested draw that traces shadows, depth tested and written without stencil, blending or alpha to coverage:
@@ -6514,17 +6516,15 @@ ID3D12PipelineState* D3D12Backend::EnsureDepthPass(const State& s, const ShaderO
     constexpr uint32_t kZTestAndWrite = 6;  // RB_DEPTHCONTROL bits 0 to 2: stencil off, z on, z write on
     constexpr uint32_t kZWriteAndFunc = 0x74;  // z write bit 2, z func bits 4 to 6
     constexpr uint32_t kZEqual = 2 << 4;
-    constexpr uint8_t kRayFlags = fcip::kShadowRay | (fcip::kRayScenes - 1) << fcip::kRaySlotShift;
     uint32_t c = k.depth_control;
-    if (!ray_scenes_[0] || !ps_opt.alpha_test || open_queries_ || Bits(c, 0, 3) != kZTestAndWrite) return nullptr;
+    if (ps_opt.tex_flags[fcip::kShadowOut] != fcip::kShadowTraced || !ps_opt.alpha_test || open_queries_) return nullptr;
+    if (Bits(c, 0, 3) != kZTestAndWrite) return nullptr;
     if (Bits(k.color_control, 4, 1)) return nullptr;
     for (uint32_t i = 0; i < 4; i++) {
         if (k.rt_formats[i] && (k.blend[i] & 0x1FFF1FFF) != 0x00010001) return nullptr;
     }
     ShaderOptions opt = ps_opt;
-    for (uint32_t i = 0; i < s.ps->info.textures.size(); i++) {
-        if (opt.tex_flags[i] & fcip::kShadowRay) opt.tex_flags[i] &= uint8_t(~kRayFlags);
-    }
+    opt.tex_flags[fcip::kShadowOut] = 0;
     opt.tex_flags[fcip::kDepthOut] = 1;
     Variant* ps = EnsureVariant(s.ps, opt);
     if (!ps || ps->info.writes_depth) return nullptr;
@@ -6552,8 +6552,8 @@ void D3D12Backend::RayViews(uint32_t table, const D3D12_GPU_VIRTUAL_ADDRESS* ray
     D3D12_SHADER_RESOURCE_VIEW_DESC scene{};
     scene.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
     scene.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    // a slot left untraced gets a null scene, which its shader branches past
     for (uint32_t i = 0; i < fcip::kRayScenes; i++) {
-        if (!rays[i]) continue;
         scene.RaytracingAccelerationStructure.Location = rays[i];
         dev_->CreateShaderResourceView(nullptr, &scene, ViewCpu(table + fcip::kRayFirstSlot + 2 + i));
     }
