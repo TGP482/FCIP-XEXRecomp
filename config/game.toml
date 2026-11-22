@@ -418,6 +418,12 @@ at = 0x8226F84C
 call = "WaterBobRoll"
 regs = ["f28", "f30"]
 
+[[hook]]  # f9 = Dampv and f10 = Dampvs, a boat's forward and sideways drag share per physics step, f29 the step
+at = 0x821E69CC
+call = "BoatDrag"
+regs = ["f9", "f10", "f29"]
+after = true
+
 # instruction hooks, defined in src/common/screen_quads.cpp
 [[hook]]  # the full screen quad's draw (EDRAM restore, fades): r6 its vertices, r23 set when it copies a texture
 at = 0x823AE5EC

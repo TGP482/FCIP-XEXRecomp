@@ -260,3 +260,22 @@ PPC_FUNC(GUEST(VirtualKeyboard_Update)) {
     W32(uint32_t(ctx.r[3]) + kKeyboardIdleFrame, uint32_t(frame));
     GUEST_ORIG(VirtualKeyboard_Update)(ctx, base);
 }
+
+// Boat drag
+
+// A boat's water drag takes a share of its forward and sideways speed each physics step, Dampv and Dampvs, a share
+// tuned to the 0.02 s steps the physics cuts the console's 30 fps frames into. Above 50 fps every frame is one shorter
+// step, so boats lost that share many more times a second and crawled. Each step now takes what 0.02 s steps would
+// over its own time.
+
+constexpr double kBoatStep = 0.02;  // the physics step a 30 fps frame is cut into
+
+static float StepShare(double share, double step) {
+    return float(1.0 - std::pow(std::max(1.0 - share, 0.0), step / kBoatStep));
+}
+
+// f9 = Dampv and f10 = Dampvs just loaded, f29 the step's time
+void BoatDrag(PPCContext& ctx, uint8_t*) {
+    ctx.f[9] = StepShare(ctx.f[9], ctx.f[29]);
+    ctx.f[10] = StepShare(ctx.f[10], ctx.f[29]);
+}
