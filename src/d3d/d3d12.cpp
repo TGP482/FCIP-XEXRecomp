@@ -56,6 +56,8 @@ bool RayTracing() { return g_ray_tracing; }
 // a translation of the title's microcode for one set of options
 struct Variant {
     ShaderInfo info;
+    std::string hlsl;  // until a draw first uses the variant
+    const wchar_t* profile = nullptr;
     std::vector<uint8_t> dxil;
     uint64_t key = 0;  // of the DXIL, so a cached pipeline of other DXIL never matches
     std::atomic<bool> building{false};  // compiling on a build thread; dxil and key are read once it is done
@@ -1944,7 +1946,9 @@ private:
 
     // shaders and pipelines
     Variant* EnsureVariant(Shader* s, const ShaderOptions& opt);
+    Variant* VariantFor(Shader* s, const ShaderOptions& opt);
     Variant* FindVariant(Shader* s, const ShaderOptions& opt);
+    Variant* Compiled(Variant* v);
     ID3D12PipelineState* EnsurePipeline(const PipelineKey& k, const Variant& vs, const Variant* ps);
     ID3D12PipelineState* EnsureDepthPass(const State& s, const ShaderOptions& ps_opt, const Variant& vs,
                                          PipelineKey& k);
@@ -2120,7 +2124,7 @@ private:
     void EndScene();
     bool EnsureUpscaled(uint32_t w, uint32_t h);
     void DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, DXGI_FORMAT fmt, uint32_t taps, Target& out);
-    bool DrawSharpened(Target& scene, Target& out);
+    bool DrawSharpened(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, Target& scene, Target& out);
     D3D12_GPU_VIRTUAL_ADDRESS BuildRayScene(const OcclusionArgs& a);
     bool BuildStructure(ID3D12GraphicsCommandList4* cl4, const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& in,
                         ComPtr<ID3D12Resource>& dst);
@@ -3132,16 +3136,15 @@ Shader* D3D12Backend::CreateShader(ShaderStage stage, const uint32_t* code, size
     return shaders_.back().get();
 }
 
-Variant* D3D12Backend::EnsureVariant(Shader* s, const ShaderOptions& opt) {
+Variant* D3D12Backend::EnsureVariant(Shader* s, const ShaderOptions& opt) { return Compiled(VariantFor(s, opt)); }
+
+// translated only: its info is known, its DXIL is made once a draw uses it
+Variant* D3D12Backend::VariantFor(Shader* s, const ShaderOptions& opt) {
     if (!s->last || std::memcmp(&s->last_opt, &opt, sizeof(opt)) != 0) {
         s->last = FindVariant(s, opt);
         s->last_opt = opt;
     }
-    if (s->last->building.load(std::memory_order_acquire)) {
-        skipped_draws_++;
-        return nullptr;
-    }
-    return s->last->dxil.empty() ? nullptr : s->last;
+    return s->last;
 }
 
 // on a build thread when async
@@ -3165,17 +3168,31 @@ Variant* D3D12Backend::FindVariant(Shader* s, const ShaderOptions& opt) {
         profile = L"ps_6_6";
         hlsl = "#define HELPER_LANES\n" + hlsl;
     }
-    g_perf.shaders++;
-    if (FindHlsl(hlsl, profile, v->dxil)) {
-        v->key = Hash64(v->dxil.data(), v->dxil.size());
-    } else if (Async()) {
-        v->building = true;
-        posted_shaders_++;
-        Post([variant = v.get(), hlsl = std::move(hlsl), profile] { BuildVariant(*variant, hlsl, profile); });
-    } else {
-        BuildVariant(*v, hlsl, profile);
-    }
+    v->hlsl = std::move(hlsl);
+    v->profile = profile;
     return v.get();
+}
+
+// the variant's DXIL, its compile started the first time; null while it builds or when it failed
+Variant* D3D12Backend::Compiled(Variant* v) {
+    if (!v->hlsl.empty()) {
+        std::string hlsl = std::exchange(v->hlsl, {});
+        g_perf.shaders++;
+        if (FindHlsl(hlsl, v->profile, v->dxil)) {
+            v->key = Hash64(v->dxil.data(), v->dxil.size());
+        } else if (Async()) {
+            v->building = true;
+            posted_shaders_++;
+            Post([v, hlsl = std::move(hlsl), profile = v->profile] { BuildVariant(*v, hlsl, profile); });
+        } else {
+            BuildVariant(*v, hlsl, v->profile);
+        }
+    }
+    if (v->building.load(std::memory_order_acquire)) {
+        skipped_draws_++;
+        return nullptr;
+    }
+    return v->dxil.empty() ? nullptr : v;
 }
 
 void FillBlend(const PipelineKey& k, D3D12_BLEND_DESC& d) {
@@ -4469,10 +4486,10 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     bool caustics = s.ps && !sun && !ray_scenes_[0] && CausticsFlags(s, s.ps->info, ps_opt);
     caustics_view_ = caustics ? caustics_.Get() : nullptr;
     bool blur = s.ps && BlurFlags(s, s.ps->info, ps_opt);
-    Variant* vs = EnsureVariant(s.vs, vs_opt);
+    Variant* vs = VariantFor(s.vs, vs_opt);
     // no pixel shader: a depth only draw
-    Variant* ps = s.ps ? EnsureVariant(s.ps, ps_opt) : nullptr;
-    if (!vs || (s.ps && !ps) || (!vs->info.fetches.empty() && !a.streams)) return;
+    Variant* ps = s.ps ? VariantFor(s.ps, ps_opt) : nullptr;
+    if (!vs->info.fetches.empty() && !a.streams) return;
     static const ShaderInfo kNoPixelShader;
     const ShaderInfo& ps_info = ps ? ps->info : kNoPixelShader;
     // the draw's vertices land in the chunk its vertex view covers
@@ -4480,8 +4497,6 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     BindViews(s, vs->info, ps_info);
 
     PipelineKey k;
-    k.vs = vs->key;
-    k.ps = ps ? ps->key : 0;
     Bound bound;
     PipelineKey unbound = k;
     bool motion = MotionWanted(s, ps_info);
@@ -4498,12 +4513,15 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     }
     if (bound.albedo) AlbedoFlags(s, ps_info, ps_opt);
     if (bound.motion || bound.albedo) {
-        vs = EnsureVariant(s.vs, vs_opt);
-        ps = EnsureVariant(s.ps, ps_opt);
-        if (!vs || !ps) return;
-        k.vs = vs->key;
-        k.ps = ps->key;
+        vs = VariantFor(s.vs, vs_opt);
+        ps = VariantFor(s.ps, ps_opt);
     }
+    // only the variants drawn with are compiled
+    vs = Compiled(vs);
+    ps = ps ? Compiled(ps) : nullptr;
+    if (!vs || (s.ps && !ps)) return;
+    k.vs = vs->key;
+    k.ps = ps ? ps->key : 0;
     FillKeyStates(s, k);
     if (!k.ds_format) k.depth_control = 0;
     D3D12_PRIMITIVE_TOPOLOGY topo;
@@ -5579,7 +5597,9 @@ void D3D12Backend::EndScene() {
     LogUpscale(what);
     upscale_.reset = !ok;
     if (!ok) DrawUpscaled(in.res.Get(), in.state, ReadFormat(in), 1, *out);
-    else if (!DrawSharpened(in, *out)) DrawUpscaled(upscale_.out.Get(), upscale_.out_state, kUpscaledFormat, 1, *out);
+    else if (!DrawSharpened(upscale_.out.Get(), upscale_.out_state, in, *out)) {
+        DrawUpscaled(upscale_.out.Get(), upscale_.out_state, kUpscaledFormat, 1, *out);
+    }
 }
 
 // once a frame before its present through frame generation's swap chain
@@ -5737,20 +5757,21 @@ void D3D12Backend::DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& stat
     Blit(src, fmt, whole, false, true, taps, 1, out.fmt);
 }
 
-// FSR's output into the scene's target through AMD CAS, alpha from the scene; false when its pipeline cannot be made
-bool D3D12Backend::DrawSharpened(Target& scene, Target& out) {
+// FSR's or TAA's output into the scene's target through AMD CAS, alpha from the scene; false when its pipeline cannot
+// be made
+bool D3D12Backend::DrawSharpened(ID3D12Resource* src, D3D12_RESOURCE_STATES& state, Target& scene, Target& out) {
     static const std::string hlsl = std::string(kCasDefines) + kFfxA + kCasLoad + kFfxCas + kCasPass;
     // CasSetup (ffx_cas.h) without scaling, at sharpness 0, AMD's default with the least ringing
     constexpr float kSharpness = 0.0f;
     float sharp = -1.0f / std::lerp(8.0f, 5.0f, kSharpness);
     // the scene was drawn jitter_ pixels over
     const float p[8] = {sharp, 0, 8, 0, jitter_[0] / scene.w, jitter_[1] / scene.h, 0, 0};
-    Transition(upscale_.out.Get(), upscale_.out_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(src, state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(scene.res.Get(), scene.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(out.res.Get(), out.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    ID3D12Resource* const src[3] = {upscale_.out.Get(), scene.res.Get(), nullptr};
+    ID3D12Resource* const views[3] = {src, scene.res.Get(), nullptr};
     const DXGI_FORMAT fmt[3] = {kUpscaledFormat, ReadFormat(scene), kSwapFormat};
-    return Pass(hlsl.c_str(), "vs", "cas", out.fmt, Rtv(out.view), out.w, out.h, src, fmt, p, -1);
+    return Pass(hlsl.c_str(), "vs", "cas", out.fmt, Rtv(out.view), out.w, out.h, views, fmt, p, -1);
 }
 
 // TAA
@@ -5778,7 +5799,7 @@ bool D3D12Backend::EnsureHistory(uint32_t w, uint32_t h) {
     return true;
 }
 
-// the scene into this frame's history over last frame's, then into the target the title draws on
+// the scene into this frame's history over last frame's, then sharpened into the target the title draws on
 void D3D12Backend::ResolveTemporal(Target& scene, Target& out) {
     bool ok = upscale_.motion && EnsureHistory(scene.w, scene.h);
     // a history older than the last present shows another view
@@ -5802,7 +5823,9 @@ void D3D12Backend::ResolveTemporal(Target& scene, Target& out) {
     }
     taa_.now = now;
     taa_.last = presents_;
-    DrawUpscaled(taa_.history[now].Get(), taa_.state[now], kUpscaledFormat, 1, out);
+    if (!DrawSharpened(taa_.history[now].Get(), taa_.state[now], scene, out)) {
+        DrawUpscaled(taa_.history[now].Get(), taa_.state[now], kUpscaledFormat, 1, out);
+    }
 }
 
 // RTAO

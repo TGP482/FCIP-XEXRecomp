@@ -163,7 +163,7 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kOceanReflection, "OCEAN REFLECTION",
      "Xbox 360 keeps the game's own ocean, Original Xbox mirrors the sky and shore over it like the original Xbox game"},
     {Kind::Value, kAntiAliasing, "ANTI ALIASING",
-     "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, TAA, or AMD FSR 3 from the render resolution, sharpened by AMD CAS"},
+     "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, or TAA or AMD FSR 3 from the render resolution, both sharpened by AMD CAS"},
     {Kind::Value, kFrameGeneration, "FRAME GENERATION",
      "Generates a frame between each two rendered ones with AMD FSR Frame Generation, with FSR on"},
     {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
