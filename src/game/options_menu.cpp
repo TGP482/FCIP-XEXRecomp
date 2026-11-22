@@ -1,6 +1,7 @@
 // default.xex: the settings entries in the User page and the pause menu's OPTIONS, the pages they open inside
 // CONTROLLER OPTIONS, EXIT and CUSTOM CAMPAIGN on the main menu and the main menu watermark
 #include <algorithm>
+#include <cstring>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "common/menu.h"
 #include "common/widgets.h"
 #include "core/log.h"
+#include "game/achievement_icons.h"
 #include "game/achievement_rows.h"
 #include "game/exit_menu.h"
 #include "game/profiles.h"
@@ -172,6 +174,7 @@ struct Native {
     uint32_t list = 0;
     int capture = -1;  // the row waiting for a key
     int section = -1;  // the heading shown, -1 for the list of them
+    int icons = -1;    // the achievements' picture column
     std::vector<const rows::Row*> rows;  // per list row
 };
 
@@ -188,7 +191,28 @@ struct Saved {
     uint8_t rows = 0;
     uint8_t map_visible = 0;
     uint8_t map_enabled = 0;
+    uint32_t icon = 0;  // the picture cloned into the row template
+    uint32_t name = 0;  // L_Name, moved right of it
 };
+
+// The achievements' pictures: the value list's rating picture cloned into our list's row template, at the left with
+// L_Name moved right of it, as another column whose cells take a sprite; put back with the page. A sprite loads its
+// texture by path into the menu's sprites, as the map list does (821684E0), from the pictures' own pack.
+constexpr uint32_t kListTemplate = 0x3Cu;  // the row template area
+constexpr uint32_t kListColumns = 0x98u;   // name crcs [+0x98, +0x9C), a column per cell
+constexpr uint32_t kItemCells = 0x2Cu;     // [+0x2C, +0x30)
+constexpr uint32_t kCellBytes = 0x28u;
+constexpr uint32_t kCellColour = 0x20u;
+constexpr uint32_t kCellColoured = 0x24u;
+constexpr uint32_t kListSetSprite = 0x8246F7A0u;  // (list, row, column, sprite)
+constexpr int16_t kIconRect[4] = {0, 20, 1, 21};  // left, right, top, bottom in the 22 unit row
+constexpr int kNameShift = 24;
+constexpr uint32_t kMenuSprites = 0x14u;
+constexpr uint32_t kAddSprite = 0x8216C440u;   // (sprites, std::string* path, std::string* name, u16 texels[4])
+constexpr uint32_t kFindSprite = 0x8246E1C8u;  // (sprites, name crc)
+constexpr uint16_t kIconTexels[4] = {0, 64, 0, 64};  // left, right, top, bottom of the SPA's 64x64 pictures
+constexpr uint32_t kSpriteText = 0x40u;
+constexpr uint32_t kSpriteBlockBytes = 0x1Cu * 2 + 8 + kSpriteText * 2;  // two std::strings, the texels, their texts
 
 // The value list: P_PopupValues as the stock rows open it for an option with more than two values (0x821BB360),
 // listing one of our rows' values; its key up (0x821BAEA0) is ours while it does
@@ -341,6 +365,19 @@ void NativeTitle(PPCContext& ctx) {
     SetCaption(ctx, Read32(title + kWidgetElement), caption);
 }
 
+// the last of a guest vector of u32 [first, last) dropped when it is value
+void PopIf(uint32_t vector_first, uint32_t value) {
+    uint32_t last = Read32(vector_first + 4);
+    if (last > Read32(vector_first) && Read32(last - 4) == value) Write32(vector_first + 4, last - 4);
+}
+
+void RemoveIconColumn(const Saved& was) {
+    if (!was.icon) return;
+    PopIf(Read32(was.list + kListTemplate) + 0x08, was.icon);
+    PopIf(was.list + kListColumns, kCrcRating);
+    ShiftRect(was.name, -kNameShift);
+}
+
 // puts the page back the way the layout had it; the stock open rebuilds its own rows
 void Restore(PPCContext& ctx, uint32_t page) {
     for (Saved& saved : g_saved) {
@@ -351,6 +388,7 @@ void Restore(PPCContext& ctx, uint32_t page) {
                     Read32(was.widget + kWidgetElement) == was.list && Read32(was.list) == kVtList;
         if (!same) return;
         for (uint32_t i = 0; i < 4; i++) Write32(was.widget + kWidgetUp + i * 4, was.links[i]);
+        RemoveIconColumn(was);
         Write8(was.list + kListRows, was.rows);
         kernel::CallGuest(ctx, kListRefresh, {was.list});
         if (was.map) {
@@ -377,6 +415,77 @@ Saved& SaveControls(uint32_t page, uint32_t widget, uint32_t list) {
     return saved;
 }
 
+void PutText(uint32_t addr, const std::string& text) {
+    uint32_t n = std::min<uint32_t>(uint32_t(text.size()), kSpriteText - 1);
+    std::memcpy(kernel::HostPtr(addr), text.data(), n);
+    kernel::W8(addr + n, 0);
+}
+
+// the SPA picture's sprite, made once per menu
+uint32_t SpriteFor(PPCContext& ctx, uint32_t image) {
+    static const uint32_t block = mem::AllocSystem(kSpriteBlockBytes);
+    uint32_t sprites = Read32(g_native.obj + kMenuSprites);
+    if (!block || !AddrOk(sprites) || !achievement_icons::Ensure(ctx)) return 0;
+    std::string path = achievement_icons::Path(image);
+    std::string name = "achievement_" + std::to_string(image);
+    uint32_t path_string = block;
+    uint32_t name_string = path_string + kStringBytes;
+    uint32_t texels = name_string + kStringBytes;
+    uint32_t path_text = texels + 8;
+    uint32_t name_text = path_text + kSpriteText;
+    for (uint32_t i = 0; i < 4; i++) kernel::W16(texels + i * 2, kIconTexels[i]);
+    PutText(path_text, path);
+    PutText(name_text, name);
+    kernel::CallGuest(ctx, kStringInit, {path_string, path_text});
+    kernel::CallGuest(ctx, kStringInit, {name_string, name_text});
+    kernel::CallGuest(ctx, kAddSprite, {sprites, path_string, name_string, texels});
+    kernel::CallGuest(ctx, kStringFree, {path_string, 1, 0});
+    kernel::CallGuest(ctx, kStringFree, {name_string, 1, 0});
+    return uint32_t(kernel::CallGuest(ctx, kFindSprite, {sprites, Crc32(name)}));
+}
+
+int ColumnOf(uint32_t list, uint32_t crc) {
+    uint32_t first = Read32(list + kListColumns);
+    uint32_t last = Read32(list + kListColumns + 4);
+    for (uint32_t it = first; it && it < last; it += 4) {
+        if (Read32(it) == crc) return int((it - first) / 4);
+    }
+    return -1;
+}
+
+void AddIconColumn(PPCContext& ctx, Saved& saved) {
+    uint32_t list = g_native.list;
+    uint32_t row = Read32(list + kListTemplate);
+    uint32_t values = Read32(g_native.obj + kHelper + kHelperValues);
+    uint32_t rating = FindWidget(Read32(values + kListTemplate), kCrcRating);
+    uint32_t name = FindWidget(row, kCrcName);
+    if (!rating || !name || FindWidget(row, kCrcRating)) {
+        LOGE("options menu: achievement pictures not added, row template %08X", row);
+        return;
+    }
+    uint32_t icon = CloneChild(ctx, row, rating);
+    if (!icon) return;
+    SetRect(icon, kIconRect);
+    ShiftRect(name, kNameShift);
+    kernel::CallGuest(ctx, kListAddColumn, {list, kCrcRating});
+    saved.icon = icon;
+    saved.name = name;
+    g_native.icons = ColumnOf(list, kCrcRating);
+}
+
+// a picture per achievement, none on the other rows
+void SetIcons(PPCContext& ctx, uint32_t list) {
+    for (int i = 0; g_native.icons >= 0 && i < NativeCount(); i++) {
+        uint32_t image = achievement_rows::Image(NativeRow(i));
+        uint32_t sprite = image ? SpriteFor(ctx, image) : 0;
+        kernel::CallGuest(ctx, kListSetSprite, {list, uint32_t(i), uint32_t(g_native.icons), sprite});
+        uint32_t cell = Read32(Read32(list + kListItems) + uint32_t(i) * kListItemBytes + kItemCells);
+        cell += uint32_t(g_native.icons) * kCellBytes;
+        Write32(cell + kCellColour, kIconHidden);
+        Write8(cell + kCellColoured, sprite == 0);
+    }
+}
+
 void FillRows(PPCContext& ctx, uint32_t list, int select) {
     kernel::CallGuest(ctx, kListClear, {list});
     for (int i = 0; i < NativeCount(); i++) {
@@ -387,6 +496,7 @@ void FillRows(PPCContext& ctx, uint32_t list, int select) {
         Write32(item + kItemColour, kLockedColour);
         Write8(item + kItemColoured, locked);
     }
+    SetIcons(ctx, list);
     RefreshValues(ctx);
     kernel::CallGuest(ctx, kListRefresh, {list});
     kernel::CallGuest(ctx, kListSelect, {list, uint32_t(select), 1, 1});
@@ -412,6 +522,7 @@ void Customise(PPCContext& ctx, uint32_t obj, int mode) {
         Write8(saved.map + kWidgetEnabled, saved.map_enabled & ~0x40);
     }
     Write8(list + kListRows, kNativeRows);
+    if (mode == kAchievementsPage) AddIconColumn(ctx, saved);
     FillRows(ctx, list, 0);
     NativeTitle(ctx);
     NativeHelp(ctx);

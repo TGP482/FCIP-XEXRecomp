@@ -80,6 +80,11 @@ bool Locked(const Row& row) {
     return a && !a->unlocked;
 }
 
+uint32_t Image(const Row& row) {
+    const xam::Achievement* a = row.kind == Kind::Achievement ? Find(row.id) : nullptr;
+    return a ? a->image : 0;
+}
+
 void Reset() {
     xam::ResetAchievements();
     Refresh();
