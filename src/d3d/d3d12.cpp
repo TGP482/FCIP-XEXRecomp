@@ -121,12 +121,13 @@ constexpr uint32_t kHudlessRtv = kMotionRtv + 2;  // frame generation's two back
 constexpr uint32_t kAlbedoRtv = kHudlessRtv + 2;   // global illumination's albedo, then its traced light and first blur
 constexpr uint32_t kGiRtv = kAlbedoRtv + 1;
 constexpr int kGiTargets = 2;
-constexpr uint32_t kFogRtv = kGiRtv + kGiTargets;  // volumetric fog's march and first blur
-constexpr int kFogTargets = 2;
+constexpr uint32_t kFogRtv = kGiRtv + kGiTargets;  // volumetric fog's medium, then its march and blur at half size
+constexpr int kFogTargets = 3;
 constexpr uint32_t kCloudRtv = kFogRtv + kFogTargets;  // volumetric clouds' march
 constexpr uint32_t kCausticsRtv = kCloudRtv + 1;       // the caustics' light
 constexpr uint32_t kTaaRtv = kCausticsRtv + 1;        // TAA's two histories, this frame's and the last
-constexpr uint32_t kRtvSlots = kTaaRtv + 2;
+constexpr uint32_t kMotionDepthRtv = kTaaRtv + 2;  // frame generation's depth: a multisampled scene's sample 0
+constexpr uint32_t kRtvSlots = kMotionDepthRtv + 1;
 constexpr DXGI_FORMAT kAlbedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kGiFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 // a full float: the water's draws fade the light by the floor's distance less theirs, which half floats step through
@@ -1132,8 +1133,10 @@ float3 Seen(float2 px) {
     float3 dir = float3((n - proj.zw) * proj.xy, 1);
     return dir * (kSky / length(dir));
 }
+// the full size pixel a half size texel stands for
+float2 Full(float2 texel) { return floor(texel) * 2 + 0.5; }
 float4 fog_march(float4 pos : SV_Position) : SV_Target {
-    float3 c = Seen(pos.xy);
+    float3 c = Seen(Full(pos.xy));
     float dist = length(c);
     // the sun map's depth grows toward the sun
     float3 axis = sun[2].xyz;
@@ -1157,31 +1160,63 @@ float4 fog_march(float4 pos : SV_Position) : SV_Target {
     }
     return float4(light, trans);
 }
-// opt.zw: step; 5 taps average the 4 pixel dither, depth edges left out
-float4 Smooth(float2 pos) {
-    int2 p = int2(pos);
-    int2 lo = int2(vp.xy);
-    int2 hi = int2(vp.xy + vp.zw) - 1;
-    float z = Seen(pos).z;
+// the scissor in half size texels
+int2 HalfLo() { return int2(vp.xy) / 2; }
+int2 HalfHi() { return (int2(vp.xy + vp.zw) - 1) / 2; }
+// at half size, opt.zw: step; 5 taps average the 4 texel dither, depth edges left out
+float4 fog_blur(float4 pos : SV_Position) : SV_Target {
+    int2 p = int2(pos.xy);
+    float z = Seen(Full(pos.xy)).z;
     float4 sum = 0;
     float n = 0;
     for (int i = -2; i <= 2; i++) {
-        int2 at = clamp(p + i * int2(opt.zw), lo, hi);
-        float w = (abs(i) == 2 ? 0.5 : 1) * saturate(2 - abs(Seen(at).z - z) / (z * 0.02));
+        int2 at = clamp(p + i * int2(opt.zw), HalfLo(), HalfHi());
+        float w = (abs(i) == 2 ? 0.5 : 1) * saturate(2 - abs(Seen(Full(at)).z - z) / (z * 0.02));
         sum += haze.Load(int3(at, 0)) * w;
         n += w;
     }
     return sum / n;
 }
-float4 fog_blur(float4 pos : SV_Position) : SV_Target { return Smooth(pos.xy); }
-float4 fog_apply(float4 pos : SV_Position) : SV_Target { return Smooth(pos.xy); }
+// the blurred haze at a full size pixel from the 4 half size texels around it, those across a depth edge left out;
+// with none alike the nearest in depth
+float4 Upsampled(float2 pos, float z) {
+    float2 at = (pos - 0.5) * 0.5;
+    int2 base = int2(floor(at));
+    float2 f = at - base;
+    float4 sum = 0;
+    float n = 0;
+    float4 nearest = 0;
+    float gap = 1e30;
+    for (int k = 0; k < 4; k++) {
+        int2 o = int2(k & 1, k >> 1);
+        int2 t = clamp(base + o, HalfLo(), HalfHi());
+        float4 h = haze.Load(int3(t, 0));
+        float dz = abs(Seen(Full(t)).z - z);
+        float2 bilinear = lerp(1 - f, f, float2(o));
+        float w = bilinear.x * bilinear.y * saturate(2 - dz / (z * 0.02));
+        sum += h * w;
+        n += w;
+        if (dz < gap) {
+            gap = dz;
+            nearest = h;
+        }
+    }
+    return n > 1e-4 ? sum / n : nearest;
+}
 // the medium the draws past the fog look through, as if even along the pixel's ray: the fog's colour over what it
 // hides, and its extinction a unit of view distance
 float4 fog_medium(float4 pos : SV_Position) : SV_Target {
-    float4 h = Smooth(pos.xy);
+    float z = Seen(pos.xy).z;
+    float4 h = Upsampled(pos.xy, z);
     float hidden = 1 - h.a;
     float3 colour = hidden > 1e-4 ? h.rgb / hidden : 0;
-    return float4(colour, -log(max(h.a, 1e-6)) / Seen(pos.xy).z);
+    return float4(colour, -log(max(h.a, 1e-6)) / z);
+}
+// the medium back to in scatter and transmittance along the pixel's ray
+float4 fog_apply(float4 pos : SV_Position) : SV_Target {
+    float4 m = haze.Load(int3(pos.xy, 0));
+    float trans = exp(-m.a * Seen(pos.xy).z);
+    return float4(m.rgb * (1 - trans), trans);
 }
 )";
 
@@ -1584,18 +1619,30 @@ cbuffer M : register(b1) {
 };
 Texture2D<float> depth : register(t0);
 Texture2D<float2> drawn : register(t1);
+// a multisampled scene's, read at sample 0
+Texture2DMS<float> depth_ms : register(t2);
+Texture2DMS<float2> drawn_ms : register(t3);
 float4 vs(uint id : SV_VertexID) : SV_Position {
     float2 t = float2((id << 1) & 2, id & 2);
     return float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
 }
-float2 motion(float4 pos : SV_Position) : SV_Target {
-    int3 p = int3(pos.xy, 0);
-    float2 m = drawn.Load(p);
+float2 complete(float4 pos, float2 m, float z) {
     if (m.x < 16384) return m;
     float2 n = pos.xy * ndc.xy + ndc.zw;
-    float4 last = mul(float4(n, (depth.Load(p) - zuv.y) / zuv.x, 1), reproject);
+    float4 last = mul(float4(n, (z - zuv.y) / zuv.x, 1), reproject);
     float2 mv = (last.xy / last.w - n) * zuv.zw;
     return last.w > 0 ? clamp(mv, -2, 2) : 2;
+}
+float2 motion(float4 pos : SV_Position) : SV_Target {
+    int3 p = int3(pos.xy, 0);
+    return complete(pos, drawn.Load(p), depth.Load(p));
+}
+float2 motion_ms(float4 pos : SV_Position) : SV_Target {
+    int2 p = int2(pos.xy);
+    return complete(pos, drawn_ms.Load(p, 0), depth_ms.Load(p, 0));
+}
+float depth_resolve(float4 pos : SV_Position) : SV_Target {
+    return depth_ms.Load(int2(pos.xy), 0);
 }
 )";
 
@@ -2092,10 +2139,10 @@ private:
     void TargetView(ID3D12Resource* res, DXGI_FORMAT fmt, uint32_t samples, uint32_t slot);
     void CapIllumination(const State& s, const PipelineKey& k, const Bound& b, const CasterDraw& caster);
 
-    // motion vectors of the camera pass's world, for FSR
+    // motion vectors of the camera pass's world, for FSR, TAA and frame generation
     void BeginMotion(const State& s);
     void EndMotion(const State& s);
-    bool EnsureMotionTargets(uint32_t w, uint32_t h);
+    bool EnsureMotionTargets(uint32_t w, uint32_t h, uint32_t samples);
     bool MotionWanted(const State& s, const ShaderInfo& ps) const;
     void BindMotion(const State& s, const DrawArgs& a, const ShaderInfo& vs);
     void CompleteMotion(Target& depth, const DrawConstants& d);
@@ -2104,13 +2151,15 @@ private:
     // FSR: the camera's pass at the scene scale, upscaled at its end into its target at the render scale
     bool Fsr() const { return fcip::Get().fsr && fsr::Upscaling(); }
     // frame generation's swap chain only while it is on: it costs a copy and two threads every present
-    bool GenerationWanted() const { return fcip::Get().frame_generation && Fsr() && fsr::FrameGeneration(); }
+    bool GenerationWanted() const { return fcip::Get().frame_generation && fsr::FrameGeneration(); }
     // TAA: the camera's pass jittered as for FSR, resolved at its end at the same scale
     bool Taa() const { return fcip::Get().taa; }
     bool EnsureHistory(uint32_t w, uint32_t h);
     void ResolveTemporal(Target& scene, Target& out);
     void RecreateSwapChain();
-    void ConfigureGeneration(bool enabled);
+    void ConfigureGeneration(bool enabled, uint32_t render_w = 0, uint32_t render_h = 0);
+    bool EnsureSceneInputs(Target& color, fsr::Frame& f);
+    void PrepareGeneration(const fsr::Frame& f);
     void KeepHudless(const State& s);
     bool EnsureHudless();
     void DrawHudless(const xenos::TextureFetch& t);
@@ -2219,7 +2268,7 @@ private:
     uint32_t ao_w_ = 0;
     uint32_t ao_h_ = 0;
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> ao_pipelines_;
-    // volumetric fog: its march, later its medium, and its first blur
+    // volumetric fog: its medium, then its march and blur at half size
     ComPtr<ID3D12Resource> fog_[kFogTargets];
     D3D12_RESOURCE_STATES fog_state_[kFogTargets] = {};
     uint32_t fog_w_ = 0;
@@ -2252,12 +2301,15 @@ private:
         bool active = false;  // open
         bool still = false;   // over the ocean's layers, whose grid follows the camera: their water holds still
         uint64_t rt_key = 0;  // the scene's colour target
-        ComPtr<ID3D12Resource> drawn;
+        ComPtr<ID3D12Resource> drawn;  // at the scene's samples
         ComPtr<ID3D12Resource> done;
+        ComPtr<ID3D12Resource> depth;  // a multisampled scene's sample 0, for frame generation
         D3D12_RESOURCE_STATES drawn_state = D3D12_RESOURCE_STATE_COMMON;
         D3D12_RESOURCE_STATES done_state = D3D12_RESOURCE_STATE_COMMON;
+        D3D12_RESOURCE_STATES depth_state = D3D12_RESOURCE_STATE_COMMON;
         uint32_t w = 0;
         uint32_t h = 0;
+        uint32_t samples = 1;
         MotionCamera camera;
         float last_clip[16] = {};
         bool has_last = false;
@@ -4066,7 +4118,7 @@ bool D3D12Backend::BindTargets(const State& s, const ShaderInfo& ps, PipelineKey
     if (!count && !ds) return false;
     b.ds = ds;
     b.scale = b.rt ? b.rt->scale : ds->scale;
-    if (motion && ds && b.rt && MapKey(*b.rt) == motion_.rt_key && b.rt->samples == 1) {
+    if (motion && ds && b.rt && MapKey(*b.rt) == motion_.rt_key && b.rt->samples == motion_.samples) {
         while (count < kMotionTarget) {
             k.rt_formats[count] = kNullRtvFormat;
             rtv[count++] = Rtv(kNullRtv);
@@ -4991,26 +5043,27 @@ void D3D12Backend::VolumetricFog(const State& s, const OcclusionArgs& a) {
     std::copy(std::begin(view.height), std::end(view.height), c + 48);
     std::copy(std::begin(view.sun_colour), std::end(view.sun_colour), c + 52);
     std::copy(std::begin(view.terrain), std::end(view.terrain), c + 56);
-    AoPass march{.entry = "fog_march", .out = kGiFormat, .rtv = Rtv(kFogRtv), .fog = true, .sun = sun,
-                 .shade = shade};
-    AoPass across{.entry = "fog_blur", .out = kGiFormat, .rtv = Rtv(kFogRtv + 1), .src = fog_[0].Get(), .step_x = 1,
+    AoPass march{.entry = "fog_march", .out = kGiFormat, .rtv = Rtv(kFogRtv + 1), .fog = true, .sun = sun,
+                 .shade = shade, .half = true};
+    AoPass across{.entry = "fog_blur", .out = kGiFormat, .rtv = Rtv(kFogRtv + 2), .src = fog_[1].Get(), .step_x = 1,
+                  .src_format = kGiFormat, .fog = true, .half = true};
+    AoPass down{.entry = "fog_blur", .out = kGiFormat, .rtv = Rtv(kFogRtv + 1), .src = fog_[2].Get(), .step_y = 1,
+                .src_format = kGiFormat, .fog = true, .half = true};
+    AoPass medium{.entry = "fog_medium", .out = kGiFormat, .rtv = Rtv(kFogRtv), .src = fog_[1].Get(),
                   .src_format = kGiFormat, .fog = true};
-    AoPass down{.entry = "fog_apply", .out = rt->fmt, .samples = rt->samples, .blend = true, .rtv = Rtv(rt->view),
-                .src = fog_[1].Get(), .step_y = 1, .src_format = kGiFormat, .fog = true};
-    AoPass medium{.entry = "fog_medium", .out = kGiFormat, .rtv = Rtv(kFogRtv), .src = fog_[1].Get(), .step_y = 1,
-                  .src_format = kGiFormat, .fog = true};
+    AoPass apply{.entry = "fog_apply", .out = rt->fmt, .samples = rt->samples, .blend = true, .rtv = Rtv(rt->view),
+                 .src = fog_[0].Get(), .src_format = kGiFormat, .fog = true};
+    // each pass draws into fog_[i], then leaves it for the next to read
+    auto into = [&](const AoPass& p, int i) {
+        Transition(fog_[i].Get(), fog_state_[i], D3D12_RESOURCE_STATE_RENDER_TARGET);
+        bool drawn = OcclusionPass(p, *ds, c, rect);
+        Transition(fog_[i].Get(), fog_state_[i], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        return drawn;
+    };
     Transition(ds->res.Get(), ds->state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-    Transition(fog_[0].Get(), fog_state_[0], D3D12_RESOURCE_STATE_RENDER_TARGET);
-    bool ok = OcclusionPass(march, *ds, c, rect);
-    Transition(fog_[0].Get(), fog_state_[0], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-    Transition(fog_[1].Get(), fog_state_[1], D3D12_RESOURCE_STATE_RENDER_TARGET);
-    ok = ok && OcclusionPass(across, *ds, c, rect);
-    Transition(fog_[1].Get(), fog_state_[1], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    bool ok = into(march, 1) && into(across, 2) && into(down, 1) && into(medium, 0);
     Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    ok = ok && OcclusionPass(down, *ds, c, rect);
-    Transition(fog_[0].Get(), fog_state_[0], D3D12_RESOURCE_STATE_RENDER_TARGET);
-    ok = ok && OcclusionPass(medium, *ds, c, rect);
-    Transition(fog_[0].Get(), fog_state_[0], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    ok = ok && OcclusionPass(apply, *ds, c, rect);
     fog_near_ = ok;
     fog_rt_key_ = MapKey(*rt);
     Unbind();
@@ -5055,10 +5108,12 @@ ID3D12Resource* D3D12Backend::ShadeTexture() {
 bool D3D12Backend::EnsureFogTargets(uint32_t w, uint32_t h) {
     if (fog_[kFogTargets - 1] && fog_w_ == w && fog_h_ == h) return true;
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
-    D3D12_RESOURCE_DESC d = TextureDesc(kGiFormat, w, h);
-    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     fog_w_ = fog_h_ = 0;
     for (int i = 0; i < kFogTargets; i++) {
+        // the medium at full size, the march and its blur at half
+        uint32_t shift = i == 0 ? 0 : 1;
+        D3D12_RESOURCE_DESC d = TextureDesc(kGiFormat, (w + shift) >> shift, (h + shift) >> shift);
+        d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         if (fog_[i]) Release(std::move(fog_[i]));
         fog_state_[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
         HRESULT hr = dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, fog_state_[i], nullptr,
@@ -5358,7 +5413,7 @@ void D3D12Backend::BeginMotion(const State& s) {
     MotionCamera camera;
     if (!TakeMotionCamera(camera)) return;
     Target* rt = ColorTarget(s, 0, TargetHeight(s));
-    if (!rt || rt->samples != 1 || !EnsureMotionTargets(rt->w, rt->h)) {
+    if (!rt || !EnsureMotionTargets(rt->w, rt->h, rt->samples)) {
         motion_.has_last = false;
         return;
     }
@@ -5406,7 +5461,7 @@ void D3D12Backend::EndMotion(const State& s) {
     uint32_t height = TargetHeight(s);
     Target* rt = ColorTarget(s, 0, height);
     Target* ds = DepthTarget(s, height);
-    if (!rt || !ds || MapKey(*rt) != motion_.rt_key || ds->samples != 1) return;
+    if (!rt || !ds || MapKey(*rt) != motion_.rt_key || ds->samples != motion_.samples) return;
     if (ds->w != motion_.w || ds->h != motion_.h) return;
     upscale_.depth = MapKey(*ds);
     upscale_.camera = motion_.camera;
@@ -5423,10 +5478,11 @@ void D3D12Backend::EndMotion(const State& s) {
     }
 }
 
-bool D3D12Backend::EnsureMotionTargets(uint32_t w, uint32_t h) {
-    if (motion_.done && motion_.w == w && motion_.h == h) return true;
+bool D3D12Backend::EnsureMotionTargets(uint32_t w, uint32_t h, uint32_t samples) {
+    if (motion_.done && motion_.w == w && motion_.h == h && motion_.samples == samples) return true;
     motion_.w = 0;
     motion_.h = 0;
+    if (motion_.depth) Release(std::move(motion_.depth));
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     D3D12_RESOURCE_DESC d = TextureDesc(kMotionFormat, w, h);
     d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
@@ -5435,6 +5491,7 @@ bool D3D12Backend::EnsureMotionTargets(uint32_t w, uint32_t h) {
     for (int i = 0; i < 2; i++) {
         if (*res[i]) Release(std::move(*res[i]));
         *state[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        d.SampleDesc.Count = i ? 1 : samples;
         if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, *state[i], nullptr,
                                                  IID_PPV_ARGS(&*res[i])))) {
             LOGE("D3D12: no %ux%u motion vector target", w, h);
@@ -5442,8 +5499,20 @@ bool D3D12Backend::EnsureMotionTargets(uint32_t w, uint32_t h) {
         }
         dev_->CreateRenderTargetView(res[i]->Get(), nullptr, Rtv(kMotionRtv + i));
     }
+    if (samples > 1) {
+        D3D12_RESOURCE_DESC dd = TextureDesc(DXGI_FORMAT_R32_FLOAT, w, h);
+        dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        motion_.depth_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &dd, motion_.depth_state, nullptr,
+                                                 IID_PPV_ARGS(&motion_.depth)))) {
+            LOGE("D3D12: no %ux%u depth for frame generation", w, h);
+            return false;
+        }
+        dev_->CreateRenderTargetView(motion_.depth.Get(), nullptr, Rtv(kMotionDepthRtv));
+    }
     motion_.w = w;
     motion_.h = h;
+    motion_.samples = samples;
     return true;
 }
 
@@ -5545,15 +5614,25 @@ void D3D12Backend::CapMotionMatch(const uint64_t (&read)[2], const uint8_t* now_
 
 // kMotionHlsl into the completed target; d maps the title's ndc over the depth target as its draws did
 void D3D12Backend::CompleteMotion(Target& depth, const DrawConstants& d) {
-    ID3D12PipelineState* pso = EnsurePassPipeline(kMotionHlsl, "vs", "motion", kMotionFormat, -1);
-    if (!pso) return;
+    bool ms = motion_.samples > 1;
+    ID3D12PipelineState* pso = EnsurePassPipeline(kMotionHlsl, "vs", ms ? "motion_ms" : "motion", kMotionFormat, -1);
+    ID3D12PipelineState* resolve = nullptr;
+    if (ms) resolve = EnsurePassPipeline(kMotionHlsl, "vs", "depth_resolve", DXGI_FORMAT_R32_FLOAT, -1);
+    if (!pso || (ms && !resolve)) return;
     Transition(depth.res.Get(), depth.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(motion_.drawn.Get(), motion_.drawn_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(motion_.done.Get(), motion_.done_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
     uint32_t views = AllocViews(kPsTextures);
-    ShaderView(depth.res.Get(), DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS, views);
-    ShaderView(motion_.drawn.Get(), kMotionFormat, views + 1);
-    NullViews(views + 2, kPsTextures - 2);
+    if (ms) {
+        NullViews(views, 2);
+        TargetView(depth.res.Get(), DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS, motion_.samples, views + 2);
+        TargetView(motion_.drawn.Get(), kMotionFormat, motion_.samples, views + 3);
+        NullViews(views + 4, kPsTextures - 4);
+    } else {
+        ShaderView(depth.res.Get(), DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS, views);
+        ShaderView(motion_.drawn.Get(), kMotionFormat, views + 1);
+        NullViews(views + 2, kPsTextures - 2);
+    }
     float c[24];
     std::memcpy(c, motion_.reproject, sizeof(motion_.reproject));
     // as OcclusionConstants: a pixel centre's host ndc back through the viewport to the title's
@@ -5572,6 +5651,13 @@ void D3D12Backend::CompleteMotion(Target& depth, const DrawConstants& d) {
     cl_->SetGraphicsRootDescriptorTable(kRootPsViews, ViewGuest(views));
     cl_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cl_->DrawInstanced(3, 1, 0, 0);
+    if (ms) {
+        Transition(motion_.depth.Get(), motion_.depth_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        D3D12_CPU_DESCRIPTOR_HANDLE dh = Rtv(kMotionDepthRtv);
+        cl_->OMSetRenderTargets(1, &dh, FALSE, nullptr);
+        cl_->SetPipelineState(resolve);
+        cl_->DrawInstanced(3, 1, 0, 0);
+    }
     Unbind();
 }
 
@@ -5602,7 +5688,12 @@ float D3D12Backend::SceneScale() const {
 void D3D12Backend::BeginScene() {
     upscale_.scene = Fsr() || Taa();
     upscale_.motion = false;
-    if (!upscale_.scene) return;
+    if (!upscale_.scene) {
+        // frame generation alone: the title's own targets, unjittered
+        jitter_[0] = 0;
+        jitter_[1] = 0;
+        return;
+    }
     // Halton 2 and 3, eight phases for each output pixel a scene pixel covers
     float ratio = scale_ / scene_scale_;
     uint32_t phases = uint32_t(std::ceil(8 * ratio * ratio));
@@ -5619,9 +5710,15 @@ void LogUpscale(const std::string& what) {
     LOGR("FSR: %s", what.c_str());
 }
 
-// the camera's pass ends: its colour upscaled into the same surface at the render scale, which the title draws on
+// the camera's pass ends: its colour upscaled into the same surface at the render scale, which the title draws on,
+// and its depth and motion handed to frame generation
 void D3D12Backend::EndScene() {
-    if (!std::exchange(upscale_.scene, false)) return;
+    fsr::Frame f;
+    if (!std::exchange(upscale_.scene, false)) {
+        auto drawn = targets_.find(upscale_.color);
+        if (generation_swap_ && drawn != targets_.end() && EnsureSceneInputs(drawn->second, f)) PrepareGeneration(f);
+        return;
+    }
     auto color = targets_.find(upscale_.color);
     if (color == targets_.end()) {
         LogUpscale("the camera pass drew no scene target");
@@ -5631,40 +5728,20 @@ void D3D12Backend::EndScene() {
     Target* out = EnsureTarget(in.surface, false, in.width, in.height);
     if (!out) return;
     if (Taa()) {
+        // read before the resolve, which sets the next reset
+        bool inputs = generation_swap_ && EnsureSceneInputs(in, f);
         ResolveTemporal(in, *out);
+        if (inputs) PrepareGeneration(f);
         return;
     }
     if (!EnsureUpscaled(out->w, out->h)) return;
-    auto depth = targets_.find(upscale_.depth);
     bool ok = false;
-    if (upscale_.motion && depth != targets_.end()) {
-        Target& ds = depth->second;
-        fsr::Frame f;
-        f.color = {in.res.Get(), uint32_t(ReadFormat(in)), in.w, in.h};
-        f.depth = {ds.res.Get(), uint32_t(DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS), ds.w, ds.h};
-        f.motion = {motion_.done.Get(), 0, motion_.w, motion_.h};
+    if (EnsureSceneInputs(in, f)) {
         f.output = {upscale_.out.Get(), 0, upscale_.w, upscale_.h};
-        f.camera = upscale_.camera;
-        f.jitter[0] = jitter_[0];
-        f.jitter[1] = jitter_[1];
-        f.reset = upscale_.reset;
-        f.index = presents_;
-        if (cap_) {
-            CapFinite(in.res.Get(), in.state, "FSR colour");
-            CapFinite(ds.res.Get(), ds.state, "FSR depth");
-            CapFinite(motion_.done.Get(), motion_.done_state, "FSR motion");
-        }
-        Transition(in.res.Get(), in.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-        Transition(ds.res.Get(), ds.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-        Transition(motion_.done.Get(), motion_.done_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
         Transition(upscale_.out.Get(), upscale_.out_state, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         ok = fsr::Upscale(cl_.Get(), f);
-        if (ok && generation_swap_) {
-            // frames are generated from gameplay FSR drew, never over the F10 panel
-            ConfigureGeneration(!fcip::MenuOpen());
-            fsr::Prepare(cl_.Get(), f);
-        }
         Begin();  // FSR's passes left their heaps and root signature bound
+        if (ok) PrepareGeneration(f);
         if (cap_) {
             CapFinite(upscale_.out.Get(), upscale_.out_state, "FSR output");
             char name[32];
@@ -5683,14 +5760,53 @@ void D3D12Backend::EndScene() {
     }
 }
 
+// the camera pass's colour, depth and motion as FSR reads them, readable by shaders; false without this scene's motion
+bool D3D12Backend::EnsureSceneInputs(Target& color, fsr::Frame& f) {
+    auto depth = targets_.find(upscale_.depth);
+    if (!upscale_.motion || depth == targets_.end()) return false;
+    Target& ds = depth->second;
+    // a multisampled scene's depth as one sample, which CompleteMotion wrote
+    bool ms = motion_.samples > 1;
+    ID3D12Resource* depth_res = ms ? motion_.depth.Get() : ds.res.Get();
+    D3D12_RESOURCE_STATES& depth_state = ms ? motion_.depth_state : ds.state;
+    DXGI_FORMAT depth_format = ms ? DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+    f.color = {color.res.Get(), uint32_t(ReadFormat(color)), color.w, color.h};
+    f.depth = {depth_res, uint32_t(depth_format), ds.w, ds.h};
+    f.motion = {motion_.done.Get(), 0, motion_.w, motion_.h};
+    f.camera = upscale_.camera;
+    f.jitter[0] = jitter_[0];
+    f.jitter[1] = jitter_[1];
+    f.reset = upscale_.reset;
+    f.index = presents_;
+    if (cap_) {
+        if (color.samples == 1) CapFinite(color.res.Get(), color.state, "scene colour");
+        CapFinite(depth_res, depth_state, "scene depth");
+        CapFinite(motion_.done.Get(), motion_.done_state, "scene motion");
+    }
+    Transition(color.res.Get(), color.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(depth_res, depth_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(motion_.done.Get(), motion_.done_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    return true;
+}
+
+// frames are generated from gameplay, never over the F10 panel
+void D3D12Backend::PrepareGeneration(const fsr::Frame& f) {
+    if (!generation_swap_) return;
+    ConfigureGeneration(!fcip::MenuOpen(), f.color.w, f.color.h);
+    fsr::Prepare(cl_.Get(), f);
+    Begin();  // FSR's passes left their heaps and root signature bound
+}
+
 // once a frame before its present through frame generation's swap chain
-void D3D12Backend::ConfigureGeneration(bool enabled) {
+void D3D12Backend::ConfigureGeneration(bool enabled, uint32_t render_w, uint32_t render_h) {
     upscale_.configured = presents_;
     fsr::Generation g;
     g.swap = swap_.Get();
     g.index = presents_;
     g.enabled = enabled;
     g.frames = fcip::Get().frame_generation;
+    g.render_w = render_w;
+    g.render_h = render_h;
     std::copy(std::begin(frame_rect_), std::end(frame_rect_), g.rect);
     g.w = swap_w_;
     g.h = swap_h_;
@@ -5707,8 +5823,12 @@ void D3D12Backend::ConfigureGeneration(bool enabled) {
 void D3D12Backend::KeepHudless(const State& s) {
     if (!generation_swap_) return;
     Target* rt = ColorTarget(s, 0, TargetHeight(s));
-    if (!rt || rt->samples != 1) return;
+    if (!rt) return;
     D3D12_RESOURCE_DESC d = rt->res->GetDesc();
+    // a multisampled frame is resolved into one sample
+    bool resolve = d.SampleDesc.Count > 1;
+    d.SampleDesc = {1, 0};
+    d.Alignment = 0;
     D3D12_RESOURCE_DESC have{};
     if (hudless_.frame) have = hudless_.frame->GetDesc();
     if (have.Width != d.Width || have.Height != d.Height || have.Format != d.Format) {
@@ -5722,9 +5842,15 @@ void D3D12Backend::KeepHudless(const State& s) {
             return;
         }
     }
-    Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    Transition(hudless_.frame.Get(), hudless_.frame_state, D3D12_RESOURCE_STATE_COPY_DEST);
-    cl_->CopyResource(hudless_.frame.Get(), rt->res.Get());
+    if (resolve) {
+        Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
+        Transition(hudless_.frame.Get(), hudless_.frame_state, D3D12_RESOURCE_STATE_RESOLVE_DEST);
+        cl_->ResolveSubresource(hudless_.frame.Get(), 0, rt->res.Get(), 0, ReadFormat(*rt));
+    } else {
+        Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Transition(hudless_.frame.Get(), hudless_.frame_state, D3D12_RESOURCE_STATE_COPY_DEST);
+        cl_->CopyResource(hudless_.frame.Get(), rt->res.Get());
+    }
     hudless_.frame_format = ReadFormat(*rt);
     hudless_.kept = presents_;
 }

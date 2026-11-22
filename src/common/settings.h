@@ -21,7 +21,7 @@ struct Settings {
     bool smaa = false;          // over the finished frame, HUD included; combines with MSAA
     bool taa = false;           // temporal anti aliasing in place of MSAA, at the render resolution
     bool fsr = false;           // AMD FSR in place of MSAA, the render resolution its input
-    uint32_t frame_generation = 0;  // AMD FSR frames generated between each two rendered, 0 off to 3 (4X); FSR only
+    uint32_t frame_generation = 0;  // AMD FSR frames generated between each two rendered, 0 off to 3 (4X)
     uint32_t ambient_occlusion = 0;  // 0 off, 1 SSAO, 2 GTAO, 3 RTAO; the world only, under the fog
     bool global_illumination = false;  // ray traced bounce light over the camera's scene, under the fog
     bool volumetric_fog = false;       // height fog in place of the game's, shafts where the sun reaches
@@ -60,6 +60,9 @@ Settings& Get();
 
 // FSR or TAA: the camera's pass drawn jittered, with motion vectors
 inline bool Temporal() { return Get().fsr || Get().taa; }
+
+// the camera's pass with motion vectors: FSR, TAA or frame generation
+inline bool Motion() { return Temporal() || Get().frame_generation; }
 
 // ray traced shadows cover what the game's do, Ultra also what it leaves out: vehicles, dropped weapons, bushes
 enum : uint32_t { kFilterSharp, kFilterSoft, kFilterPcss, kFilterRay, kFilterRayUltra };
