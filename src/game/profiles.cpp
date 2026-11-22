@@ -1,6 +1,6 @@
 // default.xex: the original Xbox profile list (P_Profile), left unopened by the 360 build, opened by OPTIONS again;
 // the first start names a profile and each one saves to profiles\<name>.bin, the current also to the gamer's settings,
-// and keeps its multiplayer stats in profiles\<name>.stats
+// and keeps its multiplayer stats in profiles\<name>.stats and its achievements in profiles\<name>.achievements
 #include "game/profiles.h"
 
 #include <algorithm>
@@ -36,6 +36,8 @@ constexpr uint32_t kProfileBytes = 0x3218;
 constexpr uint32_t kProfileValid = 0x01;  // u8
 constexpr uint32_t kProfileName = 0x02;   // UTF-16
 constexpr uint32_t kProfileUser = 0x8C;   // the user whose title settings it saves to
+constexpr uint32_t kProfileSignedIn = 0x90;  // its user's sign in state (821E1840); story ends award only when set
+constexpr uint32_t kSignedInLocally = 1;     // the chosen profile is the signed in gamer
 // what the save writes as title settings: a dword, the options (0x388) and the packed progress (0x3BF)
 constexpr uint32_t kSavedStart = 0x94;
 constexpr uint32_t kSavedBytes = 0x74B;
@@ -141,9 +143,10 @@ std::vector<uint32_t> Loaded() {
 fs::path Folder() { return app::ExeDir() / "profiles"; }
 fs::path FileFor(const std::string& name) { return Folder() / (name + ".bin"); }
 
-// the stats the game reads and writes are the profile in play's
-void UseStats(const std::string& name) {
+// the stats and achievements the game reads and writes are the profile in play's
+void UseProfileFiles(const std::string& name) {
     xam::UseStatsFile(name.empty() ? std::string() : (Folder() / (name + ".stats")).string());
+    xam::UseAchievementsFile(name.empty() ? std::string() : (Folder() / (name + ".achievements")).string());
 }
 
 // a gamertag: a letter first, then letters, digits and single spaces, none at the end
@@ -243,12 +246,14 @@ void SetCurrent(PPCContext& ctx, uint32_t profile) {
     if (current) {
         CallGuest(ctx, SYM_Profile_Save, {current});
         W32(current + kProfileUser, g_next_user++);
+        W32(current + kProfileSignedIn, 0);
     }
     W32(profile + kProfileUser, user);
+    W32(profile + kProfileSignedIn, kSignedInLocally);
     CallGuest(ctx, SYM_ProfileManager_Select, {manager, user});
     CallGuest(ctx, SYM_ProfileManager_Apply, {manager});
     fcip::Get().profile = ProfileName(profile);
-    UseStats(fcip::Get().profile);
+    UseProfileFiles(fcip::Get().profile);
     app::Save();
     CallGuest(ctx, SYM_Profile_Save, {profile});
 }
@@ -283,7 +288,7 @@ bool OnFirstName(PPCContext& ctx, uint32_t text, uint32_t length) {
     if (!current) return true;
     for (size_t i = 0; i <= name.size(); i++) W16(current + kProfileName + uint32_t(i) * 2, uint8_t(name.c_str()[i]));
     fcip::Get().profile = name;
-    UseStats(name);
+    UseProfileFiles(name);
     app::Save();
     CallGuest(ctx, SYM_Profile_Save, {current});
     CallGuest(ctx, SYM_ProfileManager_Apply, {manager});
@@ -297,7 +302,7 @@ bool OnNewName(PPCContext& ctx, uint32_t text, uint32_t length) {
     uint32_t current = R32(Manager() + kManagerCurrent);
     if (fcip::Get().profile.empty() && current) {
         fcip::Get().profile = ProfileName(current);
-        UseStats(fcip::Get().profile);
+        UseProfileFiles(fcip::Get().profile);
         app::Save();
         CallGuest(ctx, SYM_Profile_Save, {current});
     }
@@ -322,7 +327,7 @@ bool ListShown(PPCContext& ctx, uint32_t menu) {
 }  // namespace
 
 void fcip::profiles::NoteMainMenu() {
-    if (!g_main_seen) UseStats(Get().profile);
+    if (!g_main_seen) UseProfileFiles(Get().profile);
     g_main_seen = true;
 }
 
