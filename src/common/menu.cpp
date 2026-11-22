@@ -131,7 +131,8 @@ enum RowId {
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kFrameGeneration, kSmaa, kAmbientOcclusion,
     kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection, kVolumetricClouds,
     kCaustics, kPadSensitivityX, kPadSensitivityY, kPadAimSensitivityX, kPadAimSensitivityY, kPadInvertX, kPadInvertY,
-    kPadHoldAim, kGyroRecenter, kJoinIp, kPlayer1, kPlayer2, kPlayer3, kPlayer4, kMicrophone, kPushToTalk
+    kPadHoldAim, kGyroRecenter, kJoinIp, kPlayer1, kPlayer2, kPlayer3, kPlayer4, kMicrophone, kPushToTalk,
+    kPauseOnFocusLoss
 };
 
 constexpr Row kSettingsRows[] = {
@@ -174,8 +175,10 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kDrawDistance, "DRAW DISTANCE",
      "Scales how far objects, grass and vegetation are drawn up to 8x and the area casting sun shadows up to 32x"},
     {Kind::Value, kBlur, "AIM AND SPRINT BLUR", "The blur the game adds while aiming down a scope and during feral run"},
-    {Kind::Heading, -1, "GENERAL", "Intros, audio output, the online join address and voice chat"},
+    {Kind::Heading, -1, "GENERAL", "Intros, pausing in the background, audio output, the online join address and voice chat"},
     {Kind::Value, kSkipIntros, "SKIP INTROS", "Skips the Ubisoft logo, the branding plate and the intro movie"},
+    {Kind::Value, kPauseOnFocusLoss, "PAUSE ON FOCUS LOSS",
+     "Pauses the game and its sound while the window is in the background or minimized, never in a network game"},
     {Kind::Value, kAudioOutput, "AUDIO OUTPUT",
      "Mono, stereo or 5.1 surround, automatic follows the speakers set up in Windows"},
     {Kind::Text, kJoinIp, "ONLINE JOIN IP",
@@ -639,6 +642,10 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
             Flip(s.vsync, step);
             std::snprintf(text, sizeof(text), "%s", OnOff(s.vsync));
             break;
+        case kPauseOnFocusLoss:
+            Flip(s.pause_on_focus_loss, step);
+            std::snprintf(text, sizeof(text), "%s", OnOff(s.pause_on_focus_loss));
+            break;
         case kPushToTalk:
             Flip(s.push_to_talk, step);
             std::snprintf(text, sizeof(text), "%s", OnOff(s.push_to_talk));
@@ -795,6 +802,7 @@ void RestoreDefaults(int page) {
     s.msaa = def.msaa;
     s.audio_output = def.audio_output;
     s.push_to_talk = def.push_to_talk;
+    s.pause_on_focus_loss = def.pause_on_focus_loss;
     s.custom_textures = def.custom_textures;
     s.dump_textures = def.dump_textures;
     s.texture_dump_format = def.texture_dump_format;

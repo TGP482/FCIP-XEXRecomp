@@ -47,6 +47,7 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 
 ### General
 - **Skip Intros** - Skips the Ubisoft logo, the branding plate and the intro movie.
+- **Pause On Focus Loss** - Pauses the game and its sound while the window is in the background or minimized.
 - **Audio Output** - Choose between Automatic, which follows the speakers set up in Windows, Mono, 2.0 Stereo and 5.1 Surround.
 - **System Link Support** - System Link can be played online by directly connecting to a friend's IP address, or over LAN.
 
