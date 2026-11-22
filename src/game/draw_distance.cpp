@@ -19,8 +19,10 @@ namespace {
 
 constexpr uint32_t kDetailViewDistance = 0x4C0;
 constexpr uint32_t kShadowRadius = 0x1174;
-// sector +0x149: 0x10 drawn, 0x40 detail asked, 0x80 detail loaded
+// sector +0x149: 0x08 render data loaded, 0x10 drawn, 0x40 detail asked, 0x80 detail loaded
 constexpr uint32_t kSectorFlags = 0x149;
+constexpr uint8_t kRenderLoaded = 0x08;
+constexpr uint8_t kDetailAsked = 0x40;
 constexpr uint32_t kNewSectors = 4;
 
 // new sectors a pass takes; limit: the kNewSectors nearest of those the last pass turned away
@@ -75,9 +77,15 @@ void GrassSectorRing(PPCContext& ctx, uint8_t*) {
     uint32_t key = uint32_t(ctx.r[25]) << 16 | (uint32_t(ctx.r[27]) & 0xFFFF);
     if (key <= g_last_sector) g_kept.Start();
     g_last_sector = key;
+    uint8_t flags = R8(uint32_t(ctx.r[30]) + kSectorFlags);
+    bool asked = flags & kDetailAsked;
+    // render data landing later zeroes the detail header (825FDF68), so detail waits for it
+    if (!asked && !(flags & kRenderLoaded)) {
+        ctx.r[11] = 0;
+        return;
+    }
     if (ctx.r[11] || !(ctx.r[28] || ctx.r[29])) return;
     float gap = fcip::GrassReach(S32(ctx, 21), S32(ctx, 20), S32(ctx, 27), S32(ctx, 25));
-    bool asked = R8(uint32_t(ctx.r[30]) + kSectorFlags) & 0x40;
     if (gap >= 0.0f && (asked || g_kept.Take(gap))) ctx.r[11] = 1;
 }
 
