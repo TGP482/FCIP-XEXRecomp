@@ -35,7 +35,6 @@
 #include "d3d/fsr.h"
 #include "d3d/motion.h"
 #include "d3d/occlusion.h"
-#include "d3d/ui_images.h"
 #include "d3d/readback.h"
 #include "d3d/cas_shader.h"
 #include "d3d/smaa_shader.h"
@@ -92,7 +91,6 @@ constexpr uint32_t kQueryCount = kQuerySlots;
 constexpr uint32_t kVsTextures = 16;
 constexpr uint32_t kPsTextures = 32;
 constexpr uint32_t kTextureViews = 16384;  // made views kept for copying, started over when full
-constexpr uint32_t kUiImages = 16;  // the UI heap's slots after ImGui's font
 constexpr uint32_t kConstBytes = 256 * 16;
 constexpr uint32_t kCbAlign = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 constexpr uint32_t kEdramTiles = 2048;
@@ -1863,7 +1861,6 @@ class D3D12Backend final : public Backend, public Context {
 public:
     ~D3D12Backend() override;
     bool Init(uint32_t width, uint32_t height) override;
-    ImTextureID MakeUiImage(const uint8_t* rgba, uint32_t w, uint32_t h);  // inside RenderUi
     Shader* CreateShader(ShaderStage stage, const uint32_t* code, size_t dwords) override;
     const ShaderInfo& Info(const Shader* s) const override { return s->info; }
     void Draw(const State& s, const DrawArgs& a) override;
@@ -2361,7 +2358,6 @@ private:
     bool generation_swap_ = false;    // swap_ is frame generation's
     ComPtr<ID3D12Resource> bb_[kFrames];
     ComPtr<ID3D12DescriptorHeap> view_heap_, sampler_heap_, rtv_heap_, dsv_heap_, ui_heap_;
-    std::vector<ComPtr<ID3D12Resource>> ui_images_;
     uint32_t view_inc_ = 0, sampler_inc_ = 0, rtv_inc_ = 0, dsv_inc_ = 0;
     ComPtr<ID3D12DescriptorHeap> copy_heap_;  // copied into tables: kPsTextures null views, then each frame's raw ring
     ComPtr<ID3D12DescriptorHeap> texture_view_heap_;
@@ -2608,7 +2604,7 @@ void D3D12Backend::CreateHeaps() {
     sampler_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCount, true, sampler_heap_);
     rtv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kRtvSlots, false, rtv_heap_);
     dsv_inc_ = make(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvCount, false, dsv_heap_);
-    make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1 + kUiImages, true, ui_heap_);
+    make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true, ui_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kPsTextures + kFrames, false, copy_heap_);
     make(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kTextureViews, false, texture_view_heap_);
     D3D12_SHADER_RESOURCE_VIEW_DESC nv{};
@@ -6908,31 +6904,16 @@ bool D3D12Backend::DrawSmaaPasses(ID3D12Resource* src, DXGI_FORMAT fmt, uint32_t
     return true;
 }
 
-D3D12Backend* g_ui = nullptr;  // while the UI callback runs
-
 void D3D12Backend::RenderUi() {
     std::lock_guard lock(app::UiLock());
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
-    g_ui = this;
     if (app::kGame.ui) app::kGame.ui(fps_);
-    g_ui = nullptr;
     ImGui::Render();
     ID3D12DescriptorHeap* uh[] = {ui_heap_.Get()};
     cl_->SetDescriptorHeaps(1, uh);
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cl_.Get());
-}
-
-ImTextureID D3D12Backend::MakeUiImage(const uint8_t* rgba, uint32_t w, uint32_t h) {
-    if (ui_images_.size() >= kUiImages) return nullptr;
-    ComPtr<ID3D12Resource> r;
-    if (!CreateLookupTexture(r, {DXGI_FORMAT_R8G8B8A8_UNORM, w, h, 4, rgba})) return nullptr;
-    SIZE_T slot = 1 + ui_images_.size();
-    D3D12_CPU_DESCRIPTOR_HANDLE cpu{ui_heap_->GetCPUDescriptorHandleForHeapStart().ptr + slot * view_inc_};
-    dev_->CreateShaderResourceView(r.Get(), nullptr, cpu);
-    ui_images_.push_back(std::move(r));
-    return reinterpret_cast<ImTextureID>(ui_heap_->GetGPUDescriptorHandleForHeapStart().ptr + slot * view_inc_);
 }
 
 // HDR10: the frame and the panel into their own targets, then both into the back buffer, the panel at SDR white
@@ -7428,10 +7409,6 @@ bool D3D12Backend::QueryResult(uint32_t q, uint32_t& samples) {
 }  // namespace
 
 std::unique_ptr<Backend> CreateBackend() { return std::make_unique<D3D12Backend>(); }
-
-ImTextureID UiImage(const uint8_t* rgba, uint32_t w, uint32_t h) {
-    return g_ui ? g_ui->MakeUiImage(rgba, w, h) : nullptr;
-}
 
 void NoteResolve(uint32_t base) {
     std::lock_guard lock(g_cpu.lock);

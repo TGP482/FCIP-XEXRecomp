@@ -15,6 +15,7 @@ constexpr int kSettingsPage = 0;
 constexpr int kKeyboardPage = 1;
 constexpr int kControllerPage = 2;
 constexpr int kDebugPage = 3;
+constexpr int kAchievementsPage = 4;  // the game's menus only
 
 bool MenuOpen();
 void ToggleMenu();
@@ -48,7 +49,7 @@ bool SkippableMovie();
 
 namespace rows {
 
-enum class Kind : uint8_t { Heading, Value, Bind, Level, Defaults, Text };
+enum class Kind : uint8_t { Heading, Value, Bind, Level, Defaults, Text, Achievement };
 
 struct Row {
     Kind kind;

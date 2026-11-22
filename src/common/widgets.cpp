@@ -281,12 +281,14 @@ int PageFor(uint32_t crc) {
     if (crc == kCrcMultiplayerSetup || crc == kCrcRecompSettings) return kSettingsPage;
     if (crc == kCrcMouseKeyboard) return kKeyboardPage;
     if (crc == kCrcControllerSettings) return kControllerPage;
+    if (crc == kCrcAchievements) return kAchievementsPage;
     return -1;
 }
 
 uint32_t EntryFor(int page) {
     if (page == kKeyboardPage) return kCrcMouseKeyboard;
     if (page == kControllerPage) return kCrcControllerSettings;
+    if (page == kAchievementsPage) return kCrcAchievements;
     return kCrcRecompSettings;
 }
 

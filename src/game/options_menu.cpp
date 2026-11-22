@@ -1,17 +1,16 @@
 // default.xex: the settings entries in the User page and the pause menu's OPTIONS, the pages they open inside
-// CONTROLLER OPTIONS, EXIT and CUSTOM CAMPAIGN on the main menu, ACHIEVEMENTS on the main and pause menus and the main
-// menu watermark
+// CONTROLLER OPTIONS, EXIT and CUSTOM CAMPAIGN on the main menu and the main menu watermark
 #include <algorithm>
 #include <iterator>
 #include <string>
 #include <vector>
 
-#include "common/achievements.h"
 #include "common/custom_levels.h"
 #include "common/keys.h"
 #include "common/menu.h"
 #include "common/widgets.h"
 #include "core/log.h"
+#include "game/achievement_rows.h"
 #include "game/exit_menu.h"
 #include "game/profiles.h"
 #include "game/virtual_keyboard.h"
@@ -46,17 +45,6 @@ constexpr uint32_t kSystemLink = 0xF65128AAu;   // B_SystemLink
 constexpr uint32_t kSplitScreen = 0x8FA9611Fu;  // B_SplitScreen
 constexpr uint32_t kMapManager = 0x68328DDEu;   // B_MapManager
 constexpr uint32_t kMultiplayerRows[] = {kCrcOnline, kSystemLink, kSplitScreen, kMapManager};
-// the pause menu, P_StartMenu, its rows top to bottom (press 821AE910)
-constexpr uint32_t kCrcPausePage = 0xA3E9B4F1u;
-constexpr uint32_t kCrcQuitToMenu = 0xDC334718u;  // B_Quit_to_Menu
-constexpr uint32_t kPauseRows[] = {
-    0x0DA8F792u,  // B_Resume
-    0x58EF6748u,  // B_Restart_Level
-    0x15F3847Du,  // B_Revert_Save
-    kCrcOptions, kCrcQuitToMenu,
-    0xA3AAFBC8u,  // B_CheatMenu
-    0xC4E8B388u,  // B_LiveMenu
-};
 
 // primary vtables of the two menu classes
 constexpr uint32_t kVtProfile = 0x8205CBA8u;  // CryProfile, P_EditProfile is pages[1]
@@ -74,11 +62,6 @@ uint32_t ProfilePage(uint32_t self, uint32_t index) {
 uint32_t MainPage(uint32_t self) {
     uint32_t page = Read32(Read32(self + kProfilePages) + 4);
     return page && Read32(page + kPageNameCrc) == kCrcMainPage ? page : 0;
-}
-
-uint32_t PausePage(uint32_t self) {
-    uint32_t page = Read32(Read32(self + kProfilePages));
-    return page && Read32(page + kPageNameCrc) == kCrcPausePage ? page : 0;
 }
 
 uint32_t MultiplayerPage(uint32_t self) {
@@ -107,29 +90,25 @@ void ShowEntry(uint32_t self) {
     Write8(widget + kWidgetEnabled, Read8(widget + kWidgetEnabled) | Read8(sibling + kWidgetEnabled));
 }
 
-// buttons cloned from GAME OPTIONS: MOUSE AND KEYBOARD and CONTROLLER on the User page take RESET DEFAULTS' row, which
-// moves to the bottom; the pause menu's copy of P_EditProfile has no spare slot, so it gets all three
+// buttons cloned from GAME OPTIONS: MOUSE AND KEYBOARD, CONTROLLER and ACHIEVEMENTS on the User page take RESET
+// DEFAULTS' row, which moves to the bottom; the pause menu's copy of P_EditProfile has no spare slot, so it gets all four
 void AddEntriesFor(PPCContext& ctx, uint32_t self) {
     uint32_t vtable = Read32(self);
     if (vtable == kVtProfile) {
         uint32_t page = ProfilePage(self, 1);
         AddEntries(ctx, page, FindWidget(page, kCrcMultiplayerSetup), kCrcVideo, kCrcControlSetup,
-                   {kCrcMouseKeyboard, kCrcControllerSettings}, FindWidget(page, kCrcResetDefault));
+                   {kCrcMouseKeyboard, kCrcControllerSettings, kCrcAchievements}, FindWidget(page, kCrcResetDefault));
     } else if (vtable == kVtInGame) {
         uint32_t page = ProfilePage(self, 4);
         AddEntries(ctx, page, FindWidget(page, kCrcVideo), kCrcVideo, kCrcControlSetup,
-                   {kCrcRecompSettings, kCrcMouseKeyboard, kCrcControllerSettings});
-        if (uint32_t pause = PausePage(self)) {
-            AddEntries(ctx, pause, LastRow(pause, kPauseRows), kCrcQuitToMenu, kCrcOptions, {kCrcAchievements});
-        }
+                   {kCrcRecompSettings, kCrcMouseKeyboard, kCrcControllerSettings, kCrcAchievements});
     } else if (vtable == kVtPreGame) {
         uint32_t page = MainPage(self);
         // CUSTOM CAMPAIGN only with custom levels to play
         if (FindCustomLevels().empty()) {
-            AddEntries(ctx, page, LastRow(page, kMainRows), kCrcCredits, kCrcOptions, {kCrcAchievements, kCrcExit});
+            AddEntries(ctx, page, LastRow(page, kMainRows), kCrcCredits, kCrcOptions, {kCrcExit});
         } else {
-            AddEntries(ctx, page, LastRow(page, kMainRows), kCrcCredits, kCrcOptions,
-                       {kCrcCustomCampaign, kCrcAchievements, kCrcExit});
+            AddEntries(ctx, page, LastRow(page, kMainRows), kCrcCredits, kCrcOptions, {kCrcCustomCampaign, kCrcExit});
         }
         // STATISTICS under MULTIPLAYER's last row, as the Live menu had it
         if (uint32_t mp = MultiplayerPage(self)) {
@@ -158,6 +137,10 @@ constexpr uint32_t kListItems = 0x88u;
 constexpr uint32_t kListItemBytes = 0x40u;
 constexpr uint32_t kListRows = 0xC2u;      // visible rows, 5 in the layout
 constexpr uint32_t kListSelected = 0xC4u;  // s16
+// a list row: a colour its text and pictures are drawn in, used when the flag is set (824705C0)
+constexpr uint32_t kItemColour = 0x1Cu;
+constexpr uint32_t kItemColoured = 0x20u;
+constexpr uint32_t kLockedColour = 0xFF7F7F7Fu;  // ABGR
 // 22 unit rows from y 125 end at 279, clear of the help frame at 299 once CONTROLLER SETUP is hidden
 constexpr uint8_t kNativeRows = 7;
 
@@ -260,6 +243,7 @@ constexpr uint32_t kMenuUi = 0x10u;  // a menu object's UI, its message boxes at
 constexpr uint32_t kUiMessageBoxes = 0x0Cu;
 constexpr uint32_t kOkCancel = 4u;
 constexpr const char* kDefaultsQuestion = "Restore every setting on this page to its default?";
+constexpr const char* kResetQuestion = "Lock every achievement this profile has earned?";
 constexpr uint32_t kWideCapacity = 0x18u;
 constexpr uint32_t kInlineCapacity = 7u;
 
@@ -288,6 +272,10 @@ Saved g_saved[4];
 int g_pending = -1;
 Popup g_popup;
 
+std::span<const rows::Row> PageRows(int mode) {
+    return mode == kAchievementsPage ? achievement_rows::Rows() : rows::Page(mode);
+}
+
 const rows::Row& NativeRow(int row) { return *g_native.rows[size_t(row)]; }
 int NativeCount() { return int(g_native.rows.size()); }
 
@@ -303,7 +291,7 @@ bool SectionEnd(const rows::Row& r) { return r.kind == rows::Kind::Heading || r.
 
 // the rows under the section's heading, or the headings and RESTORE DEFAULTS
 void ListRows() {
-    std::span<const rows::Row> page = rows::Page(g_native.mode);
+    std::span<const rows::Row> page = PageRows(g_native.mode);
     g_native.rows.clear();
     if (g_native.section < 0) {
         for (const rows::Row& r : page) {
@@ -321,10 +309,15 @@ void SetCell(PPCContext& ctx, int row, int column, const char* text) {
 }
 
 void RefreshValues(PPCContext& ctx) {
+    bool achievements = g_native.mode == kAchievementsPage;
     for (int i = 0; i < NativeCount(); i++) {
-        rows::Kind kind = NativeRow(i).kind;
-        if (kind != rows::Kind::Value && kind != rows::Kind::Bind) continue;
-        std::string value = g_native.capture == i ? "PRESS A KEY" : rows::Text(NativeRow(i));
+        const rows::Row& r = NativeRow(i);
+        if (achievements) {
+            SetCell(ctx, i, 1, achievement_rows::Value(r).c_str());
+            continue;
+        }
+        if (r.kind != rows::Kind::Value && r.kind != rows::Kind::Bind) continue;
+        std::string value = g_native.capture == i ? "PRESS A KEY" : rows::Text(r);
         SetCell(ctx, i, 1, value.c_str());
     }
 }
@@ -344,7 +337,7 @@ void NativeHelp(PPCContext& ctx) {
 void NativeTitle(PPCContext& ctx) {
     uint32_t title = FindWidget(g_native.page, kCrcTitle);
     const char* caption = CaptionFor(EntryFor(g_native.mode));
-    if (g_native.section >= 0) caption = rows::Page(g_native.mode)[size_t(g_native.section)].label;
+    if (g_native.section >= 0) caption = PageRows(g_native.mode)[size_t(g_native.section)].label;
     SetCaption(ctx, Read32(title + kWidgetElement), caption);
 }
 
@@ -389,6 +382,10 @@ void FillRows(PPCContext& ctx, uint32_t list, int select) {
     for (int i = 0; i < NativeCount(); i++) {
         kernel::CallGuest(ctx, kListAddRow, {list, Text(""), 0});
         SetCell(ctx, i, 0, NativeRow(i).label);
+        uint32_t item = Read32(list + kListItems) + uint32_t(i) * kListItemBytes;
+        bool locked = achievement_rows::Locked(NativeRow(i));
+        Write32(item + kItemColour, kLockedColour);
+        Write8(item + kItemColoured, locked);
     }
     RefreshValues(ctx);
     kernel::CallGuest(ctx, kListRefresh, {list});
@@ -400,7 +397,8 @@ void Customise(PPCContext& ctx, uint32_t obj, int mode) {
     uint32_t page = ControllerPage(obj);
     uint32_t widget = FindWidget(page, kCrcControllerOptions);
     uint32_t list = Read32(widget + kWidgetElement);
-    if (Read32(page + kPageNameCrc) != kCrcController || !widget || Read32(list) != kVtList || rows::Page(mode).empty()) {
+    if (mode == kAchievementsPage) achievement_rows::Refresh();
+    if (Read32(page + kPageNameCrc) != kCrcController || !widget || Read32(list) != kVtList || PageRows(mode).empty()) {
         LOGE("options menu: controller page %08X not as expected, stock page kept", page);
         return;
     }
@@ -421,7 +419,7 @@ void Customise(PPCContext& ctx, uint32_t obj, int mode) {
 
 // a section's rows, or with -1 the sections again with the one left selected
 void ShowSection(PPCContext& ctx, int section) {
-    std::span<const rows::Row> page = rows::Page(g_native.mode);
+    std::span<const rows::Row> page = PageRows(g_native.mode);
     const rows::Row* left = g_native.section >= 0 ? &page[size_t(g_native.section)] : nullptr;
     g_native.section = section;
     ListRows();
@@ -435,8 +433,14 @@ void ShowSection(PPCContext& ctx, int section) {
 // the message box's OK
 void DefaultsConfirmed(PPCContext& ctx, uint8_t*) {
     if (g_native.mode < 0 || !ListOk()) return;
-    rows::Defaults(g_native.mode);
-    RefreshValues(ctx);
+    if (g_native.mode == kAchievementsPage) {
+        achievement_rows::Reset();
+        ListRows();
+        FillRows(ctx, g_native.list, NativeCount() - 1);
+    } else {
+        rows::Defaults(g_native.mode);
+        RefreshValues(ctx);
+    }
     kernel::CallGuest(ctx, kSoundPlay, {Read32(kSoundSystem), kSoundChange});
 }
 
@@ -472,7 +476,7 @@ bool EnsureBlock() {
 void AskDefaults(PPCContext& ctx) {
     uint32_t boxes = Read32(Read32(g_native.obj + kMenuUi) + kUiMessageBoxes);
     if (!boxes || !EnsureBlock()) return;
-    uint32_t text = View(kDefaultsQuestion);
+    uint32_t text = View(g_native.mode == kAchievementsPage ? kResetQuestion : kDefaultsQuestion);
     uint32_t empty = g_popup.block + kBlockEmpty;
     uint32_t listener = g_popup.block + kBlockConfirm;
     kernel::CallGuest(ctx, kMessageBox,
@@ -580,7 +584,7 @@ void NativeKey(PPCContext& ctx, uint32_t code) {
     if (!accept && !step) return;
     // only the list of sections can select a heading
     if (r.kind == rows::Kind::Heading) {
-        if (accept) ShowSection(ctx, int(&r - rows::Page(g_native.mode).data()));
+        if (accept) ShowSection(ctx, int(&r - PageRows(g_native.mode).data()));
         return;
     }
     if (r.kind == rows::Kind::Bind) {
@@ -661,7 +665,7 @@ const bool g_tick = (g_menu_tick = NativeTick, true);
 void OpenNative(PPCContext& ctx, uint8_t* base, uint32_t page, int mode, PPCFunc* press) {
     uint32_t control = FindWidget(page, kCrcControlSetup);
     if (!control) {
-        OpenMenuPage(mode);
+        if (mode != kAchievementsPage) OpenMenuPage(mode);
         return;
     }
     g_pending = mode;
@@ -707,7 +711,6 @@ PPC_EXTERN_FUNC(__imp__sub_821D6200);
 PPC_EXTERN_FUNC(__imp__sub_821D65F0);
 PPC_EXTERN_FUNC(__imp__sub_821BBA70);
 PPC_EXTERN_FUNC(__imp__sub_821BAEA0);
-PPC_EXTERN_FUNC(__imp__sub_821AE910);
 
 // base menu init: resolves the pages, attaches listeners and widgets; the pages exist from here on
 PPC_FUNC(sub_8216FA60) {
@@ -728,8 +731,7 @@ PPC_FUNC(sub_8216F570) {
     uint32_t page = uint32_t(ctx.r[4]);
     __imp__sub_8216F570(ctx, base);
     uint32_t crc = Read32(page + kPageNameCrc);
-    bool ours = crc == kCrcEditProfile || crc == kCrcMainPage || crc == kCrcMultiplayerPage || crc == kCrcPausePage;
-    if (ours) SetEntryCaptions(ctx, page);
+    if (crc == kCrcEditProfile || crc == kCrcMainPage || crc == kCrcMultiplayerPage) SetEntryCaptions(ctx, page);
 }
 
 // User page help text
@@ -766,16 +768,6 @@ PPC_FUNC(sub_821AF940) {
         return;
     }
     OpenNative(ctx, base, ProfilePage(uint32_t(ctx.r[3]), 4), page, __imp__sub_821AF940);
-}
-
-// pause menu press, r4 the widget
-PPC_FUNC(sub_821AE910) {
-    if (Read32(uint32_t(ctx.r[4]) + kWidgetNameCrc) != kCrcAchievements) {
-        __imp__sub_821AE910(ctx, base);
-        return;
-    }
-    achievements::Open();
-    ctx.r[3] = 0;
 }
 
 // CONTROLLER OPTIONS open (vtable +0x24), r3 the page object
