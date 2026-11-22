@@ -2509,7 +2509,7 @@ private:
     std::unordered_map<uint64_t, uint32_t> sampler_sets_;
     uint32_t samplers_used_ = 0;
     std::ofstream pipeline_cache_;  // each pipeline appended as it is made
-    // motion vector pipelines made on the build threads while their draws go without motion vectors
+    // heavy pipelines made on the build threads while their draws go without what they add
     struct BuiltPipeline {
         PipelineKey key;
         D3D12_SHADER_BYTECODE vs{};
@@ -2523,7 +2523,7 @@ private:
     // since the last log line
     uint32_t posted_shaders_ = 0;
     uint32_t skipped_draws_ = 0;
-    uint32_t motionless_draws_ = 0;
+    uint32_t plain_draws_ = 0;
     uint32_t made_pipelines_ = 0;
     uint32_t posted_pipelines_ = 0;
     float pipeline_ms_ = 0;
@@ -4669,8 +4669,9 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     vs = Compiled(vs);
     ps = ps ? Compiled(ps) : nullptr;
     bool ready = vs && (!s.ps || ps);
-    bool motion_later = bound.motion && Async();
-    if (!ready && !motion_later) {
+    // what a heavy pipeline adds, which the draw goes without until a build thread made it
+    bool extras_later = (bound.motion || traced) && Async();
+    if (!ready && !extras_later) {
         skipped_draws_++;
         return;
     }
@@ -4688,26 +4689,33 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     }
     if (!UploadIndices(a, topo, count, min, max)) return;
     FinishKey(s, topo, k);
-    // its motion vector shaders or pipeline still being made, the draw shows without motion vectors meanwhile
-    if (motion_later && (!ready || !PipelineReady(k, *vs, ps))) {
+    CasterDraw caster;
+    uint32_t caster_vertices = CasterVertices(s, a, k, topo, count, bound, ps_opt.alpha_test, caster);
+    k.stream_out = caster.stream;
+    extras_later = extras_later || (caster_vertices && Async());
+    // its motion vectors, traced shadows or streamed casters still being made, the draw shows without them meanwhile
+    if (extras_later && (!ready || !PipelineReady(k, *vs, ps))) {
         k = unbound;
         if (!BindDrawTargets(s, ps_info, k, bound, false, albedo)) return;
         vs_opt.motion = false;
         ps_opt.motion = false;
+        if (traced) {
+            ps_opt.tex_flags[fcip::kShadowOut] = 0;
+            ps_opt.tex_flags[fcip::kRayCoarseOut] = 0;
+        }
         vs = Compiled(VariantFor(s.vs, vs_opt));
-        ps = Compiled(VariantFor(s.ps, ps_opt));
-        if (!vs || !ps) {
+        ps = s.ps ? Compiled(VariantFor(s.ps, ps_opt)) : nullptr;
+        if (!vs || (s.ps && !ps)) {
             skipped_draws_++;
             return;
         }
-        motionless_draws_++;
+        plain_draws_++;
         k.vs = vs->key;
-        k.ps = ps->key;
+        k.ps = ps ? ps->key : 0;
         FinishKey(s, topo, k);
+        caster = {};
+        caster_vertices = 0;
     }
-    CasterDraw caster;
-    uint32_t caster_vertices = CasterVertices(s, a, k, topo, count, bound, ps_opt.alpha_test, caster);
-    k.stream_out = caster.stream;
     ID3D12PipelineState* depth_pass = s.ps ? EnsureDepthPass(s, ps_opt, *vs, k) : nullptr;
     ID3D12PipelineState* pso = EnsurePipeline(k, *vs, ps);
     if (!pso) return;
@@ -6537,6 +6545,8 @@ ID3D12PipelineState* D3D12Backend::EnsureDepthPass(const State& s, const ShaderO
     depth.ps = ps->key;
     depth.stream_out = 0;
     depth.depth_only = 1;
+    // an optimisation only: skipped until a build thread made it
+    if (Async() && !PipelineReady(depth, vs, ps)) return nullptr;
     ID3D12PipelineState* pso = EnsurePipeline(depth, vs, ps);
     if (pso) k.depth_control = (c & ~kZWriteAndFunc) | kZEqual;
     return pso;
@@ -7341,12 +7351,12 @@ void D3D12Backend::Present(const uint32_t front[6]) {
         fps_ = fps_frames_ / secs;
         fps_frames_ = 0;
         fps_start_ = now;
-        if (posted_shaders_ || skipped_draws_ || made_pipelines_ || posted_pipelines_ || motionless_draws_) {
-            LOGR("async shaders: %u shaders started, %u draws skipped, %u without motion vectors, %u pipelines made in %.0f ms, %u built behind",
-                 posted_shaders_, skipped_draws_, motionless_draws_, made_pipelines_, pipeline_ms_, posted_pipelines_);
+        if (posted_shaders_ || skipped_draws_ || made_pipelines_ || posted_pipelines_ || plain_draws_) {
+            LOGR("async shaders: %u shaders started, %u draws skipped, %u drawn plain, %u pipelines made in %.0f ms, %u built behind",
+                 posted_shaders_, skipped_draws_, plain_draws_, made_pipelines_, pipeline_ms_, posted_pipelines_);
             posted_shaders_ = 0;
             skipped_draws_ = 0;
-            motionless_draws_ = 0;
+            plain_draws_ = 0;
             made_pipelines_ = 0;
             posted_pipelines_ = 0;
             pipeline_ms_ = 0;
