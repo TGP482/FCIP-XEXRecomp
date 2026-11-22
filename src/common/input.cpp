@@ -523,6 +523,9 @@ void GamePad(int port, input::Pad& pad) {
 
 void GameRumble(int port, uint16_t& left, uint16_t& right) {
     if (port == KeysPort() && K::KbmActive()) left = right = 0;
+    uint32_t strength = fcip::Get().vibration_strength;
+    left = uint16_t(std::min<uint32_t>(left * strength / 100, 0xFFFF));
+    right = uint16_t(std::min<uint32_t>(right * strength / 100, 0xFFFF));
 }
 
 // the cursor the client area shows: none while the mouse looks; false while the panel keeps its own

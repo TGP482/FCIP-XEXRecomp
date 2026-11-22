@@ -144,7 +144,7 @@ enum RowId {
     kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection, kVolumetricClouds,
     kCaustics, kPadSensitivityX, kPadSensitivityY, kPadAimSensitivityX, kPadAimSensitivityY, kPadInvertX, kPadInvertY,
     kPadHoldAim, kGyroRecenter, kJoinIp, kPlayer1, kPlayer2, kPlayer3, kPlayer4, kMicrophone, kPushToTalk,
-    kPauseOnFocusLoss, kLanguage
+    kPauseOnFocusLoss, kLanguage, kVibration
 };
 
 constexpr Row kSettingsRows[] = {
@@ -297,7 +297,7 @@ const std::vector<Row>& KeyboardRows() {
 }
 
 constexpr Row kControllerRows[] = {
-    {Kind::Heading, -1, "GENERAL", "Controller sensitivity, inversion and hold or toggle"},
+    {Kind::Heading, -1, "GENERAL", "Controller sensitivity, inversion, hold or toggle and vibration"},
     {Kind::Value, kPadSensitivityX, "HORIZONTAL SENSITIVITY", "Adjusts horizontal controller look sensitivity"},
     {Kind::Value, kPadSensitivityY, "VERTICAL SENSITIVITY", "Adjusts vertical controller look sensitivity"},
     {Kind::Value, kPadAimSensitivityX, "AIM HORIZONTAL SENSITIVITY",
@@ -307,6 +307,7 @@ constexpr Row kControllerRows[] = {
     {Kind::Value, kPadInvertX, "INVERT X-AXIS", "Inverts the horizontal right stick and gyro look"},
     {Kind::Value, kPadInvertY, "INVERT Y-AXIS", "Inverts the vertical right stick and gyro look"},
     {Kind::Value, kPadHoldAim, "HOLD TO AIM", "Aim only while the right stick is held in instead of toggling"},
+    {Kind::Value, kVibration, "VIBRATION STRENGTH", "Scales the controller's vibration from 10% to 200%"},
     {Kind::Heading, -1, "GYRO", "Gyro aiming for controllers with motion sensors"},
     {Kind::Value, kGyroAiming, "GYRO AIMING", "Turns the view with the controller's gyro, beside the right stick"},
     {Kind::Value, kGyroSensitivity, "GYRO SENSITIVITY", "Degrees the view turns for each degree the controller turns"},
@@ -545,6 +546,10 @@ void StepInputRow(int id, int step, char (&text)[64]) {
         int fov = StepRange(int(std::lround(setting)), 45, 140, 1, step);
         if (step) setting = float(fov);
         std::snprintf(text, sizeof(text), fov == 90 ? "%d (DEFAULT)" : "%d", fov);
+    } else if (id == kVibration) {
+        if (step) g.vibration_strength = uint32_t(StepRange(int(g.vibration_strength), 10, 200, 10, step));
+        uint32_t v = g.vibration_strength;
+        std::snprintf(text, sizeof(text), v == 100 ? "%u%% (DEFAULT)" : "%u%%", v);
     }
 }
 
@@ -801,6 +806,7 @@ void CopyPadSettings(Settings& to, const Settings& from) {
     to.pad_invert_x = from.pad_invert_x;
     to.pad_invert_y = from.pad_invert_y;
     to.pad_hold_aim = from.pad_hold_aim;
+    to.vibration_strength = from.vibration_strength;
     to.gyro = from.gyro;
 }
 

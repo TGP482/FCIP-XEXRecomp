@@ -49,6 +49,7 @@ struct Settings {
     bool pad_invert_x = false;
     bool pad_invert_y = false;
     bool pad_hold_aim = false;     // aim while the right stick is held in, the game toggles on each click
+    uint32_t vibration_strength = 100;  // percent of the game's rumble, 10 to 200
     bool skip_intros = true;       // the logo, the branding plate and the intro movie
     gyro::Settings gyro;           // the controller's gyro turns the view, beside the right stick
     bool invincible = false;
