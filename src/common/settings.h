@@ -21,7 +21,7 @@ struct Settings {
     bool smaa = false;          // over the finished frame, HUD included; combines with MSAA
     bool taa = false;           // temporal anti aliasing in place of MSAA, at the render resolution
     bool fsr = false;           // AMD FSR in place of MSAA, the render resolution its input
-    bool frame_generation = false;  // AMD FSR frame generation, with FSR only
+    uint32_t frame_generation = 0;  // AMD FSR frames generated between each two rendered, 0 off to 3 (4X); FSR only
     uint32_t ambient_occlusion = 0;  // 0 off, 1 SSAO, 2 GTAO, 3 RTAO; the world only, under the fog
     bool global_illumination = false;  // ray traced bounce light over the camera's scene, under the fog
     bool volumetric_fog = false;       // height fog in place of the game's, shafts where the sun reaches

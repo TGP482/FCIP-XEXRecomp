@@ -11,6 +11,7 @@
 #include <d3d12.h>
 #include <dxgi1_5.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -28,20 +29,7 @@ namespace fsr {
 
 namespace {
 
-// the loader finds the effect DLLs in its own folder
-constexpr const wchar_t* kLoaderDll = L"amd_fidelityfx_loader_dx12.dll";
-constexpr const wchar_t* kUpscalerDll = L"amd_fidelityfx_upscaler_dx12.dll";
-constexpr const wchar_t* kGenerationDll = L"amd_fidelityfx_framegeneration_dx12.dll";
-
-PfnFfxCreateContext g_create = nullptr;
-PfnFfxDestroyContext g_destroy = nullptr;
-PfnFfxConfigure g_configure = nullptr;
-PfnFfxQuery g_query = nullptr;
-PfnFfxDispatch g_dispatch = nullptr;
-
-bool g_loaded = false;
-bool g_sr_dlls = false;
-bool g_fg_dlls = false;
+bool g_files = false;  // FSR\shaders is beside the exe
 bool g_sr = false;
 bool g_fg = false;
 ID3D12Device* g_device = nullptr;
@@ -56,7 +44,8 @@ uint32_t g_generate_h = 0;
 uint32_t g_generate_format = 0;
 uint64_t g_frame_time = 0;  // ns, the last Upscale
 float g_delta_ms = 0;       // from the Upscale before
-std::atomic<bool> g_generating{false};  // the last frame set up generated one between it and the one before
+std::atomic<uint32_t> g_generated{0};  // frames the last frame set up generated between it and the one before
+std::atomic<uint32_t> g_frames{1};     // frames to generate, read on the swap chain's present
 
 // the first errors and warnings only: one that repeats each frame would flood the log
 void Message(uint32_t type, const wchar_t* msg) {
@@ -67,12 +56,6 @@ void Message(uint32_t type, const wchar_t* msg) {
     else LOGR("FSR: %ls", msg);
 }
 
-template <typename F>
-bool Find(HMODULE dll, const char* name, F& fn) {
-    fn = reinterpret_cast<F>(GetProcAddress(dll, name));
-    return fn != nullptr;
-}
-
 // whether this device runs an effect: the loader names its versions for it
 bool Available(uint64_t type) {
     ffxQueryDescGetVersions q{};
@@ -81,17 +64,17 @@ bool Available(uint64_t type) {
     q.device = g_device;
     uint64_t count = 0;
     q.outputCount = &count;
-    return g_query(nullptr, &q.header) == FFX_API_RETURN_OK && count;
+    return ffxQuery(nullptr, &q.header) == FFX_API_RETURN_OK && count;
 }
 
 void LogVersion(ffxContext* ctx, const char* what) {
     ffxQueryGetProviderVersion q{};
     q.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
-    if (g_query(ctx, &q.header) == FFX_API_RETURN_OK && q.versionName) LOGR("FSR: %s %s", what, q.versionName);
+    if (ffxQuery(ctx, &q.header) == FFX_API_RETURN_OK && q.versionName) LOGR("FSR: %s %s", what, q.versionName);
 }
 
 void Destroy(ffxContext& ctx) {
-    if (ctx) g_destroy(&ctx, nullptr);
+    if (ctx) ffxDestroyContext(&ctx, nullptr);
     ctx = nullptr;
 }
 
@@ -113,7 +96,7 @@ bool EnsureUpscale(uint32_t w, uint32_t h) {
     d.maxRenderSize = {w, h};
     d.maxUpscaleSize = {w, h};
     d.fpMessage = Message;
-    if (ffxReturnCode_t r = g_create(&g_upscale, &d.header, nullptr); r != FFX_API_RETURN_OK) {
+    if (ffxReturnCode_t r = ffxCreateContext(&g_upscale, &d.header, nullptr); r != FFX_API_RETURN_OK) {
         LOGE("FSR: no upscaler for %ux%u (result %u)", w, h, r);
         g_upscale = nullptr;
         return false;
@@ -148,7 +131,7 @@ bool EnsureGeneration(const Generation& g) {
     d.displaySize = {g.w, g.h};
     d.maxRenderSize = {g.w, g.h};
     d.backBufferFormat = ffxApiGetSurfaceFormatDX12(DXGI_FORMAT(g.format));
-    if (ffxReturnCode_t r = g_create(&g_generate, &d.header, nullptr); r != FFX_API_RETURN_OK) {
+    if (ffxReturnCode_t r = ffxCreateContext(&g_generate, &d.header, nullptr); r != FFX_API_RETURN_OK) {
         LOGE("FSR: no frame generation for %ux%u (result %u)", g.w, g.h, r);
         g_generate = nullptr;
         return false;
@@ -162,7 +145,9 @@ bool EnsureGeneration(const Generation& g) {
 
 // generated frames made on the swap chain's present, from the context Configure passed
 ffxReturnCode_t GenerateFrames(ffxDispatchDescFrameGeneration* params, void* ctx) {
-    return g_dispatch(static_cast<ffxContext*>(ctx), &params->header);
+    // the swap chain offers all its outputs, the setting picks how many
+    params->numGeneratedFrames = std::min(params->numGeneratedFrames, g_frames.load());
+    return ffxDispatch(static_cast<ffxContext*>(ctx), &params->header);
 }
 
 FfxApiResource Resource(const Image& i, uint32_t state) {
@@ -194,32 +179,21 @@ Camera CameraOf(const Frame& f) {
 void Load() {
     wchar_t exe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::filesystem::path dir = std::filesystem::path(exe).parent_path() / L"FSR";
-    g_sr_dlls = std::filesystem::exists(dir / kLoaderDll) && std::filesystem::exists(dir / kUpscalerDll);
-    g_fg_dlls = g_sr_dlls && std::filesystem::exists(dir / kGenerationDll);
-    if (!g_sr_dlls) {
-        LOGR("FSR: no AMD FidelityFX DLLs in the FSR folder");
-        return;
-    }
-    // its own folder first for what it loads
-    HMODULE dll = LoadLibraryExW((dir / kLoaderDll).c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
-    g_loaded = dll && Find(dll, "ffxCreateContext", g_create) && Find(dll, "ffxDestroyContext", g_destroy) &&
-               Find(dll, "ffxConfigure", g_configure) && Find(dll, "ffxQuery", g_query) &&
-               Find(dll, "ffxDispatch", g_dispatch);
-    if (!g_loaded) LOGE("FSR: amd_fidelityfx_loader_dx12.dll could not be loaded");
+    g_files = std::filesystem::is_directory(std::filesystem::path(exe).parent_path() / L"FSR" / L"shaders");
+    if (!g_files) LOGR("FSR: no shaders in the FSR folder");
 }
 
 void SetDevice(ID3D12Device* dev) {
-    if (!g_loaded) return;
+    if (!g_files) return;
     g_device = dev;
     g_sr = Available(FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE);
-    g_fg = g_fg_dlls && Available(FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION);
+    g_fg = Available(FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION);
     LOGR("FSR: upscaling %s, frame generation %s", g_sr ? "available" : "unavailable",
          g_fg ? "available" : "unavailable");
 }
 
 void Shutdown() {
-    if (!g_loaded) return;
+    if (!g_files) return;
     Destroy(g_generate);
     Destroy(g_upscale);
     g_sr = false;
@@ -228,17 +202,17 @@ void Shutdown() {
 
 Status UpscalingStatus() {
     if (g_sr) return Status::Ready;
-    return g_sr_dlls ? Status::NotSupported : Status::MissingDll;
+    return g_files ? Status::NotSupported : Status::MissingFiles;
 }
 
 Status GenerationStatus() {
     if (g_fg) return Status::Ready;
-    return g_fg_dlls ? Status::NotSupported : Status::MissingDll;
+    return g_files ? Status::NotSupported : Status::MissingFiles;
 }
 
 const char* StatusNote(Status s) {
     switch (s) {
-        case Status::MissingDll: return " (MISSING DLL)";
+        case Status::MissingFiles: return " (MISSING FILES)";
         case Status::NotSupported: return " (NOT SUPPORTED)";
         default: return "";
     }
@@ -246,7 +220,7 @@ const char* StatusNote(Status s) {
 
 bool Upscaling() { return g_sr; }
 bool FrameGeneration() { return g_fg; }
-bool Generating() { return g_generating; }
+uint32_t Generated() { return g_generated; }
 
 bool Upscale(ID3D12GraphicsCommandList* cl, const Frame& f) {
     if (!g_sr || !EnsureUpscale(f.output.w, f.output.h)) return false;
@@ -273,7 +247,7 @@ bool Upscale(ID3D12GraphicsCommandList* cl, const Frame& f) {
     d.cameraFar = c.far_plane;
     d.cameraFovAngleVertical = c.fov_y;
     d.viewSpaceToMetersFactor = 1.0f;
-    ffxReturnCode_t r = g_dispatch(&g_upscale, &d.header);
+    ffxReturnCode_t r = ffxDispatch(&g_upscale, &d.header);
     static bool logged = false;
     if (r != FFX_API_RETURN_OK && !std::exchange(logged, true)) LOGE("FSR: upscale failed (result %u)", r);
     return r == FFX_API_RETURN_OK;
@@ -294,7 +268,7 @@ bool CreateSwapChain(IDXGIFactory4* factory, ID3D12CommandQueue* queue, HWND__* 
     c.desc = &desc;
     c.dxgiFactory = factory;
     c.gameQueue = queue;
-    if (ffxReturnCode_t r = g_create(&g_swap, &c.header, nullptr); r != FFX_API_RETURN_OK) {
+    if (ffxReturnCode_t r = ffxCreateContext(&g_swap, &c.header, nullptr); r != FFX_API_RETURN_OK) {
         LOGE("FSR: no frame generation swap chain (result %u)", r);
         g_swap = nullptr;
         return false;
@@ -304,14 +278,14 @@ bool CreateSwapChain(IDXGIFactory4* factory, ID3D12CommandQueue* queue, HWND__* 
 }
 
 void DestroySwapChain(IDXGISwapChain4* swap) {
-    g_generating = false;
+    g_generated = 0;
     if (!g_swap) return;
     // generation off first: it waits for the swap chain's work on its resources
     if (g_generate) {
         ffxConfigureDescFrameGeneration off{};
         off.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
         off.swapChain = swap;
-        g_configure(&g_generate, &off.header);
+        ffxConfigure(&g_generate, &off.header);
     }
     Destroy(g_generate);
     Destroy(g_swap);
@@ -322,6 +296,7 @@ void Configure(const Generation& g) {
     ffxConfigureDescFrameGeneration c{};
     c.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
     c.swapChain = g.swap;
+    g_frames = std::clamp(g.frames, 1u, kMaxGenerated);
     c.frameGenerationCallback = GenerateFrames;
     c.frameGenerationCallbackUserContext = &g_generate;
     c.frameGenerationEnabled = g.enabled;
@@ -329,9 +304,9 @@ void Configure(const Generation& g) {
     c.frameID = g.index;
     if (g.hudless) c.HUDLessColor = ffxApiGetResourceDX12(g.hudless, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
     static bool logged = false;
-    ffxReturnCode_t r = g_configure(&g_generate, &c.header);
+    ffxReturnCode_t r = ffxConfigure(&g_generate, &c.header);
     if (r != FFX_API_RETURN_OK && !std::exchange(logged, true)) LOGE("FSR: frame generation setup failed (result %u)", r);
-    g_generating = r == FFX_API_RETURN_OK && g.enabled;
+    g_generated = (r == FFX_API_RETURN_OK && g.enabled) ? g_frames.load() : 0;
 }
 
 void Prepare(ID3D12GraphicsCommandList* cl, const Frame& f) {
@@ -360,7 +335,7 @@ void Prepare(ID3D12GraphicsCommandList* cl, const Frame& f) {
         d.cameraPosition[i] = w[12 + i];
     }
     static bool logged = false;
-    ffxReturnCode_t r = g_dispatch(&g_generate, &d.header);
+    ffxReturnCode_t r = ffxDispatch(&g_generate, &d.header);
     if (r != FFX_API_RETURN_OK && !std::exchange(logged, true)) LOGE("FSR: generation inputs failed (result %u)", r);
 }
 

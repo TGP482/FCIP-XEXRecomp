@@ -133,7 +133,7 @@ double Fps() {
 void DrawFps(PPCContext& ctx) {
     char text[32];
     double fps = Fps();
-    if (fsr::Generating()) std::snprintf(text, sizeof(text), "FPS: %.1f, FG %.1f", fps, fps * 2);
+    if (uint32_t n = fsr::Generated()) std::snprintf(text, sizeof(text), "FPS: %.1f, FG %.1f", fps, fps * (n + 1));
     else std::snprintf(text, sizeof(text), "FPS: %.1f", fps);
     // y is up from the bottom, so the baseline sits at height minus y
     uint32_t ui = R32(SYM_UISystem_pointer);

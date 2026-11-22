@@ -24,23 +24,33 @@ include(${SDK}/cmake/XexRecomp.cmake)
 list(FILTER XEX_RUNTIME_SOURCES EXCLUDE REGEX "/(xdk/d3d9|xdk/xaudio|gpu/d3d12|gpu/shaders)\\.cpp$")
 # gyro aiming reads the controllers through SDL
 set_source_files_properties(src/common/gyro.cpp PROPERTIES INCLUDE_DIRECTORIES "${sdl3_SOURCE_DIR}/include")
-# AMD FSR: the FidelityFX API's headers, and AMD's signed DLLs from its official SDK in the FSR folder beside the exe
-set_source_files_properties(src/d3d/fsr.cpp PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fidelityfx")
-set(FSR_URL https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v2.4.0/Kits/FidelityFX/signedbin)
-set(FSR_DLLS
-    amd_fidelityfx_loader_dx12.dll e2191d3c0828be45eb8affd4e3ec0378f2293adc345b772a7170edcf3b021ecb
-    amd_fidelityfx_upscaler_dx12.dll aad4fccccb29084a655f9a4f9f613bd22c8c03fb4a0f8840148cc6543b4ccace
-    amd_fidelityfx_framegeneration_dx12.dll e6843252f58b0341a0d80f6a20bc0d840643ee95bc48c22cac08745344577bb6)
-while(FSR_DLLS)
-    list(POP_FRONT FSR_DLLS name hash)
-    if(NOT EXISTS ${CMAKE_BINARY_DIR}/FSR/${name})
-        file(DOWNLOAD ${FSR_URL}/${name} ${CMAKE_BINARY_DIR}/FSR/${name} EXPECTED_HASH SHA256=${hash})
-    endif()
-endwhile()
-configure_file(third_party/fidelityfx/license.txt ${CMAKE_BINARY_DIR}/FSR/license.txt COPYONLY)
+# AMD FSR 3, built from the open source AMD FSR SDK in third_party/fidelityfx with the glue in src/d3d/fsr; its
+# shaders go to the FSR folder beside the exe, compiled when first used
+set(FFX_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fidelityfx)
+set(FFX_DEFINES FFX_BACKEND_DX12 FFX_UPSCALER FFX_FRAMEGENERATION NOMINMAX)
+file(GLOB_RECURSE FFX_SOURCES CONFIGURE_DEPENDS ${FFX_DIR}/*.cpp)
+add_library(fidelityfx STATIC ${FFX_SOURCES})
+target_include_directories(fidelityfx PRIVATE ${FFX_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src/d3d/fsr)
+target_compile_definitions(fidelityfx PRIVATE ${FFX_DEFINES} UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
+# ffx_message.cpp uses FFX_UNUSED without including the header that defines it
+target_compile_options(fidelityfx PRIVATE -w -include ${FFX_DIR}/api/internal/ffx_util.h)
+file(GLOB FSR_GLUE_SOURCES CONFIGURE_DEPENDS src/d3d/fsr/*.cpp)
+set_source_files_properties(src/d3d/fsr.cpp ${FSR_GLUE_SOURCES} PROPERTIES
+    COMPILE_OPTIONS "-isystem;${FFX_DIR};-I${CMAKE_CURRENT_SOURCE_DIR}/src/d3d/fsr" COMPILE_DEFINITIONS "${FFX_DEFINES}")
+file(GLOB_RECURSE FSR_SHADERS RELATIVE ${FFX_DIR} CONFIGURE_DEPENDS
+    ${FFX_DIR}/api/internal/gpu/*
+    ${FFX_DIR}/upscalers/fsr3/include/gpu/*
+    ${FFX_DIR}/upscalers/fsr3/internal/shaders/*
+    ${FFX_DIR}/framegeneration/fsr3/include/gpu/*
+    ${FFX_DIR}/framegeneration/fsr3/internal/shaders/*)
+foreach(file ${FSR_SHADERS})
+    configure_file(${FFX_DIR}/${file} ${CMAKE_BINARY_DIR}/FSR/shaders/${file} COPYONLY)
+endforeach()
+configure_file(${FFX_DIR}/license.txt ${CMAKE_BINARY_DIR}/FSR/license.txt COPYONLY)
 
 file(GLOB XEX_HOST_SOURCES CONFIGURE_DEPENDS src/*/*.cpp)
 list(FILTER XEX_HOST_SOURCES EXCLUDE REGEX "/src/(game|editor|leveleditor)/")
+list(APPEND XEX_HOST_SOURCES ${FSR_GLUE_SOURCES})
 
 # partitions as xex_symbols wrote them into each config
 foreach(image game editor)
@@ -71,5 +81,6 @@ foreach(target FCIP FCIPEditor)
     if(TARGET ${target})
         target_sources(${target} PRIVATE src/common/version.rc)
         add_dependencies(${target} build_info)
+        target_link_libraries(${target} PRIVATE fidelityfx)
     endif()
 endforeach()

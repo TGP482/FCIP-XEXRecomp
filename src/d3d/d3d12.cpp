@@ -5690,6 +5690,7 @@ void D3D12Backend::ConfigureGeneration(bool enabled) {
     g.swap = swap_.Get();
     g.index = presents_;
     g.enabled = enabled;
+    g.frames = fcip::Get().frame_generation;
     std::copy(std::begin(frame_rect_), std::end(frame_rect_), g.rect);
     g.w = swap_w_;
     g.h = swap_h_;

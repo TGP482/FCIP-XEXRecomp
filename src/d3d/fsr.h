@@ -1,5 +1,5 @@
-// AMD FSR 3.1 upscaling and frame generation through the AMD FidelityFX API, whose signed DLLs sit in the FSR folder
-// beside the exe
+// AMD FSR 3.1 upscaling and frame generation, built from the open source AMD FSR SDK; its shaders sit in the FSR
+// folder beside the exe
 #pragma once
 #include <cstdint>
 
@@ -16,7 +16,7 @@ struct HWND__;
 
 namespace fsr {
 
-// before the device: the loader from the FSR folder
+// before the device: whether the FSR folder holds the shaders
 void Load();
 // the device made: what this GPU supports
 void SetDevice(ID3D12Device* dev);
@@ -25,11 +25,14 @@ void Shutdown();
 
 bool Upscaling();
 bool FrameGeneration();
-// any thread: frames are being generated, one between each two rendered
-bool Generating();
+// any thread: the frames generated between each two rendered, 0 when none are
+uint32_t Generated();
 
-// why an FSR feature does not run: its DLLs are not in the FSR folder, or this GPU lacks it
-enum class Status { Ready, MissingDll, NotSupported };
+// frame generation's 2X, 3X and 4X: frames generated between each two rendered
+constexpr uint32_t kMaxGenerated = 3;
+
+// why an FSR feature does not run: its shaders are not in the FSR folder, or this GPU lacks it
+enum class Status { Ready, MissingFiles, NotSupported };
 Status UpscalingStatus();
 Status GenerationStatus();
 // the menu's note after a value, empty when ready
@@ -90,6 +93,7 @@ struct Generation {
     IDXGISwapChain4* swap = nullptr;
     uint64_t index = 0;     // counts presents
     bool enabled = false;   // frames generated between this one and the last
+    uint32_t frames = 1;    // how many, 1 to kMaxGenerated
     uint32_t rect[4] = {};  // the frame's part of the back buffer, x, y, width, height
     uint32_t w = 0;         // the back buffer
     uint32_t h = 0;

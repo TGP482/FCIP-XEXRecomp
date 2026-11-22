@@ -18,6 +18,7 @@
 
 #include "app/app.h"
 #include "common/keys.h"
+#include "d3d/fsr.h"
 #include "image_symbols.h"
 
 namespace fcip {
@@ -123,7 +124,9 @@ void LoadSettings(const void* table) {
     s.smaa = t["smaa"].value_or(s.smaa);
     s.taa = t["taa"].value_or(s.taa);
     s.fsr = t["fsr"].value_or(s.fsr);
-    s.frame_generation = t["frame_generation"].value_or(s.frame_generation);
+    s.frame_generation = std::min(t["frame_generation"].value_or(s.frame_generation), fsr::kMaxGenerated);
+    // it was on or off before 2X to 4X
+    if (auto on = t["frame_generation"].value_exact<bool>()) s.frame_generation = *on ? 1 : 0;
     s.ambient_occlusion = std::min(t["ambient_occlusion"].value_or(s.ambient_occlusion), 3u);
     s.global_illumination = t["global_illumination"].value_or(s.global_illumination);
     s.volumetric_fog = t["volumetric_fog"].value_or(s.volumetric_fog);
