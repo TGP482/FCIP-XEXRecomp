@@ -24,6 +24,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1946,6 +1947,8 @@ private:
     ID3D12PipelineState* FindPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps);
     ComPtr<ID3D12PipelineState> MakePipeline(const PipelineKey& k, D3D12_SHADER_BYTECODE vs,
                                              D3D12_SHADER_BYTECODE ps) const;
+    bool PipelineReady(const PipelineKey& k, const Variant& vs, const Variant* ps);
+    void TakeBuilt();
     bool Async() const { return app::Get().async_shaders && !cap_; }
     void FillPipelineDesc(const PipelineKey& k, D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
     ID3D12PipelineState* EnsureResolvePipeline(DXGI_FORMAT rtv, bool ms, bool filter = false);
@@ -1996,6 +1999,8 @@ private:
     };
     bool BindTargets(const State& s, const ShaderInfo& ps, PipelineKey& k, Bound& b, bool motion = false,
                      bool albedo = false);
+    bool BindDrawTargets(const State& s, const ShaderInfo& ps, PipelineKey& k, Bound& b, bool motion, bool albedo);
+    void FinishKey(const State& s, D3D12_PRIMITIVE_TOPOLOGY topo, PipelineKey& k) const;
     void FillDrawConstants(const State& s, const Bound& b, DrawConstants& c) const;
     Rect GuestScissor(const State& s, uint32_t w, uint32_t h) const;
     D3D12_RECT HostRect(const Rect& r, float scale) const;
@@ -2417,10 +2422,22 @@ private:
     std::unordered_map<uint64_t, uint32_t> sampler_sets_;
     uint32_t samplers_used_ = 0;
     std::ofstream pipeline_cache_;  // each pipeline appended as it is made
+    // motion vector pipelines made on the build threads while their draws go without motion vectors
+    struct BuiltPipeline {
+        PipelineKey key;
+        D3D12_SHADER_BYTECODE vs{};
+        D3D12_SHADER_BYTECODE ps{};
+        ComPtr<ID3D12PipelineState> pso;
+    };
+    std::unordered_set<uint64_t> building_;
+    std::vector<BuiltPipeline> built_;
+    std::mutex built_lock_;
+    std::atomic<bool> built_ready_{false};
     // since the last log line
     uint32_t posted_shaders_ = 0;
     uint32_t skipped_draws_ = 0;
     uint32_t made_pipelines_ = 0;
+    uint32_t posted_pipelines_ = 0;
     float pipeline_ms_ = 0;
 
     // the last constant blocks bound, skipped when unchanged; no address means upload again
@@ -3287,6 +3304,7 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PipelineKey& k, const Va
 
 // made at once even with async shaders: its shaders are built, and a draw skipped for it would vanish
 ID3D12PipelineState* D3D12Backend::FindPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps) {
+    TakeBuilt();
     uint64_t key = Hash64(&k, sizeof(k));
     auto it = pipelines_.find(key);
     if (it != pipelines_.end()) return it->second.Get();
@@ -3314,6 +3332,39 @@ ComPtr<ID3D12PipelineState> D3D12Backend::MakePipeline(const PipelineKey& k, D3D
         LOGE("D3D12: pipeline %016llx failed", static_cast<unsigned long long>(Hash64(&k, sizeof(k))));
     }
     return pso;
+}
+
+// true when made; else it is made on a build thread, as a first pipeline of new shaders can take the driver a
+// quarter of a second
+bool D3D12Backend::PipelineReady(const PipelineKey& k, const Variant& vs, const Variant* ps) {
+    TakeBuilt();
+    uint64_t key = Hash64(&k, sizeof(k));
+    if (pipelines_.count(key)) return true;
+    if (!building_.insert(key).second) return false;
+    BuiltPipeline b{k, {vs.dxil.data(), vs.dxil.size()}};
+    if (ps) b.ps = {ps->dxil.data(), ps->dxil.size()};
+    posted_pipelines_++;
+    Post([this, b]() mutable {
+        b.pso = MakePipeline(b.key, b.vs, b.ps);
+        std::lock_guard lock(built_lock_);
+        built_.push_back(std::move(b));
+        built_ready_.store(true, std::memory_order_release);
+    });
+    return false;
+}
+
+// what the build threads made, kept and written to the cache on the render thread
+void D3D12Backend::TakeBuilt() {
+    if (!built_ready_.load(std::memory_order_acquire)) return;
+    std::lock_guard lock(built_lock_);
+    built_ready_ = false;
+    for (BuiltPipeline& b : built_) {
+        uint64_t key = Hash64(&b.key, sizeof(b.key));
+        building_.erase(key);
+        if (b.pso) StorePipeline(b.key, b.vs, b.ps, b.pso.Get());
+        pipelines_[key] = std::move(b.pso);
+    }
+    built_.clear();
 }
 
 ID3D12PipelineState* D3D12Backend::EnsureResolvePipeline(DXGI_FORMAT rtv, bool ms, bool filter) {
@@ -4422,6 +4473,26 @@ D3D12_PRIMITIVE_TOPOLOGY_TYPE TopologyType(D3D12_PRIMITIVE_TOPOLOGY topo) {
     return D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 }
 
+// the targets a draw renders to, the extension's choice if it takes over the binding
+bool D3D12Backend::BindDrawTargets(const State& s, const ShaderInfo& ps, PipelineKey& k, Bound& b, bool motion,
+                                   bool albedo) {
+    PipelineKey unbound = k;
+    if (!BindTargets(s, ps, k, b, motion, albedo)) return false;
+    if (!ext_ || !ext_->Bound(*this, s, b.rt, b.ds)) return true;
+    k = unbound;
+    return BindTargets(s, ps, k, b, motion, albedo);
+}
+
+// the key's states, its primitive type and strip cut
+void D3D12Backend::FinishKey(const State& s, D3D12_PRIMITIVE_TOPOLOGY topo, PipelineKey& k) const {
+    FillKeyStates(s, k);
+    if (!k.ds_format) k.depth_control = 0;
+    k.topology = TopologyType(topo);
+    bool strip = topo == D3D_PRIMITIVE_TOPOLOGY_LINESTRIP || topo == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+    // PA_SU_SC_MODE_CNTL multi_prim_ib_ena: strips restart at an all ones index
+    if (strip && Bits(s.Reg(kPaSuScModeCntl), 21, 1)) k.strip_cut = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF;
+}
+
 void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     if (!s.vs || !s.consts || !s.fetch || !a.count) return;
     // a cull of both faces draws nothing
@@ -4469,11 +4540,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     bool motion = MotionWanted(s, ps_info);
     if (cap_ && motion_.active && !motion) std::fprintf(cap_, "     motion: none, blended or no depth write\n");
     bool albedo = AlbedoWanted(s, ps_info);
-    if (!BindTargets(s, ps_info, k, bound, motion, albedo)) return;
-    if (ext_ && ext_->Bound(*this, s, bound.rt, bound.ds)) {
-        k = unbound;
-        if (!BindTargets(s, ps_info, k, bound, motion, albedo)) return;
-    }
+    if (!BindDrawTargets(s, ps_info, k, bound, motion, albedo)) return;
     if (bound.motion) {
         vs_opt.motion = true;
         ps_opt.motion = true;
@@ -4489,8 +4556,6 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     if (!vs || (s.ps && !ps)) return;
     k.vs = vs->key;
     k.ps = ps ? ps->key : 0;
-    FillKeyStates(s, k);
-    if (!k.ds_format) k.depth_control = 0;
     D3D12_PRIMITIVE_TOPOLOGY topo;
     uint32_t count = 0;
     uint32_t min = 0;
@@ -4500,10 +4565,20 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         upload_epoch_++;
     }
     if (!UploadIndices(a, topo, count, min, max)) return;
-    k.topology = TopologyType(topo);
-    bool strip = topo == D3D_PRIMITIVE_TOPOLOGY_LINESTRIP || topo == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
-    // PA_SU_SC_MODE_CNTL multi_prim_ib_ena: strips restart at an all ones index
-    if (strip && Bits(s.Reg(kPaSuScModeCntl), 21, 1)) k.strip_cut = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF;
+    FinishKey(s, topo, k);
+    // its motion vector pipeline still being made, the draw shows without motion vectors meanwhile
+    if (bound.motion && Async() && !PipelineReady(k, *vs, ps)) {
+        k = unbound;
+        if (!BindDrawTargets(s, ps_info, k, bound, false, albedo)) return;
+        vs_opt.motion = false;
+        ps_opt.motion = false;
+        vs = Compiled(VariantFor(s.vs, vs_opt));
+        ps = Compiled(VariantFor(s.ps, ps_opt));
+        if (!vs || !ps) return;
+        k.vs = vs->key;
+        k.ps = ps->key;
+        FinishKey(s, topo, k);
+    }
     CasterDraw caster;
     uint32_t caster_vertices = CasterVertices(s, a, k, topo, count, bound, ps_opt.alpha_test, caster);
     k.stream_out = caster.stream;
@@ -7019,12 +7094,13 @@ void D3D12Backend::Present(const uint32_t front[6]) {
         fps_ = fps_frames_ / secs;
         fps_frames_ = 0;
         fps_start_ = now;
-        if (posted_shaders_ || skipped_draws_ || made_pipelines_) {
-            LOGR("async shaders: %u shaders started, %u draws waited, %u pipelines made in %.0f ms", posted_shaders_,
-                 skipped_draws_, made_pipelines_, pipeline_ms_);
+        if (posted_shaders_ || skipped_draws_ || made_pipelines_ || posted_pipelines_) {
+            LOGR("async shaders: %u shaders started, %u draws waited, %u pipelines made in %.0f ms, %u built behind",
+                 posted_shaders_, skipped_draws_, made_pipelines_, pipeline_ms_, posted_pipelines_);
             posted_shaders_ = 0;
             skipped_draws_ = 0;
             made_pipelines_ = 0;
+            posted_pipelines_ = 0;
             pipeline_ms_ = 0;
         }
     }
