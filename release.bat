@@ -12,7 +12,7 @@ rem the configure step writes where the SDK is
 if not exist "%OUT%\sdk_dir.txt" cmake --preset release >nul || exit /b 1
 if not exist "%OUT%\sdk_dir.txt" echo %OUT%\sdk_dir.txt was not written, update the SDK. && exit /b 1
 set /p SDK=<out\build\release\sdk_dir.txt
-del /q "%GAME_EXE%.zip" 2>nul
+del /q "FCIP-XEXRecomp.zip" 2>nul
 rem an empty assets folder beside the exe, for the game (files or .iso)
 rd /s /q "%OUT%\release" 2>nul
 mkdir "%OUT%\release\assets"
@@ -22,4 +22,4 @@ del /q "%OUT%\compiler\*.dll" 2>nul
 for %%f in (msvcp140 vcruntime140) do copy /y "%VCRUNTIME%\%%f.dll" "%OUT%\compiler\" >nul
 rem the shader compiler DLLs, and the compiler folder without its work folder: no game code goes in the zip, the
 rem first start builds it
-7z a "%GAME_EXE%.zip" ".\%OUT%\%GAME_EXE%.exe" ".\%OUT%\FCIPEditor.exe" ".\%OUT%\dxcompiler.dll" ".\%OUT%\dxil.dll" ".\%OUT%\avcodec-*.dll" ".\%OUT%\avutil-*.dll" ".\%OUT%\swresample-*.dll" ".\%OUT%\FFmpeg-LICENSE.txt" ".\%OUT%\release\assets" ".\%OUT%\FSR" ".\%OUT%\compiler" .\README.md "%SDK%\THIRD_PARTY.txt" "%VCRUNTIME%\msvcp140.dll" "%VCRUNTIME%\vcruntime140.dll" "%VCRUNTIME%\vcruntime140_1.dll" -xr!work
+7z a "FCIP-XEXRecomp.zip" ".\%OUT%\%GAME_EXE%.exe" ".\%OUT%\FCIPEditor.exe" ".\%OUT%\dxcompiler.dll" ".\%OUT%\dxil.dll" ".\%OUT%\avcodec-*.dll" ".\%OUT%\avutil-*.dll" ".\%OUT%\swresample-*.dll" ".\%OUT%\FFmpeg-LICENSE.txt" ".\%OUT%\release\assets" ".\%OUT%\FSR" ".\%OUT%\compiler" .\README.md "%SDK%\THIRD_PARTY.txt" "%VCRUNTIME%\msvcp140.dll" "%VCRUNTIME%\vcruntime140.dll" "%VCRUNTIME%\vcruntime140_1.dll" -xr!work
