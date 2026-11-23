@@ -693,7 +693,7 @@ void fcip::DrawShadowMaps(PPCContext& ctx, uint8_t* base) {
     RunShadowMaps(ctx, base, kFarMap);
 }
 
-int fcip::SunResolved(uint32_t address) {
+void fcip::SunResolved(uint32_t address) {
     uint32_t issued = g_issued.load(std::memory_order_acquire);
     if (issued - g_matched > kResolveRing) g_matched = issued - kResolveRing;
     for (uint32_t i = g_matched; i != issued; i++) {
@@ -704,16 +704,16 @@ int fcip::SunResolved(uint32_t address) {
         if (r.map == kNoSun) {
             g_drawn.far_base = 0;
             g_drawn.fog_base = 0;
-            return kNoMap;
+            return;
         }
         if (r.map == kFogMap) {
             g_fog_base = address;
-            return r.map;
+            return;
         }
         if (r.map != kFarMap) {
             g_drawn.bases[r.map] = address;
             g_drawn.near_side = r.side;
-            return r.map;
+            return;
         }
         g_drawn.far_base = address;
         g_drawn.fog_base = std::exchange(g_fog_base, 0);
@@ -721,9 +721,8 @@ int fcip::SunResolved(uint32_t address) {
         g_drawn.distance = r.distance;
         g_drawn.side = r.side;
         g_drawn.depth_ratio = r.depth;
-        return r.map;
+        return;
     }
-    return kNoMap;
 }
 
 fcip::SunMaps fcip::SunMapsDrawn() { return g_drawn; }

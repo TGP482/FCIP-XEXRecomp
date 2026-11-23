@@ -50,11 +50,9 @@ struct SunMaps {
     uint32_t near_side = 0;  // the sharper maps' guest side
     float depth_ratio = 0;   // the far map's depth range over its width
 };
-constexpr int kSunFar = int(kSunMaps);  // SunResolved's answer for the far map
 
-// render thread: each resolve's address, answering which sun map it is, -1 for none; then the maps as of the last far
-// map resolve
-int SunResolved(uint32_t address);
+// render thread: each resolve's address, kept when it is a sun map; then the maps as of the last far map resolve
+void SunResolved(uint32_t address);
 SunMaps SunMapsDrawn();
 // title thread: world space into the far sun map as its last pass drew it, row major with the pass's depth flip, so
 // nearer the sun is deeper; false before one was drawn

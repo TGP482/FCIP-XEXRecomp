@@ -1918,8 +1918,6 @@ public:
         for (std::thread& t : threads_) t.join();
     }
 
-    size_t Workers() const { return threads_.size(); }
-
     void Run(size_t count, const std::function<void(size_t)>& job) {
         Start(count, job);
         Take();
