@@ -32,6 +32,7 @@
 #include "common/panel_colors.h"
 #include "common/settings.h"
 #include "common/translations.h"
+#include "core/diag.h"
 #include "core/input.h"
 #include "d3d/fsr.h"
 #include "d3d/occlusion.h"
@@ -1008,8 +1009,8 @@ void JoinRow(const Row& r) {
 
 const char* const kPages[] = {"RECOMP SETTINGS", "MOUSE AND KEYBOARD", "CONTROLLER", "DEBUG"};
 
-// the debug page is default.xex's only
-int PageCount() { return g_load_level ? int(std::size(kPages)) : kDebugPage; }
+// the debug page is default.xex's only, in debug builds
+int PageCount() { return diag::kDebug && g_load_level ? int(std::size(kPages)) : kDebugPage; }
 
 // the bind row waiting for a key, -1 when idle, and its box: 0 the key, 1 the alternate
 int g_capture = -1;

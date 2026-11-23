@@ -18,6 +18,7 @@
 
 #include "app/app.h"
 #include "common/keys.h"
+#include "core/diag.h"
 #include "d3d/fsr.h"
 #include "image_symbols.h"
 
@@ -164,8 +165,10 @@ void LoadSettings(const void* table) {
     s.gyro.button_mode = std::min(t["gyro_button_mode"].value_or(s.gyro.button_mode), uint32_t(gyro::kToggle));
     uint32_t last_button = uint32_t(std::size(gyro::kButtonNames) - 1);
     s.gyro.recenter_button = std::min(t["gyro_recenter_button"].value_or(s.gyro.recenter_button), last_button);
-    s.invincible = t["invincibility"].value_or(s.invincible);
-    s.noclip = t["noclip"].value_or(s.noclip);
+    if (diag::kDebug) {
+        s.invincible = t["invincibility"].value_or(s.invincible);
+        s.noclip = t["noclip"].value_or(s.noclip);
+    }
     s.profile = t["profile"].value_or(s.profile);
     LoadDisplay(t);
     keys::Load(table);
