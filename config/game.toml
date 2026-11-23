@@ -334,10 +334,10 @@ at = 0x825FADA8
 call = "CastShadowMaps"
 regs = ["r3"]
 
-[[hook]]  # r5 = a render item's shadow enabled bit, from its flags
+[[hook]]  # r5 = a render item's shadow enabled bit, from its flags in r7
 at = 0x82387C5C
 call = "ReceiveShadowMaps"
-regs = ["r5"]
+regs = ["r5", "r7"]
 after = true
 
 

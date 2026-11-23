@@ -144,11 +144,14 @@ PPC_FUNC(sub_820F36D8) {
 // Ray traced ultra shadows reach every object. The two sector gathers, 825D64A0 and 825FAC90, draw a node into a
 // shadow pass only when its render flags (vtable +0x5C) hold CastShadowMaps, the entity XML's flag 4: vehicles and
 // dropped weapons leave it clear. A render item's light set (82387B68) samples the shadow map only when the item's
-// flags (+0x44) lack 0x40, which vegetation such as bushes sets. The volumetric fog's own run of the sun map takes
-// every object too, so its shafts stop at solid objects and pass only through gaps such as leaves.
+// flags (+0x44) lack 0x40, which vegetation such as bushes sets. First person items (flag 1, the weapon and arms
+// 82502F48 draws in the near depth range) keep the game's choice: the player's shadow body (carver_shadow.xbg) stands
+// around the camera and would shade them. The volumetric fog's own run of the sun map takes every object too, so its
+// shafts stop at solid objects and pass only through gaps such as leaves.
 namespace {
 
 constexpr uint64_t kCastShadowMaps = 4;
+constexpr uint64_t kFirstPerson = 1;
 
 bool RayTracedUltra() { return fcip::Get().shadow_filter == fcip::kFilterRayUltra && gpu::RayTracing(); }
 
@@ -159,7 +162,8 @@ void CastShadowMaps(PPCContext& ctx, uint8_t*) {
     if (RayTracedUltra() || fcip::FogMapRun()) ctx.r[3] |= kCastShadowMaps;
 }
 
-// r5 = the light set's shadow enabled byte, just taken from the item's flags
+// r5 = the light set's shadow enabled byte, just taken from the item's flags in r7
 void ReceiveShadowMaps(PPCContext& ctx, uint8_t*) {
-    if (RayTracedUltra()) ctx.r[5] = 1;
+    bool first_person = ctx.r[7] & kFirstPerson;
+    if (RayTracedUltra() && !first_person) ctx.r[5] = 1;
 }
