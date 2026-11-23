@@ -554,14 +554,16 @@ static float g_ray_lit[4];
 static float2 g_frag;  // the pixel, which turns its rays
 
 // nothing between the point and the light, which lies along +z in the map's space: the title's depth is reversed, a
-// map is cleared to 0 and keeps its largest depth. Casters nearer than the map's near plane count; past its edge is lit
+// map is cleared to 0 and keeps its largest depth. Past its edge is lit, and as the map's raster the near plane clips
+// casters nearer than it, such as a lamp's own fitting around the light
 bool RayLit(RaytracingAccelerationStructure scene, float3 p, float3 dir, float tmin) {
-    if (any(p.xy < 0) || any(p.xy > 1)) return true;
+    if (any(p.xy < 0) || any(p.xy > 1) || p.z + tmin >= 1) return true;
     RayDesc ray;
     ray.Origin = p;
     ray.Direction = dir;
     ray.TMin = tmin;
-    ray.TMax = 1e30;
+    // dir.z is 1, so the ray ends at the near plane
+    ray.TMax = 1 - p.z;
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
     q.TraceRayInline(scene, RAY_FLAG_NONE, 0xFF, ray);
     while (q.Proceed()) {

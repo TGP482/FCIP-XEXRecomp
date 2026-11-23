@@ -1518,7 +1518,7 @@ constexpr uint64_t kCasterRecords = 8ull << 20;  // 2.8M triangles a frame, 256 
 constexpr uint32_t kCasterDraws = 16384;
 constexpr uint32_t kCasterBytes = 32;     // a caster as kRayShadowPrelude reads it, then its lighting
 constexpr uint32_t kCasterTextured = 8;   // compare bit: its fetch is a colour map global illumination reads
-constexpr uint32_t kDivideChunk = 65535 * 64;  // records one dispatch divides at most
+constexpr uint32_t kDivideChunk = 65535 * 64 * 3;  // records one dispatch divides at most, a triangle a thread
 constexpr uint64_t kRayIdleFrames = 60;   // a map's scene is freed once unresolved this long
 constexpr uint32_t kStreamCaster = 2;     // PipelineKey::stream_out, then kStreamCaster + 1 + n with interpolator n
 constexpr float kRaySunSpread = 0.02f;    // tan of the sun's angular radius, as PCSS's
@@ -1611,10 +1611,21 @@ struct CasterDraw {
                             // then its material colour 0xRRGGBB, 1 when the sun lights it and its ambient
     bool view = false;      // a camera pass draw for global illumination, divided into view space
     float ndc[4] = {};      // its ndc scale and offset over x and y
+    int32_t cull = 0;       // the winding its raster culls, as kDivideHlsl's cull
 };
 
-// records' clip positions divided into a map's uv and depth: first record, count, then the uv scale and offset over
-// ndc x and y. In view mode the camera's view space instead, x and y scaled and offset by w, which is the distance
+// the sign of a triangle's area in the map's uv that the draw's raster culls, 0 none: a front face is clockwise in the
+// window, counterclockwise with PA_SU_SC_MODE_CNTL bit 2 clear, and clockwise is a positive area with y down
+int32_t CulledWinding(uint32_t su_mode) {
+    int32_t front = Bits(su_mode, 2, 1) ? 1 : -1;
+    if (Bits(su_mode, 0, 1)) return front;
+    if (Bits(su_mode, 1, 1)) return -front;
+    return 0;
+}
+
+// records' clip positions divided into a map's uv and depth, a triangle a thread: first record, count, then the uv
+// scale and offset over ndc x and y. In view mode the camera's view space instead, x and y scaled and offset by w, which
+// is the distance. A triangle whose area in the map's uv has cull's sign is left out, as the map's raster culls it
 const char* kDivideHlsl = R"(
 RWByteAddressBuffer records : register(u0);
 cbuffer C : register(b0) {
@@ -1623,19 +1634,28 @@ cbuffer C : register(b0) {
     float2 scale;
     float2 offset;
     uint view;
+    int cull;
 };
+float3 Divide(float4 p) {
+    if (view) return float3(p.xy * scale + offset * p.w, p.w);
+    // a vertex at or behind the light leaves its triangle out
+    return p.w > 0 ? float3(p.xy / p.w * scale + offset, p.z / p.w) : asfloat(0x7FC00000u).xxx;
+}
 [numthreads(64, 1, 1)]
 void main(uint id : SV_DispatchThreadID) {
-    if (id >= count) return;
-    uint at = (first + id) * 32;
-    float4 p = asfloat(records.Load4(at));
-    // a vertex at or behind the light leaves its triangle out
-    float3 q = p.w > 0 ? float3(p.xy / p.w * scale + offset, p.z / p.w) : asfloat(0x7FC00000u).xxx;
-    if (view) q = float3(p.xy * scale + offset * p.w, p.w);
-    records.Store3(at, asuint(q));
+    if (id * 3 >= count) return;
+    uint at = (first + id * 3) * 32;
+    float3 a = Divide(asfloat(records.Load4(at)));
+    float3 b = Divide(asfloat(records.Load4(at + 32)));
+    float3 c = Divide(asfloat(records.Load4(at + 64)));
+    float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    if (cull != 0 && area * cull >= 0) a = asfloat(0x7FC00000u).xxx;
+    records.Store3(at, asuint(a));
+    records.Store3(at + 32, asuint(b));
+    records.Store3(at + 64, asuint(c));
 }
 )";
-constexpr uint32_t kDivideConstants = 7;
+constexpr uint32_t kDivideConstants = 8;
 
 // a caster's clip position, then the interpolator its alpha test reads or nothing
 D3D12_STREAM_OUTPUT_DESC CasterOutput(uint32_t stream) {
@@ -2254,7 +2274,7 @@ private:
                           ComPtr<ID3D12Resource>& top_out);
     void DivideCasters(const std::vector<CasterDraw>& draws, const ResolveArgs& r);
     void BeginDivide();
-    void DivideRecords(uint32_t first, uint32_t count, const float scale_offset[4], uint32_t view);
+    void DivideRecords(uint32_t first, uint32_t count, const float scale_offset[4], uint32_t view, int32_t cull);
     void EndDivide();
     bool RayShadows(const State& s, const ShaderInfo& info, ShaderOptions& opt);
     void RayViews(uint32_t table, const D3D12_GPU_VIRTUAL_ADDRESS* rays);
@@ -6272,6 +6292,7 @@ uint32_t D3D12Backend::CasterVertices(const State& s, const DrawArgs& a, const P
     caster.count = vertices;
     caster.stream = kStreamCaster;
     caster.view = view;
+    caster.cull = view ? 0 : CulledWinding(k.su_mode);
     caster.info[3] = 7;  // D3DCMP_ALWAYS
     if ((alpha_test || coverage) && f.reg >= 0) {
         // alpha to coverage keeps the samples whose alpha reaches their share: at least half for the pixel
@@ -6466,7 +6487,7 @@ void D3D12Backend::DivideCasters(const std::vector<CasterDraw>& draws, const Res
         uint32_t count = d.count;
         size_t end = i + 1;
         // a draw into another target between them breaks the run
-        while (end < draws.size() && draws[end].w == d.w && draws[end].h == d.h &&
+        while (end < draws.size() && draws[end].w == d.w && draws[end].h == d.h && draws[end].cull == d.cull &&
                draws[end].info[0] == d.info[0] + count) {
             count += draws[end].count;
             end++;
@@ -6474,7 +6495,7 @@ void D3D12Backend::DivideCasters(const std::vector<CasterDraw>& draws, const Res
         const float scale_offset[4] = {0.5f * float(d.w) / tw, -0.5f * float(d.h) / th,
                                        (0.5f * float(d.w) - float(r.rect.x1) + float(r.dst_x)) / tw,
                                        (0.5f * float(d.h) - float(r.rect.y1) + float(r.dst_y)) / th};
-        DivideRecords(d.info[0], count, scale_offset, 0);
+        DivideRecords(d.info[0], count, scale_offset, 0, d.cull);
         i = end;
     }
     EndDivide();
@@ -6497,7 +6518,7 @@ void D3D12Backend::DivideView(const OcclusionArgs& a) {
         const float scale_offset[4] = {a.proj[0] / d.ndc[0], a.proj[1] / d.ndc[1],
                                        -a.proj[0] * (d.ndc[2] / d.ndc[0] + a.proj[2]),
                                        -a.proj[1] * (d.ndc[3] / d.ndc[1] + a.proj[3])};
-        DivideRecords(d.info[0], count, scale_offset, 1);
+        DivideRecords(d.info[0], count, scale_offset, 1, 0);
         i = end;
     }
     EndDivide();
@@ -6512,14 +6533,16 @@ void D3D12Backend::BeginDivide() {
 }
 
 // count records from first, in dispatches of at most kDivideChunk
-void D3D12Backend::DivideRecords(uint32_t first, uint32_t count, const float scale_offset[4], uint32_t view) {
+void D3D12Backend::DivideRecords(uint32_t first, uint32_t count, const float scale_offset[4], uint32_t view,
+                                 int32_t cull) {
     for (uint32_t done = 0; done < count; done += kDivideChunk) {
         uint32_t n = std::min(count - done, kDivideChunk);
         uint32_t c[kDivideConstants] = {first + done, n};
         std::memcpy(c + 2, scale_offset, 4 * sizeof(float));
         c[6] = view;
+        c[7] = uint32_t(cull);
         cl_->SetComputeRoot32BitConstants(1, kDivideConstants, c, 0);
-        cl_->Dispatch((n + 63) / 64, 1, 1);
+        cl_->Dispatch((n / 3 + 63) / 64, 1, 1);
     }
 }
 
