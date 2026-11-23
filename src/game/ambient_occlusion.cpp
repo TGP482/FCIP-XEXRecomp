@@ -82,16 +82,16 @@ constexpr uint32_t kVisAreaPointsEnd = 0xCC;
 constexpr uint32_t kVisAreaSunlit = 0xE9;  // a byte
 constexpr uint32_t kVisAreaPointSize = 12;
 constexpr uint32_t kAmbientFloor = 0xC;  // past the outdoor addition at Ambient_pointer
+constexpr uint32_t kEngineSunColour = 0x4D8;  // GetSunColor's
+constexpr float kSunLightScale = 2;  // the receivers' SunLight is it doubled
 constexpr uint32_t kEngineSunRender = 0x51C;  // SunVectorRender as a point 10000 units out, the sky's sun
 constexpr uint32_t kEngineRain = 0xB60;       // the Rain node's switch, a byte
 // renderer: what 82371DD0 keeps for the sky box's draw
 constexpr uint32_t kRendererSkyTurn = 0x92A4;  // degrees about the world's up axis
 constexpr uint32_t kRendererSkyQueued = 0x92D4;  // a byte, set when the frame hands the sky box a draw
-// device constant shadows, 16 bytes a register: GlobalVariables.fx's WaterLevel and SunLight colour
+// device constant shadows, 16 bytes a register: GlobalVariables.fx's WaterLevel
 constexpr uint32_t kDevVsConstants = 0x780;
-constexpr uint32_t kDevPsConstants = 0x1780;
 constexpr uint32_t kVsWaterLevel = 129;
-constexpr uint32_t kPsSunColour = 9;
 // keys
 constexpr uint32_t kPipelineShift = 11;
 constexpr uint32_t kLastPipeline = 0x1F;
@@ -306,12 +306,17 @@ void FogMatrices(gpu::FogView& v, bool fog_map) {
     v.shadowed = true;
 }
 
-// the sun as the receivers read its colour
+// the engine's sun colour: the receivers' constant holds it only after a sunlit draw, so it flickers with the view
+void SunColour(float* out) {
+    uint32_t engine = R32(SYM_C3DEngine_pointer);
+    if (!engine) return;
+    for (uint32_t i = 0; i < 3; i++) out[i] = GF(engine + kEngineSunColour + i * 4) * kSunLightScale;
+}
+
 gpu::FogView SunView(bool fog_map = false) {
     gpu::FogView v;
     FogMatrices(v, fog_map);
-    uint32_t dev = R32(SYM_Device_pointer);
-    for (uint32_t i = 0; i < 3; i++) v.sun_colour[i] = GF(dev + kDevPsConstants + kPsSunColour * 16 + i * 4);
+    SunColour(v.sun_colour);
     return v;
 }
 
@@ -463,8 +468,8 @@ void Clouds(uint32_t renderer) {
         for (uint32_t c = 0; c < 3; c++) v.to_world[r * 4 + c] = world[r * 4 + c];
     }
     SunToward(engine, v.sun);
+    SunColour(v.sun_colour);
     uint32_t dev = R32(SYM_Device_pointer);
-    for (uint32_t i = 0; i < 3; i++) v.sun_colour[i] = GF(dev + kDevPsConstants + kPsSunColour * 16 + i * 4);
     float turn = GF(renderer + kRendererSkyTurn) * kRadiansPerDegree;
     float sea = GF(dev + kDevVsConstants + kVsWaterLevel * 16);
     v.sky[0] = std::cos(turn);

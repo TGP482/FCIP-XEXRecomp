@@ -20,7 +20,9 @@
 // receivers keep its texture and matrix. The renderer finds the maps by their resolve addresses and reads the sharpest
 // one that covers the point. Ray traced shadows read the far map's casters, not its texels, so no sharper map is
 // drawn for them. Inside a vis area the far run draws the game's four light frustums, the sun among them;
-// the sharper runs draw one frustum, the top scored light, normally the sun. Only the sun's resolves are recorded.
+// the sharper runs draw one frustum, the top scored light, normally the sun. Only the sun's resolves are recorded,
+// and a far run's first map when it is another light's, which drops the sun's far map until the sun's own resolves:
+// the sun leaves the lights inside vis areas, and the pool hands its surfaces to the lamps.
 // With volumetric fog on, one more run before the far one draws a map with every object casting, those without
 // CastShadowMaps too, at least as wide as the fog marches into the sky; off a map counts as lit, so a narrower one lets
 // the sun through every caster past its edge. Only the fog reads it, so ray traced shadows build no scene from it.
@@ -114,9 +116,11 @@ thread_local bool t_scene = false;  // the camera's pass FSR upscales, until its
 constexpr int kNoMap = -1;
 constexpr int kFarMap = int(fcip::kSunMaps);
 constexpr int kFogMap = kFarMap + 1;  // every object casting, for the volumetric fog
+constexpr int kNoSun = kFogMap + 1;   // a far run whose first map is another light's
 constexpr float kFogReach = 250;     // the fog map's least radius: the fog shader's kSky
 thread_local int t_map = kNoMap;
 thread_local bool t_sun = false;
+thread_local bool t_far_first = false;  // no map of the far run resolved yet
 
 std::atomic<uint32_t> g_distance{0};  // the shadow distance setting, 0 without sharper maps
 std::atomic<uint32_t> g_reach{0};     // the far map's radius over the stock one, at least the distance
@@ -616,10 +620,12 @@ PPC_FUNC(GUEST(Shadow_Resolve)) {
     uint32_t w = (bits & 0x1FFF) + 1;
     uint32_t h = (bits >> 13 & 0x1FFF) + 1;
     // recorded before the resolve is queued, so the render thread finds it
-    if (ok && w == h && t_sun && t_map != kNoMap) {
+    bool shadow_map = ok && w == h && t_map != kNoMap;
+    bool first = shadow_map && t_map == kFarMap && std::exchange(t_far_first, false);
+    if (shadow_map && (t_sun || first)) {
         uint32_t at = mem::PhysicalFromVirtual(R32(tex + XDK_Texture_FetchConstant + kFetchAddress) & 0xFFFFF000);
         uint32_t n = g_issued.load(std::memory_order_relaxed);
-        g_ring[n % kResolveRing] = {at, t_map, g_maps, g_reach, g_side, g_depth};
+        g_ring[n % kResolveRing] = {at, t_sun ? t_map : kNoSun, g_maps, g_reach, g_side, g_depth};
         g_issued.store(n + 1, std::memory_order_release);
         t_sun = false;  // the lights after the sun in a quad run
     }
@@ -636,6 +642,7 @@ void RunShadowMaps(PPCContext& ctx, uint8_t* base, int map) {
     double f2 = ctx.f[2];
     t_map = map;
     t_sun = false;
+    t_far_first = map == kFarMap;
     GUEST_ORIG(ShadowMaps_Update)(ctx, base);
     t_map = kNoMap;
     std::memcpy(&ctx.r[3], args, sizeof(args));
@@ -693,6 +700,12 @@ int fcip::SunResolved(uint32_t address) {
         const SunResolve& r = g_ring[i % kResolveRing];
         if (r.address != address) continue;
         g_matched = i + 1;
+        // the sharper maps are found only through the far one
+        if (r.map == kNoSun) {
+            g_drawn.far_base = 0;
+            g_drawn.fog_base = 0;
+            return kNoMap;
+        }
         if (r.map == kFogMap) {
             g_fog_base = address;
             return r.map;
