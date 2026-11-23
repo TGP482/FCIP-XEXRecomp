@@ -543,6 +543,26 @@ float SunPcss(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 
     float radius = clamp(abs(z - sum / count) * spread, radii.x, radii.y);
     return SunSoft(map, s, uv, z, slope, radius);
 }
+
+// PCSS on another light's map, a perspective one whose depth is its near plane over the distance with the far plane
+// well past: the blockers' mean depth over the receiver's is the receiver's distance over theirs, and the penumbra is
+// size times that less one, so it is size where the blockers stand halfway to the light
+float LightPcss(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 slope, float size, float2 radii) {
+    float sum = 0;
+    float count = 0;
+    [unroll] for (int i = 0; i < 16; i++) {
+        float angle = i * 2.39996323;
+        float2 off = sqrt((i + 0.5) / 16) * radii.y * float2(cos(angle), sin(angle));
+        float4 d = map.GatherRed(s, uv + off);
+        // nearer the light is deeper
+        float4 blocker = float4(d > z + dot(slope, off));
+        sum += dot(d, blocker);
+        count += dot(blocker, 1);
+    }
+    if (count == 0 || z <= 0) return 1;
+    float radius = clamp((sum / count / z - 1) * size, radii.x, radii.y);
+    return SunSoft(map, s, uv, z, slope, radius);
+}
 )";
 
 // ray traced shadows: a map's casters as triangles in its uv and depth, with records of their clip position and the
@@ -1098,6 +1118,13 @@ void Translator::EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags
         Line("if (nw > 0) below = lerp(below, " + SunFilter("t_sun[sk]", t, "un", "nslope", "nscale", pcss) + ", nw);");
         Close();
         Close();
+    } else if (flags & fcip::kSunPcss) {
+        // a half side map's stock texels are twice as wide
+        double scale = flags & fcip::kShadowHalf ? 2 : 1;
+        double radius = kSoftRadius * scale;
+        double lo = kPcssMin * scale;
+        double hi = kPcssMax * scale;
+        Line(F("float below = LightPcss(t%u, s%u, uv, tc.z, slope, %.9g, float2(%.9g, %.9g));", t, t, radius, lo, hi));
     } else {
         double radius = flags & fcip::kShadowHalf ? kSoftRadiusHalf : kSoftRadius;
         Line(F("float below = SunSoft(t%u, s%u, uv, tc.z, slope, %.9g);", t, t, radius));

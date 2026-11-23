@@ -4012,7 +4012,10 @@ uint8_t D3D12Backend::SoftShadow(uint32_t base, bool far_map) const {
     if (map == shadow_resolves_.end()) return 0;
     if (far_map && fcip::Get().shadow_filter == fcip::kFilterPcss) return fcip::kSunSoft | fcip::kSunPcss;
     if (far_map) return fcip::kSunSoft;
-    return map->second.width < shadow_side_ ? fcip::kShadowSoft | fcip::kShadowHalf : fcip::kShadowSoft;
+    uint8_t flags = fcip::kShadowSoft;
+    if (fcip::Get().shadow_filter == fcip::kFilterPcss) flags |= fcip::kSunPcss;
+    if (map->second.width < shadow_side_) flags |= fcip::kShadowHalf;
+    return flags;
 }
 
 void D3D12Backend::SunMapView(Resolved& r, D3D12_CPU_DESCRIPTOR_HANDLE at) {

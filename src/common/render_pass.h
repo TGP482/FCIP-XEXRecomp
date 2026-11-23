@@ -64,7 +64,7 @@ bool FogClip(float out[16]);
 constexpr uint8_t kSunSoft = 2;        // ShaderOptions::tex_flags on a fetch of the far map, soft filter on
 constexpr uint8_t kShadowSoft = 4;     // another light's shadow map, soft
 constexpr uint8_t kShadowHalf = 8;     // that map drawn as one of four inside a vis area, 672 at stock
-constexpr uint8_t kSunPcss = 16;       // the far sun map with PCSS on
+constexpr uint8_t kSunPcss = 16;       // PCSS on, with kSunSoft or kShadowSoft
 constexpr uint32_t kRayScenes = 4;      // one per shadow sampler
 constexpr uint32_t kRayFirstSlot = 25;  // pixel shader views: casters, their records, then the scenes through 30
 // set on a ray traced draw's depth pass, past the textures such a draw may have: its shader keeps only the alpha test
