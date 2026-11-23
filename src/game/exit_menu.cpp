@@ -1,8 +1,9 @@
-// default.xex: EXIT on the main menu asks through the game's own message box, Yes closes the window. CUSTOM CAMPAIGN
+// default.xex: EXIT on the main menu asks through the game's own message box, Yes closes the window. MAP EDITOR asks
+// the same way before the editor launches. CUSTOM CAMPAIGN
 // presses STORY MODE, or EXPANSION CAMPAIGN for an Evolution level, so the game's own new game and save slot pages
 // run, and the level they start becomes the first custom level. Its page reads CUSTOM CAMPAIGN and LOAD A MAP lists
 // the custom levels. MULTIPLAYER's ONLINE reads ONLINE JOIN IP and types the system link join address on the virtual
-// keyboard, and its STATISTICS opens the Live menu's stats pages.
+// keyboard.
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -41,13 +42,19 @@ constexpr uint32_t kShowMessageBox = 0x8216B168u;
 constexpr uint32_t kYesNo = 4;
 constexpr uint32_t kAnyPad = 0xFFFFFFFFu;
 constexpr uint32_t kExitId = 0x45584954u;
+constexpr uint32_t kEditorId = 0x45444954u;
 // CryPreGame's message box listener: slot 0 on A, slot 1 on B (a no op)
 constexpr uint32_t kPreGameListener = 0xECu;
 constexpr uint32_t kPages = 0x50u;
 // (menu, page, std::wstring*, 0): the page's A_Help text
 constexpr uint32_t kSetPageHelp = 0x8216E3D8u;
 
-constexpr const char* kQuestion = "Are you sure you want to exit to the desktop?";
+constexpr const char* kExitQuestion = "Are you sure you want to exit to the desktop?";
+constexpr const char* kEditorQuestion = "Are you sure you want to launch the map editor?";
+
+// B_MapEditor, and what its press runs (821B1FD0): (CryPreGame) hands over to ige.xex and never returns
+constexpr uint32_t kCrcMapEditor = 0x08D70D76u;
+constexpr uint32_t kLaunchEditor = 0x821B3130u;
 
 // CryPreGame's menu system, as its help setter (821B7B40) reaches the page on top
 constexpr uint32_t kMenuSystem = 0x10u;
@@ -57,10 +64,6 @@ constexpr uint32_t kUiActivePages = 0x38u;
 constexpr uint32_t kJoinIpChars = 63;  // the F10 field's
 constexpr const char* kJoinIpTitle = "ENTER THE HOST'S IP ADDRESS";
 constexpr const char* kOnlineHelp = "Enter the host's IP address, then join their game from System Link. Current IP: ";
-
-// CryLiveStats, opened as the Live menu's STATISTICS does (821CC028): its activate slot with 1
-constexpr uint32_t kLiveStats = 0x82911BE0u;
-constexpr uint32_t kMenuActivate = 0x24u;
 
 // the story buttons on P_Main
 constexpr uint32_t kCrcStoryMode = 0x17130B2Fu;
@@ -97,15 +100,15 @@ uint32_t EmptyText() {
     return text;
 }
 
-void AskExit(PPCContext& ctx, uint32_t self) {
+void Ask(PPCContext& ctx, uint32_t self, uint32_t id, const char* text) {
     uint32_t boxes = Read32(Read32(Read32(kSystem) + kSystemUi) + kUiMessageBoxes);
     uint32_t empty = EmptyText();
-    uint32_t question = View(kQuestion);
+    uint32_t question = View(text);
     if (!boxes || !empty || !question) {
-        LOGE("exit: no message box, %08X", boxes);
+        LOGE("main menu: no message box, %08X", boxes);
         return;
     }
-    kernel::CallGuest(ctx, kShowMessageBox, {boxes, kExitId, empty, question, kYesNo, 0, self + kPreGameListener, empty,
+    kernel::CallGuest(ctx, kShowMessageBox, {boxes, id, empty, question, kYesNo, 0, self + kPreGameListener, empty,
                                              empty, 0, 0, 0, kAnyPad});
 }
 
@@ -204,12 +207,6 @@ uint32_t TopPage(PPCContext& ctx, uint32_t self) {
     return uint32_t(kernel::CallGuest(ctx, SYM_UIInputStack_Top, {ui + kUiActivePages, 0, 0}));
 }
 
-void OpenStatistics(PPCContext& ctx) {
-    uint32_t stats = Read32(kLiveStats);
-    if (!AddrOk(stats)) return;
-    kernel::CallGuest(ctx, Read32(Read32(stats) + kMenuActivate), {stats, 1});
-}
-
 }  // namespace
 
 PPC_EXTERN_FUNC(__imp__sub_821B1FD0);
@@ -222,15 +219,15 @@ PPC_EXTERN_FUNC(__imp__sub_821B7FD8);
 PPC_FUNC(sub_821B1FD0) {
     uint32_t crc = Read32(uint32_t(ctx.r[4]) + kWidgetNameCrc);
     if (crc == kCrcExit) {
-        AskExit(ctx, uint32_t(ctx.r[3]));
+        Ask(ctx, uint32_t(ctx.r[3]), kExitId, kExitQuestion);
+        return;
+    }
+    if (crc == kCrcMapEditor) {
+        Ask(ctx, uint32_t(ctx.r[3]), kEditorId, kEditorQuestion);
         return;
     }
     if (crc == kCrcOnline) {
         AskJoinIp(ctx);
-        return;
-    }
-    if (crc == kCrcStatistics) {
-        OpenStatistics(ctx);
         return;
     }
     if (crc != kCrcCustomCampaign) {
@@ -262,11 +259,6 @@ PPC_FUNC(sub_821B7B40) {
         ShowOnlineHelp(ctx, TopPage(ctx, self));
         return;
     }
-    if (crc == kCrcStatistics) {
-        uint32_t help = View(HelpFor(crc));
-        if (help) kernel::CallGuest(ctx, kSetPageHelp, {self, TopPage(ctx, self), help, 0});
-        return;
-    }
     if (crc != kCrcExit && crc != kCrcCustomCampaign) return;
     if (uint32_t help = View(HelpFor(crc))) kernel::CallGuest(ctx, kSetPageHelp, {self, page, help, 0});
 }
@@ -291,9 +283,15 @@ PPC_FUNC(sub_821B7FD8) {
     __imp__sub_821B7FD8(ctx, base);
 }
 
-// message box A, r4 the box's id
+// message box A, r3 CryPreGame's listener, r4 the box's id
 PPC_FUNC(sub_821B3380) {
-    if (uint32_t(ctx.r[4]) != kExitId) {
+    uint32_t id = uint32_t(ctx.r[4]);
+    if (id == kEditorId) {
+        LOGR("main menu: launching the map editor");
+        kernel::CallGuest(ctx, kLaunchEditor, {uint32_t(ctx.r[3]) - kPreGameListener});
+        return;
+    }
+    if (id != kExitId) {
         __imp__sub_821B3380(ctx, base);
         return;
     }

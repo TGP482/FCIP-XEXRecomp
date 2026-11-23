@@ -44,8 +44,6 @@ constexpr const char* kExitHelp = "Close the game and return to the desktop";
 constexpr const char* kCustomCaption = "CUSTOM CAMPAIGN";
 constexpr const char* kCustomHelp = "Play the custom levels in the levels\\play folder in order";
 constexpr const char* kOnlineCaption = "ONLINE JOIN IP";
-constexpr const char* kStatsCaption = "STATISTICS";
-constexpr const char* kStatsHelp = "Your stats and leaderboards from system link matches, kept with your profile";
 constexpr const char* kAchievementsCaption = "ACHIEVEMENTS";
 constexpr const char* kAchievementsHelp = "The achievements your profile has earned";
 
@@ -323,7 +321,6 @@ const char* CaptionFor(uint32_t crc) {
     if (crc == kCrcExit) return kExitCaption;
     if (crc == kCrcCustomCampaign) return kCustomCaption;
     if (crc == kCrcOnline) return kOnlineCaption;
-    if (crc == kCrcStatistics) return kStatsCaption;
     if (crc == kCrcAchievements) return kAchievementsCaption;
     return nullptr;
 }
@@ -334,7 +331,6 @@ const char* HelpFor(uint32_t crc) {
     if (crc == kCrcControllerSettings) return kControllerHelp;
     if (crc == kCrcExit) return kExitHelp;
     if (crc == kCrcCustomCampaign) return kCustomHelp;
-    if (crc == kCrcStatistics) return kStatsHelp;
     if (crc == kCrcAchievements) return kAchievementsHelp;
     return nullptr;
 }
@@ -357,7 +353,7 @@ uint32_t EntryFor(int page) {
 void SetEntryCaptions(PPCContext& ctx, uint32_t page) {
     constexpr uint32_t kEntries[] = {kCrcMultiplayerSetup, kCrcRecompSettings, kCrcMouseKeyboard,
                                      kCrcControllerSettings, kCrcExit, kCrcCustomCampaign, kCrcOnline,
-                                     kCrcStatistics, kCrcAchievements};
+                                     kCrcAchievements};
     for (uint32_t crc : kEntries) {
         if (uint32_t widget = FindWidget(page, crc)) SetCaption(ctx, Read32(widget + kWidgetElement), CaptionFor(crc));
     }
