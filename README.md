@@ -31,19 +31,19 @@ This port was created using the [Xbox 360 XEX Recomp](https://github.com/TGP482/
 
 ### Graphics
 - **Ambient Occlusion** - Adds screen space ambient occlusion, creating soft contact shadows where surfaces meet. Choose between SSAO, GTAO and hardware ray traced RTAO.
-- **Global Illumination** - Adds hardware ray traced global illumination, so light bounces off every surface.
-- **Volumetric Fog** - Replaces the game's fog with volumetric height fog.
-- **Volumetric Clouds** - Adds volumetric to the sky.
-- **Caustics** - Adds the rippling sunlight the water casts on everything under the ocean and rivers.
-- **Ocean Reflection** - Choose between Xbox 360 and Original Xbox.
 - **Anti Aliasing** - Enables 2x, 4x or 8x MSAA to smooth jagged edges while preserving a sharp image, TAA, which smooths every edge by blending each frame with the last, or AMD FSR 3, which also upscales with FSR when the render resolution is lowered.
-- **Frame Generation** - Generates one, two or three frames between each two rendered ones (2X, 3X or 4X) with AMD FSR Frame Generation.
 - **Subpixel Morphological Antialiasing (SMAA)** - Enables SMAA to smooth jagged edges across the whole frame with a softer image. SMAA also smooths alpha-tested edges such as fences and foliage, and can be combined with MSAA.
 - **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures.
 - **Shadow Resolution** - Sets the sun shadow resolution from 1024x1024 up to 8192x8192.
 - **Shadow Filtering** - Choose between Sharp, the game's own shadow edges, Soft, PCSS and Ray Traced.
 - **Draw Distance** - Increases how far objects, grass, vegetation and shadows are drawn up to 32x.
 - **Aim and Sprint Blur** - Toggles the blur effect while aiming down a scope and during feral run.
+- **Global Illumination** - Adds hardware ray traced global illumination, so light bounces off every surface.
+- **Volumetric Fog** - Replaces the game's fog with volumetric height fog.
+- **Volumetric Clouds** - Adds volumetric to the sky.
+- **Caustics** - Adds the rippling sunlight the water casts on everything under the ocean and rivers.
+- **Ocean Reflection** - Choose between Xbox 360 and Original Xbox.
+- **Frame Generation** - Generates one, two or three frames between each two rendered ones (2X, 3X or 4X) with AMD FSR Frame Generation.
 
 ### General
 - **Skip Intros** - Skips the Ubisoft logo, the branding plate and the intro movie.
