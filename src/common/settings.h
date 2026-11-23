@@ -41,13 +41,7 @@ struct Settings {
     bool invert_y = false;
     bool hold_aim = true;          // aim while the key is held, not a toggle
     bool hold_sprint = true;       // feral run while its key is held, not a toggle
-    // controller look over the game's own turn, 1 keeps it; while aiming only the aim pair applies
-    float pad_sensitivity_x = 1.0f;
-    float pad_sensitivity_y = 1.0f;
-    float pad_aim_sensitivity_x = 1.0f;
-    float pad_aim_sensitivity_y = 1.0f;
     bool pad_invert_x = false;
-    bool pad_invert_y = false;
     bool pad_hold_aim = false;     // aim while the right stick is held in, the game toggles on each click
     uint32_t vibration_strength = 100;  // percent of the game's rumble, 10 to 200
     bool skip_intros = false;      // the logo, the branding plate and the intro movie

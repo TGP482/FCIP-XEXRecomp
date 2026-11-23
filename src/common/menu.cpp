@@ -143,7 +143,7 @@ enum RowId {
     kInvincible, kNoclip, kTextureReplacement, kTextureDumping, kDumpFormat, kGyroAiming, kGyroSensitivity, kGyroAxis,
     kGyroButton, kGyroButtonMode, kGyroCalibrate, kColourBlind, kAntiAliasing, kFrameGeneration, kSmaa, kAmbientOcclusion,
     kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection, kVolumetricClouds,
-    kCaustics, kPadSensitivityX, kPadSensitivityY, kPadAimSensitivityX, kPadAimSensitivityY, kPadInvertX, kPadInvertY,
+    kCaustics, kPadInvertX,
     kPadHoldAim, kGyroRecenter, kJoinIp, kPlayer1, kPlayer2, kPlayer3, kPlayer4, kMicrophone, kPushToTalk,
     kPauseOnFocusLoss, kLanguage, kVibration
 };
@@ -298,15 +298,8 @@ const std::vector<Row>& KeyboardRows() {
 }
 
 constexpr Row kControllerRows[] = {
-    {Kind::Heading, -1, "GENERAL", "Controller sensitivity, inversion, hold or toggle and vibration"},
-    {Kind::Value, kPadSensitivityX, "HORIZONTAL SENSITIVITY", "Adjusts horizontal controller look sensitivity"},
-    {Kind::Value, kPadSensitivityY, "VERTICAL SENSITIVITY", "Adjusts vertical controller look sensitivity"},
-    {Kind::Value, kPadAimSensitivityX, "AIM HORIZONTAL SENSITIVITY",
-     "Adjusts horizontal controller look sensitivity while aiming"},
-    {Kind::Value, kPadAimSensitivityY, "AIM VERTICAL SENSITIVITY",
-     "Adjusts vertical controller look sensitivity while aiming"},
+    {Kind::Heading, -1, "GENERAL", "Controller inversion, hold or toggle and vibration"},
     {Kind::Value, kPadInvertX, "INVERT X-AXIS", "Inverts the horizontal right stick and gyro look"},
-    {Kind::Value, kPadInvertY, "INVERT Y-AXIS", "Inverts the vertical right stick and gyro look"},
     {Kind::Value, kPadHoldAim, "HOLD TO AIM", "Aim only while the right stick is held in instead of toggling"},
     {Kind::Value, kVibration, "VIBRATION STRENGTH", "Scales the controller's vibration from 10% to 200%"},
     {Kind::Heading, -1, "GYRO", "Gyro aiming for controllers with motion sensors"},
@@ -414,7 +407,6 @@ bool* ToggleFlag(int id) {
         case kHoldAim: return &g.hold_aim;
         case kHoldSprint: return &g.hold_sprint;
         case kPadInvertX: return &g.pad_invert_x;
-        case kPadInvertY: return &g.pad_invert_y;
         case kPadHoldAim: return &g.pad_hold_aim;
         case kSkipIntros: return &g.skip_intros;
         case kFpsCounter: return &g.fps_counter;
@@ -435,10 +427,6 @@ float* SensitivityField(int id) {
         case kSensitivityY: return &g.sensitivity_y;
         case kAimSensitivityX: return &g.aim_sensitivity_x;
         case kAimSensitivityY: return &g.aim_sensitivity_y;
-        case kPadSensitivityX: return &g.pad_sensitivity_x;
-        case kPadSensitivityY: return &g.pad_sensitivity_y;
-        case kPadAimSensitivityX: return &g.pad_aim_sensitivity_x;
-        case kPadAimSensitivityY: return &g.pad_aim_sensitivity_y;
         default: return nullptr;
     }
 }
@@ -800,12 +788,7 @@ void CopyMouseSettings(Settings& to, const Settings& from) {
 
 // the CONTROLLER page's settings
 void CopyPadSettings(Settings& to, const Settings& from) {
-    to.pad_sensitivity_x = from.pad_sensitivity_x;
-    to.pad_sensitivity_y = from.pad_sensitivity_y;
-    to.pad_aim_sensitivity_x = from.pad_aim_sensitivity_x;
-    to.pad_aim_sensitivity_y = from.pad_aim_sensitivity_y;
     to.pad_invert_x = from.pad_invert_x;
-    to.pad_invert_y = from.pad_invert_y;
     to.pad_hold_aim = from.pad_hold_aim;
     to.vibration_strength = from.vibration_strength;
     to.gyro = from.gyro;

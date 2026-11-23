@@ -148,13 +148,7 @@ void LoadSettings(const void* table) {
     s.invert_y = t["invert_mouse_y"].value_or(s.invert_y);
     s.hold_aim = t["hold_to_aim"].value_or(s.hold_aim);
     s.hold_sprint = t["hold_to_sprint"].value_or(s.hold_sprint);
-    for (auto [key, value] : {std::pair{"controller_sensitivity_x", &s.pad_sensitivity_x},
-                              {"controller_sensitivity_y", &s.pad_sensitivity_y},
-                              {"controller_aim_sensitivity_x", &s.pad_aim_sensitivity_x},
-                              {"controller_aim_sensitivity_y", &s.pad_aim_sensitivity_y}})
-        *value = std::clamp(t[key].value_or(*value), 0.02f, 4.0f);
     s.pad_invert_x = t["invert_controller_x"].value_or(s.pad_invert_x);
-    s.pad_invert_y = t["invert_controller_y"].value_or(s.pad_invert_y);
     s.pad_hold_aim = t["controller_hold_to_aim"].value_or(s.pad_hold_aim);
     s.vibration_strength = std::clamp(t["vibration_strength"].value_or(s.vibration_strength), 10u, 200u);
     s.skip_intros = t["skip_intros"].value_or(s.skip_intros);
@@ -212,12 +206,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("invert_mouse_y", s.invert_y);
     t.insert_or_assign("hold_to_aim", s.hold_aim);
     t.insert_or_assign("hold_to_sprint", s.hold_sprint);
-    t.insert_or_assign("controller_sensitivity_x", double(s.pad_sensitivity_x));
-    t.insert_or_assign("controller_sensitivity_y", double(s.pad_sensitivity_y));
-    t.insert_or_assign("controller_aim_sensitivity_x", double(s.pad_aim_sensitivity_x));
-    t.insert_or_assign("controller_aim_sensitivity_y", double(s.pad_aim_sensitivity_y));
     t.insert_or_assign("invert_controller_x", s.pad_invert_x);
-    t.insert_or_assign("invert_controller_y", s.pad_invert_y);
     t.insert_or_assign("controller_hold_to_aim", s.pad_hold_aim);
     t.insert_or_assign("vibration_strength", int64_t(s.vibration_strength));
     t.insert_or_assign("skip_intros", s.skip_intros);

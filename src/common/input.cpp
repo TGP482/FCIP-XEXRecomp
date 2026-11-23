@@ -333,17 +333,6 @@ void MouseLook(uint32_t cmd) {
     WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) + pitch);
 }
 
-// the pad's turn this frame at the controller sensitivity
-void PadLook(uint32_t cmd, uint32_t player) {
-    if (!cmd) return;
-    const fcip::Settings& s = fcip::Get();
-    bool aiming = Zoomed(player);
-    float kx = aiming ? s.pad_aim_sensitivity_x : s.pad_sensitivity_x;
-    float ky = aiming ? s.pad_aim_sensitivity_y : s.pad_sensitivity_y;
-    WF(cmd + kCmdYaw, GF(cmd + kCmdYaw) * kx);
-    WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) * ky);
-}
-
 // the controller's gyro turns the view beside the right stick, its recenter button levels it; off in split screen,
 // where its pad's port is unknown
 void GyroLook(uint32_t cmd, bool split) {
@@ -354,9 +343,8 @@ void GyroLook(uint32_t cmd, bool split) {
     if (turn.yaw == 0.0f && turn.pitch == 0.0f) return;
     // the gyro turns left positive, the command right positive; both pitch down positive
     float yaw = s.pad_invert_x ? turn.yaw : -turn.yaw;
-    float pitch = s.pad_invert_y ? -turn.pitch : turn.pitch;
     WF(cmd + kCmdYaw, GF(cmd + kCmdYaw) + yaw);
-    WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) + pitch);
+    WF(cmd + kCmdPitch, GF(cmd + kCmdPitch) + turn.pitch);
 }
 
 bool StandingCrouchPress(uint32_t player) {
@@ -506,7 +494,6 @@ void GamePad(int port, input::Pad& pad) {
     if (port == keyboard) kb = g_editor_view_keys ? EditorKeys() : Keyboard(pad);
     // not plain negation: -32768 has no positive
     if (fcip::Get().pad_invert_x && !InMenu()) pad.rx = int16_t(-1 - pad.rx);
-    if (fcip::Get().pad_invert_y && !InMenu()) pad.ry = int16_t(-1 - pad.ry);
     // keyboard and mouse ride on their port, a controller or not
     if (port == keyboard) pad.connected = true;
     pad.buttons |= kb.buttons;
@@ -730,22 +717,19 @@ PPC_FUNC(GUEST(CPlayer_FireWeapon)) {
     RestoreAutoAim(over);
 }
 
-// (helper, cmd): the pad's look scaled, then mouse look and the gyro add this frame's turn; the aiming helper is off
-// for the call while the keyboard or mouse is in use. A split screen client on another port gets its pad alone.
+// (helper, cmd): mouse look and the gyro add this frame's turn; the aiming helper is off for the call while the
+// keyboard or mouse is in use. A split screen client on another port gets its pad alone.
 PPC_FUNC(GUEST(CAimHelper_Update)) {
     uint32_t cmd = uint32_t(ctx.r[4]);
     Client client = UpdatingClient();
     if (!KeysClient(client)) {
         GUEST_ORIG(CAimHelper_Update)(ctx, base);
-        PadLook(cmd, g_slot_players[client.slot]);
         return;
     }
     g_local_cmd = cmd;
     HelperOverride helper = SuppressAimingHelper();
     GUEST_ORIG(CAimHelper_Update)(ctx, base);
     if (helper.slot) W32(helper.slot, helper.saved);
-    // the look keys ride the pad's stick, so only while the pad leads
-    if (!K::KbmActive()) PadLook(cmd, g_local_player);
     MouseLook(cmd);
     GyroLook(cmd, client.split);
 }
