@@ -119,10 +119,11 @@ bool MoveBottomFrame(uint32_t page, int dy) {
     return true;
 }
 
-// a page shown: the frame lowers for the User page and goes back for any other page showing the header
-void UpdateBottomFrame(uint32_t shown) {
-    if (!g_frame_page || !FindWidget(shown, kCrcHeader)) return;
-    bool lower = shown == g_frame_page;
+// the page on top: the frame lowers for the User page and goes back for any other page showing the header; pages
+// without it, as message boxes, leave it
+void UpdateBottomFrame(uint32_t top) {
+    if (!g_frame_page || !FindWidget(top, kCrcHeader)) return;
+    bool lower = top == g_frame_page;
     if (lower == g_frame_lowered) return;
     if (MoveBottomFrame(g_frame_page, lower ? kProfileRow : -kProfileRow)) g_frame_lowered = lower;
 }
@@ -276,11 +277,12 @@ constexpr uint32_t kPopupText = 0x82056B88u;     // " "
 constexpr uint32_t kStringInit = 0x820C0DB8u;    // (std::string*, const char*)
 constexpr uint32_t kStringFree = 0x820C0518u;    // (std::string*, 1, 0)
 constexpr uint32_t kStringBytes = 0x1Cu;
-// the UI manager: +0x340 its draw stack, whose +0x18 holds the input stack at +0xB8
+// the UI manager: +0x340 its draw stack, whose +0x18 holds the input stack at +0xB8 and the drawn pages at +0x38
 constexpr uint32_t kUiManager = 0x8291234Cu;
 constexpr uint32_t kUiDraw = 0x340u;
 constexpr uint32_t kDrawInput = 0x18u;
 constexpr uint32_t kInputStack = 0xB8u;
+constexpr uint32_t kDrawnPages = 0x38u;
 constexpr uint32_t kPushDraw = 0x821303B0u;      // (draw, page, 1, 0, 0, 0)
 constexpr uint32_t kPopDraw = 0x821304D8u;       // (draw, 0, 0, 0, 0)
 constexpr uint32_t kInputTop = 0x8246B608u;      // (stack, 0, 0)
@@ -811,7 +813,8 @@ void SetWatermark(PPCContext& ctx, uint32_t page) {
 }  // namespace
 
 PPC_EXTERN_FUNC(__imp__sub_8216FA60);
-PPC_EXTERN_FUNC(__imp__sub_8216E5B8);
+PPC_EXTERN_FUNC(__imp__sub_821303B0);
+PPC_EXTERN_FUNC(__imp__sub_821304D8);
 PPC_EXTERN_FUNC(__imp__sub_821E31D0);
 PPC_EXTERN_FUNC(__imp__sub_8216F570);
 PPC_EXTERN_FUNC(__imp__sub_821E4648);
@@ -833,12 +836,28 @@ PPC_FUNC(sub_8216FA60) {
     if (uint32_t(ctx.r[3]) == 1) AddEntriesFor(ctx, self);
 }
 
-// a menu shows page index of its pages, (menu, index, fade in, ...)
-PPC_FUNC(sub_8216E5B8) {
-    uint32_t menu = uint32_t(ctx.r[3]);
-    uint32_t index = uint32_t(ctx.r[4]);
-    __imp__sub_8216E5B8(ctx, base);
-    UpdateBottomFrame(Read32(Read32(menu + kProfilePages) + index * 4));
+namespace {
+
+// the draw stack's top page after a push or pop, which every page shown or backed out of goes through
+void UpdateTopPage(PPCContext& ctx, uint32_t draw) {
+    uint32_t pages = Read32(draw + kDrawInput) + kDrawnPages;
+    UpdateBottomFrame(uint32_t(kernel::CallGuest(ctx, kInputTop, {pages, 0, 0})));
+}
+
+}  // namespace
+
+// a page pushed on the draw stack, (draw, page, ...)
+PPC_FUNC(sub_821303B0) {
+    uint32_t draw = uint32_t(ctx.r[3]);
+    __imp__sub_821303B0(ctx, base);
+    UpdateTopPage(ctx, draw);
+}
+
+// the draw stack's top popped, (draw, ...)
+PPC_FUNC(sub_821304D8) {
+    uint32_t draw = uint32_t(ctx.r[3]);
+    __imp__sub_821304D8(ctx, base);
+    UpdateTopPage(ctx, draw);
 }
 
 // the User page hides its multiplayer slot in this build: it becomes RECOMP SETTINGS
