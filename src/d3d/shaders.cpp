@@ -499,6 +499,12 @@ float3 Caustics(float3 seen) {
 }
 )";
 
+// the pixel, which turns the soft filters' discs and the shadow rays: interleaved gradient noise
+const char* kPixelTurnPrelude = R"(
+static float2 g_frag;
+float PixelTurn() { return 6.2831853 * frac(52.9829189 * frac(dot(g_frag, float2(0.06711056, 0.00583715)))); }
+)";
+
 const char* kSunSoftPrelude = R"(
 // the receiver plane's depth per sun map uv, from its screen derivatives
 float2 SunSlope(float3 p) {
@@ -509,15 +515,19 @@ float2 SunSlope(float3 p) {
     return all(isfinite(slope)) ? slope : 0;
 }
 
+// a tap of a golden angle disc turned by turn, the same area per tap
+float2 DiscTap(int i, float radius, float turn) {
+    float angle = i * 2.39996323 + turn;
+    return sqrt((i + 0.5) / 16) * radius * float2(cos(angle), sin(angle));
+}
+
 // the share of a disc of bilinear depth compares at or below the receiver plane, radius in uv
-float SunSoft(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 slope, float radius) {
+float SunSoft(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 slope, float radius, float turn) {
     float2 size;
     map.GetDimensions(size.x, size.y);
     float below = 0;
     [unroll] for (int i = 0; i < 16; i++) {
-        // golden angle turns, the same area per tap
-        float angle = i * 2.39996323;
-        float2 off = sqrt((i + 0.5) / 16) * radius * float2(cos(angle), sin(angle));
+        float2 off = DiscTap(i, radius, turn);
         float2 at = uv + off;
         // gathered texels (0, 1), (1, 1), (1, 0), (0, 0)
         float4 c = float4(map.GatherRed(s, at) <= z + dot(slope, off));
@@ -527,41 +537,40 @@ float SunSoft(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 
     return below / 16;
 }
 
-// PCSS: the mean depth of the blockers over the widest disc sets the penumbra, spread uv per unit of depth past them
-float SunPcss(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 slope, float spread, float2 radii) {
+// PCSS's blocker search over a disc: the mean depth of the texels nearer the light than the receiver plane, which is
+// deeper, and their count
+float2 Blockers(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 slope, float radius, float turn) {
     float sum = 0;
     float count = 0;
     [unroll] for (int i = 0; i < 16; i++) {
-        float angle = i * 2.39996323;
-        float2 off = sqrt((i + 0.5) / 16) * radii.y * float2(cos(angle), sin(angle));
+        float2 off = DiscTap(i, radius, turn);
         float4 d = map.GatherRed(s, uv + off);
-        float4 hit = float4(d <= z + dot(slope, off));
-        sum += dot(d, hit);
-        count += dot(hit, 1);
+        float4 blocker = float4(d > z + dot(slope, off));
+        sum += dot(d, blocker);
+        count += dot(blocker, 1);
     }
-    if (count == 0) return 0;
-    float radius = clamp(abs(z - sum / count) * spread, radii.x, radii.y);
-    return SunSoft(map, s, uv, z, slope, radius);
+    return float2(count > 0 ? sum / count : 0, count);
+}
+
+// PCSS: the mean depth of the blockers over the widest disc sets the penumbra, spread uv per unit of depth past them.
+// Its discs turn per pixel, so their wide taps blur into grain instead of showing as copies of the shadow
+float SunPcss(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 slope, float spread, float2 radii) {
+    float turn = PixelTurn();
+    float2 b = Blockers(map, s, uv, z, slope, radii.y, turn);
+    if (b.y == 0) return 1;
+    float radius = clamp((b.x - z) * spread, radii.x, radii.y);
+    return SunSoft(map, s, uv, z, slope, radius, turn);
 }
 
 // PCSS on another light's map, a perspective one whose depth is its near plane over the distance with the far plane
 // well past: the blockers' mean depth over the receiver's is the receiver's distance over theirs, and the penumbra is
 // size times that less one, so it is size where the blockers stand halfway to the light
 float LightPcss(Texture2D<float4> map, SamplerState s, float2 uv, float z, float2 slope, float size, float2 radii) {
-    float sum = 0;
-    float count = 0;
-    [unroll] for (int i = 0; i < 16; i++) {
-        float angle = i * 2.39996323;
-        float2 off = sqrt((i + 0.5) / 16) * radii.y * float2(cos(angle), sin(angle));
-        float4 d = map.GatherRed(s, uv + off);
-        // nearer the light is deeper
-        float4 blocker = float4(d > z + dot(slope, off));
-        sum += dot(d, blocker);
-        count += dot(blocker, 1);
-    }
-    if (count == 0 || z <= 0) return 1;
-    float radius = clamp((sum / count / z - 1) * size, radii.x, radii.y);
-    return SunSoft(map, s, uv, z, slope, radius);
+    float turn = PixelTurn();
+    float2 b = Blockers(map, s, uv, z, slope, radii.y, turn);
+    if (b.y == 0 || z <= 0) return 1;
+    float radius = clamp((b.x / z - 1) * size, radii.x, radii.y);
+    return SunSoft(map, s, uv, z, slope, radius, turn);
 }
 )";
 
@@ -571,7 +580,6 @@ const char* kRayShadowPrelude = R"(
 static uint g_ray_done = 0;
 static float3 g_ray_at[4];
 static float g_ray_lit[4];
-static float2 g_frag;  // the pixel, which turns its rays
 
 // nothing between the point and the light, which lies along +z in the map's space: the title's depth is reversed, a
 // map is cleared to 0 and keeps its largest depth. Past its edge is lit, and as the map's raster the near plane clips
@@ -602,7 +610,7 @@ float RayShare(RaytracingAccelerationStructure scene, float3 p, float tmin, floa
 #ifdef HELPER_LANES
     if (IsHelperLane()) return 1;
 #endif
-    float turn = 6.2831853 * frac(52.9829189 * frac(dot(g_frag, float2(0.06711056, 0.00583715))));
+    float turn = PixelTurn();
     float lit = 0;
     for (int i = 0; i < 8; i++) {
         // golden angle turns, the same area per ray; radii in steps of 3 so the first four span the disc
@@ -1089,7 +1097,7 @@ constexpr double kRayBias = 1e-6;
 
 // the sun's filter call on a map at point p, whose uv spans s stock radii
 std::string SunFilter(const std::string& map, uint32_t t, const char* p, const char* slope, const char* s, bool pcss) {
-    if (!pcss) return F("SunSoft(%s, s%u, %s, tc.z, %s, %.9g / %s)", map.c_str(), t, p, slope, kSoftRadius, s);
+    if (!pcss) return F("SunSoft(%s, s%u, %s, tc.z, %s, %.9g / %s, 0)", map.c_str(), t, p, slope, kSoftRadius, s);
     return F("SunPcss(%s, s%u, %s, tc.z, %s, spread * scale / %s, float2(%.9g, %.9g) / %s)", map.c_str(), t, p, slope,
              s, kPcssMin, kPcssMax, s);
 }
@@ -1127,7 +1135,7 @@ void Translator::EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags
         Line(F("float below = LightPcss(t%u, s%u, uv, tc.z, slope, %.9g, float2(%.9g, %.9g));", t, t, radius, lo, hi));
     } else {
         double radius = flags & fcip::kShadowHalf ? kSoftRadiusHalf : kSoftRadius;
-        Line(F("float below = SunSoft(t%u, s%u, uv, tc.z, slope, %.9g);", t, t, radius));
+        Line(F("float below = SunSoft(t%u, s%u, uv, tc.z, slope, %.9g, 0);", t, t, radius));
     }
     Line("float4 ft = float4(0, 1 - below, 0, 0);");
 }
@@ -1324,6 +1332,7 @@ void CommitAlu() {
                kTypes[info_.textures[i].dimension & 3], i, i, i, i);
     }
     if (sun_maps_) s += F("Texture2D<float4> t_sun[%u] : register(t%u);\n", fcip::kSunMaps, fcip::kSunFirstSlot);
+    if (sun_soft_ || ray_slots_) s += kPixelTurnPrelude;
     if (sun_soft_) s += kSunSoftPrelude;
     if (ray_slots_) {
         s += F("ByteAddressBuffer t_ray_casters : register(t%u);\n", fcip::kRayFirstSlot);
@@ -1473,7 +1482,7 @@ POut main(PIn i) {
         s += "    float2 vpos = floor(i.pos.xy * g_vpos_scale);\n";
         s += F("    r[%d] = float4(i.front ? vpos.x : -vpos.x, vpos.y, 0, 0);\n", opt_.vpos_reg & 63);
     }
-    if (ray_slots_) s += "    g_frag = i.pos.xy;\n";
+    if (sun_soft_ || ray_slots_) s += "    g_frag = i.pos.xy;\n";
     if (CausticsScreen() >= 0) s += "    g_pixel = i.pos;\n";
     s += "    Run();\n";
     if (OceanXbox()) s += "    if (g_reflection_set) oC[0].rgb = OceanXbox(oC[0].rgb, g_reflection.rgb);\n";
