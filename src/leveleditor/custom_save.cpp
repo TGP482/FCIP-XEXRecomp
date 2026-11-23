@@ -414,8 +414,6 @@ void AddPlacedDependencies(PPCContext& ctx) {
     std::vector<CampaignSource> sources;
     std::string added;
     std::string added_effects;
-    uint32_t placed = 0;
-    uint32_t unknown = 0;
     std::vector<uint8_t> mission = HostFile(folder / kMissionFile);
     for (const PlacedEntity& e : MissionEntities({mission.begin(), mission.end()})) {
         std::string crc = std::to_string(fcip::Crc32("\\" + Lower(e.name)));
@@ -426,16 +424,12 @@ void AddPlacedDependencies(PPCContext& ctx) {
             auto named = sources[i].names.find(e.type);
             if (named != sources[i].names.end() && sources[i].entries.count(named->second)) from = &sources[i];
         }
-        if (!from) {
-            unknown++;
-            continue;
-        }
+        if (!from) continue;
         std::string entry = from->entries.at(from->names.at(e.type));
         SetEntryKey(entry, " Name=\"", e.name);
         SetEntryKey(entry, kDependencyLists[0].key, crc);
         added += entry;
         listed.insert(crc);
-        placed++;
         for (const std::string& effect : EntryEffects(entry)) {
             auto particle = from->particles.find(effect);
             if (particle != from->particles.end() && effects.insert(effect).second) added_effects += particle->second;
@@ -447,7 +441,6 @@ void AddPlacedDependencies(PPCContext& ctx) {
         std::ofstream(path, std::ios::binary)
             .write(reinterpret_cast<const char*>(list->data()), std::streamsize(list->size()));
     }
-    LOGR("level editor: %u placed entities given dependencies, %u of a type no campaign level places", placed, unknown);
 }
 
 // the sequences as edited, over the campaign's copy
@@ -486,7 +479,6 @@ void WriteNavigation(PPCContext& ctx) {
     }
     NavFile manager = NavManagerFile(uint32_t(graphs.size()));
     WriteHostFile(kGraphManager, manager.data(), manager.size());
-    LOGR("level editor: %zu AI navigation graphs written", graphs.size());
 }
 
 // the campaign level's LevelData.xml, naming the campaign level
@@ -530,7 +522,6 @@ void EnsureScript() {
     std::error_code ec;
     if (fs::exists(path, ec)) return;
     std::ofstream(path, std::ios::binary) << ScriptTemplate(MapName());
-    LOGR("level editor: %s written", path.string().c_str());
 }
 
 // a text in a file replaced throughout, the file untouched when it has none

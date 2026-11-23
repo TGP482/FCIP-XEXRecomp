@@ -77,7 +77,6 @@ struct Variant {
     std::vector<uint8_t> dxil;
     uint64_t key = 0;  // of the DXIL, so a cached pipeline of other DXIL never matches
     std::atomic<bool> building{false};  // compiling on a build thread; dxil and key are read once it is done
-    std::string why;  // its options past the plain ones, logged when it is built in play
 };
 
 struct Shader {
@@ -2580,13 +2579,6 @@ private:
     std::vector<BuiltPipeline> built_;
     std::mutex built_lock_;
     std::atomic<bool> built_ready_{false};
-    // since the last log line
-    uint32_t posted_shaders_ = 0;
-    uint32_t skipped_draws_ = 0;
-    uint32_t plain_draws_ = 0;
-    uint32_t made_pipelines_ = 0;
-    uint32_t posted_pipelines_ = 0;
-    float pipeline_ms_ = 0;
 
     // the last constant blocks bound, skipped when unchanged; no address means upload again
     uint8_t const_last_[kRootCount][kConstBytes] = {};
@@ -3010,16 +3002,10 @@ void D3D12Backend::WaitFence(uint64_t value) {
 uint64_t D3D12Backend::RingRoom(uint64_t size, uint64_t align) {
     UploadChunks& ring = CurrentFrame().ring;
     size_t at = ring.at;
-    size_t chunks = ring.list.size();
     uint64_t o = Room(dev_.Get(), ring, size, align, kUploadSize);
     if (ring.at == at) return o;
     upload_epoch_++;
     Unbind();
-    static size_t most = 1;
-    if (ring.list.size() > chunks && ring.list.size() > most) {
-        most = ring.list.size();
-        LOGR("D3D12: upload ring grew to %zu chunks in a frame", most);
-    }
     return o;
 }
 
@@ -3292,24 +3278,6 @@ Shader* D3D12Backend::CreateShader(ShaderStage stage, const uint32_t* code, size
 
 Variant* D3D12Backend::EnsureVariant(Shader* s, const ShaderOptions& opt) { return Compiled(VariantFor(s, opt)); }
 
-// the stage, the shader and what its options add to the plain variant the shader archive builds
-std::string BuildReason(const Shader& s, const ShaderOptions& opt) {
-    char head[32];
-    std::snprintf(head, sizeof(head), "%s %016llx", s.stage == ShaderStage::Pixel ? "pixel" : "vertex",
-                  static_cast<unsigned long long>(s.hash));
-    std::string why = head;
-    static const ShaderOptions kPlain;
-    if (std::memcmp(opt.export_map, kPlain.export_map, sizeof(opt.export_map)) != 0) why += ", linked";
-    if (opt.alpha_test) why += ", alpha test";
-    if (opt.vpos_reg >= 0) why += ", vpos";
-    if (opt.motion) why += ", motion";
-    for (uint32_t i = 0; i < 32; i++) {
-        if (opt.tex_flags[i]) why += ", flag " + std::to_string(i) + "=" + std::to_string(opt.tex_flags[i]);
-        if (opt.flat[i]) why += ", flat " + std::to_string(i);
-    }
-    return why;
-}
-
 // translated only: its info is known, its DXIL is made once a draw uses it
 Variant* D3D12Backend::VariantFor(Shader* s, const ShaderOptions& opt) {
     if (!s->last || std::memcmp(&s->last_opt, &opt, sizeof(opt)) != 0) {
@@ -3332,7 +3300,6 @@ Variant* D3D12Backend::FindVariant(Shader* s, const ShaderOptions& opt) {
     if (v) return v.get();
     v = std::make_unique<Variant>();
     v->hlsl = VariantHlsl(s->stage, s->code.data(), s->code.size(), opt, v->info, v->profile);
-    v->why = BuildReason(*s, opt);
     return v.get();
 }
 
@@ -3345,10 +3312,8 @@ Variant* D3D12Backend::Compiled(Variant* v) {
             v->key = Hash64(v->dxil.data(), v->dxil.size());
             return v;
         }
-        LOGR("shader built in play: %s", v->why.c_str());
         if (Async()) {
             v->building = true;
-            posted_shaders_++;
             Post([v, hlsl = std::move(hlsl), profile = v->profile] { BuildVariant(*v, hlsl, profile); });
         } else {
             BuildVariant(*v, hlsl, v->profile);
@@ -3484,11 +3449,8 @@ ID3D12PipelineState* D3D12Backend::FindPipeline(const PipelineKey& k, const Vari
     D3D12_SHADER_BYTECODE vs_code{vs.dxil.data(), vs.dxil.size()};
     D3D12_SHADER_BYTECODE ps_code{};
     if (ps) ps_code = {ps->dxil.data(), ps->dxil.size()};
-    auto start = std::chrono::steady_clock::now();
     g_perf.pipelines++;
     ComPtr<ID3D12PipelineState> pso = MakePipeline(k, vs_code, ps_code);
-    made_pipelines_++;
-    pipeline_ms_ += std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
     if (pso) StorePipeline(k, vs_code, ps_code, pso.Get());
     pipelines_[key] = pso;
     return pso.Get();
@@ -3522,7 +3484,6 @@ bool D3D12Backend::PipelineReady(const PipelineKey& k, const Variant& vs, const 
     if (!building_.insert(key).second) return false;
     BuiltPipeline b{k, {vs.dxil.data(), vs.dxil.size()}};
     if (ps) b.ps = {ps->dxil.data(), ps->dxil.size()};
-    posted_pipelines_++;
     Post([this, b]() mutable {
         b.pso = MakePipeline(b.key, b.vs, b.ps);
         std::lock_guard lock(built_lock_);
@@ -3943,8 +3904,6 @@ bool D3D12Backend::SunCascade(const State& s, const ShaderInfo& info, ShaderOpti
         bool far_map = m.far_base && base == m.far_base;
         bool shadow_sampler = b.fetch >= fcip::kShadowFirstFetch && b.fetch <= fcip::kSunFetch;
         if (far_map && shadow_sampler) far_samplers |= 1u << (b.fetch - fcip::kShadowFirstFetch);
-        static bool told = false;
-        if (far_map && !shadow_sampler && !std::exchange(told, true)) LOGR("sun: far map read through sampler %u", b.fetch);
         if (soft) opt.tex_flags[i] |= SoftShadow(base, far_map);
         any = any || (far_map && (count || soft));
     }
@@ -3991,12 +3950,8 @@ bool D3D12Backend::CausticsFlags(const State& s, const ShaderInfo& info, ShaderO
         Resolved* r = FindResolved(t, info.textures[i], ShaderStage::Pixel, i);
         if (!r || r->width <= r->height || DepthFormat(t.format)) continue;
         opt.tex_flags[fcip::kCausticsOut] = uint8_t(i + 1);
-        static bool logged = false;
-        if (!std::exchange(logged, true)) LOGR("caustics: a water draw shows the screen at texture %u", i);
         return true;
     }
-    static bool missed = false;
-    if (!std::exchange(missed, true)) LOGR("caustics: a water draw shows no screen, lit under it first");
     caustics_under_ = true;
     return true;
 }
@@ -4753,10 +4708,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     };
     bool extras = bound.motion || bound.albedo || flagged(vs_opt) || flagged(ps_opt);
     bool extras_later = extras && Async();
-    if (!ready && !extras_later) {
-        skipped_draws_++;
-        return;
-    }
+    if (!ready && !extras_later) return;
     if (ready) {
         k.vs = vs->key;
         k.ps = ps ? ps->key : 0;
@@ -4786,11 +4738,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         std::fill(std::begin(ps_opt.tex_flags), std::end(ps_opt.tex_flags), uint8_t(0));
         vs = Compiled(VariantFor(s.vs, vs_opt));
         ps = s.ps ? Compiled(VariantFor(s.ps, ps_opt)) : nullptr;
-        if (!vs || (s.ps && !ps)) {
-            skipped_draws_++;
-            return;
-        }
-        plain_draws_++;
+        if (!vs || (s.ps && !ps)) return;
         k.vs = vs->key;
         k.ps = ps ? ps->key : 0;
         FinishKey(s, topo, k);
@@ -6593,8 +6541,6 @@ bool D3D12Backend::RayShadows(const State& s, const ShaderInfo& info, ShaderOpti
         auto scene = ray_shadows_.find(base);
         if (scene == ray_shadows_.end() || scene->second.frame != frame_) continue;
         bool shadow_sampler = b.fetch >= fcip::kShadowFirstFetch && b.fetch <= fcip::kSunFetch;
-        static bool told = false;
-        if (!shadow_sampler && !std::exchange(told, true)) LOGR("rays: shadow map read through sampler %u", b.fetch);
         if (!shadow_sampler) continue;
         uint32_t slot = b.fetch - fcip::kShadowFirstFetch;
         ray_scenes_[slot] = scene->second.top->GetGPUVirtualAddress();
@@ -7465,16 +7411,6 @@ void D3D12Backend::Present(const uint32_t front[6]) {
         fps_ = fps_frames_ / secs;
         fps_frames_ = 0;
         fps_start_ = now;
-        if (posted_shaders_ || skipped_draws_ || made_pipelines_ || posted_pipelines_ || plain_draws_) {
-            LOGR("async shaders: %u shaders started, %u draws skipped, %u drawn plain, %u pipelines made in %.0f ms, %u built behind",
-                 posted_shaders_, skipped_draws_, plain_draws_, made_pipelines_, pipeline_ms_, posted_pipelines_);
-            posted_shaders_ = 0;
-            skipped_draws_ = 0;
-            plain_draws_ = 0;
-            made_pipelines_ = 0;
-            posted_pipelines_ = 0;
-            pipeline_ms_ = 0;
-        }
     }
     if (diag::Perf()) LogPerf();
     if (BaseScale() != scale_ || SceneScale() != scene_scale_) {

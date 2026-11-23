@@ -98,7 +98,6 @@ void ReadCursorFile() {
         }
         VisibleBox v = MeasureVisible(w, h);
         g_extent = v.x1 > v.x0 ? std::max(v.x1 - v.x0, v.y1 - v.y0) : std::max(w, h);
-        LOGR("cursor: %s, %ux%u, visible %u..%u x %u..%u", path.string().c_str(), w, h, v.x0, v.x1, v.y0, v.y1);
         return;
     }
 }

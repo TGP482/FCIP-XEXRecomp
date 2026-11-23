@@ -194,7 +194,6 @@ bool OnJoinIp(PPCContext&, uint32_t text, uint32_t length) {
     app::Get().join_ip = ip;
     app::Save();
     g_online.pending = true;
-    LOGR("online join IP: %s", ip.c_str());
     return true;
 }
 
@@ -287,7 +286,6 @@ PPC_FUNC(sub_821B7FD8) {
 PPC_FUNC(sub_821B3380) {
     uint32_t id = uint32_t(ctx.r[4]);
     if (id == kEditorId) {
-        LOGR("main menu: launching the map editor");
         kernel::CallGuest(ctx, kLaunchEditor, {uint32_t(ctx.r[3]) - kPreGameListener});
         return;
     }
@@ -295,7 +293,6 @@ PPC_FUNC(sub_821B3380) {
         __imp__sub_821B3380(ctx, base);
         return;
     }
-    LOGR("exit: closing the window");
     PostMessageW(static_cast<HWND>(app::Window()), WM_CLOSE, 0, 0);
 }
 

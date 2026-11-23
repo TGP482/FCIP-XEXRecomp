@@ -16,7 +16,6 @@
 
 #include "common/grass_tiles.h"
 #include "common/settings.h"
-#include "core/log.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
 
@@ -237,8 +236,6 @@ bool Ready(PPCContext& ctx, uint32_t renderer, uint32_t level, float tile_size) 
         return false;
     }
     FillTemplate(ctx, renderer, lv);
-    LOGR("grass blocks: %ux%u tiles of %.2f, %u of %u blades, %.2fx wide", lv.side, lv.side, tile_size, lv.keep,
-         blades, lv.width);
     return true;
 }
 

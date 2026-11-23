@@ -7,7 +7,6 @@
 #include <string>
 
 #include "common/keys.h"
-#include "core/log.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
 
@@ -82,7 +81,6 @@ void Finish(uint32_t error, uint32_t text, uint32_t length) {
     W16(g_request.result + n * 2, 0);
     W32(g_request.overlapped + kOverlappedError, error);
     W32(g_request.overlapped + kOverlappedResult, error);
-    LOGR("virtual keyboard: %s, %u characters", error == kErrorSuccess ? "accepted" : "cancelled", n);
     g_request = {};
 }
 
@@ -178,7 +176,6 @@ bool OpenPage(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_lengt
     W32(keyboard + kKeyboardMaxLength, max_length);
     CallGuest(ctx, SYM_UIText_SetText, {R32(keyboard + kKeyboardLine), StringData(keyboard + kKeyboardText)});
     fcip::keyboard::SetInfo(ctx, info);
-    LOGR("virtual keyboard: opened, up to %u characters", max_length);
     return true;
 }
 
@@ -195,10 +192,7 @@ bool fcip::keyboard::Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32
 
 void fcip::keyboard::Tick(PPCContext& ctx) {
     // a level starting frees the menus' page (821B16A8) without its close
-    if (g_request.open && R32(SYM_VirtualKeyboard_pointer) != g_keyboard) {
-        LOGR("virtual keyboard: page freed while open");
-        Cancel();
-    }
+    if (g_request.open && R32(SYM_VirtualKeyboard_pointer) != g_keyboard) Cancel();
     keys::SetTextEntry(g_request.open);
     if (!g_request.open) return;
     FollowCase(ctx);

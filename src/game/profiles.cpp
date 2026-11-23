@@ -294,7 +294,6 @@ bool OnFirstName(PPCContext& ctx, uint32_t text, uint32_t length) {
     app::Save();
     CallGuest(ctx, SYM_Profile_Save, {current});
     CallGuest(ctx, SYM_ProfileManager_Apply, {manager});
-    LOGR("profiles: created %s", name.c_str());
     return true;
 }
 
@@ -311,7 +310,6 @@ bool OnNewName(PPCContext& ctx, uint32_t text, uint32_t length) {
     if (uint32_t profile = NewProfile(ctx, name)) {
         CallGuest(ctx, SYM_Profile_Pack, {profile});
         WriteProfile(profile);
-        LOGR("profiles: created %s", name.c_str());
     }
     RefreshList(ctx, g_menu);
     return true;

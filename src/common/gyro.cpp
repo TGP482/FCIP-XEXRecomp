@@ -152,7 +152,6 @@ void UpdateDrift(Motion& m, const Vec3& gyro, float dt) {
         m.drift = mean;
         m.calibrating = false;
         m.calibrated = true;
-        LOGR("gyro: drift %.3f %.3f %.3f", m.drift.x, m.drift.y, m.drift.z);
     } else if (still && !m.calibrated && Largest(mean) < kMaxDrift) {
         m.drift = mean;
     }

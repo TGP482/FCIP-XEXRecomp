@@ -86,7 +86,7 @@ bool RunLevelScript(PPCContext& ctx, uint32_t scripts, const char* file) {
     // as Script_ExecuteFile runs a file: load the chunk, then call it with no arguments and every result kept
     bool ran = CallGuest(ctx, SYM_Lua_LoadBuffer, {state, g_script, bytes, kScriptBufferName}) == 0 &&
                CallGuest(ctx, SYM_Lua_PCall, {state, 0, kAllResults}) == 0;
-    LOGR("custom levels: %s's %s %s", g_running.c_str(), file, ran ? "ran" : "failed");
+    if (!ran) LOGE("custom levels: %s's %s failed", g_running.c_str(), file);
     return ran;
 }
 
@@ -137,7 +137,6 @@ std::string BeginCustomCampaign() {
     if (levels.empty()) return {};
     std::lock_guard lock(g_start_lock);
     g_start = levels.front().name;
-    LOGR("custom campaign: starting at %s", g_start.c_str());
     return levels.front().base;
 }
 
@@ -168,16 +167,12 @@ std::string RouteLevelCommand(const std::string& command, bool ours) {
         target = first;
     } else if (in_level && !ours && !g_running.empty() && CampaignOf(level).empty()) {
         target = NextLevel(g_running);
-        if (target.empty()) {
-            LOGR("custom campaign: %s was the last level", g_running.c_str());
-            return kLastLevelEnd;
-        }
+        if (target.empty()) return kLastLevelEnd;
     }
     if (CampaignOf(target).empty()) return {};
     std::string routed = keyed ? WithValue(command, "level=", target) : "FadeOutRestartStartLevel level=" + target;
     routed = WithValue(routed, "mission=", kCustomMission);
     if (routed == command) return {};
-    LOGR("custom levels: \"%s\" queued as \"%s\"", command.c_str(), routed.c_str());
     return routed;
 }
 
@@ -233,7 +228,6 @@ PPC_FUNC(GUEST(Language_LoadMissionStringTable)) {
     CallGuest(ctx, SYM_String_AssignText, {language + kMissionTable, GuestText(own), uint32_t(own.size())});
     CallGuest(ctx, SYM_Language_LoadTable, {R32(language + kLanguageManager), language + kMissionTable});
     ctx.r[3] = result;
-    LOGR("custom levels: %s's own string table loaded", g_running.c_str());
 }
 
 // an XML file loads (r3 the file, r4 its path): the custom level's own table name opens its copy

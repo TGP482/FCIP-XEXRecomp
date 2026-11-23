@@ -199,8 +199,6 @@ void AdoptCampaignTypes(PPCContext& ctx, uint32_t library) {
     }
     SortByCaption(g_enemies);
     SortByCaption(g_objects);
-    LOGR("level editor: %zu enemy and %zu object types from %zu campaign levels", g_enemies.size(), g_objects.size(),
-         std::size(kCampaignLevels));
 }
 
 uint32_t List(uint32_t index) { return SYM_Catalogue_Lists + index * kListStride; }

@@ -114,7 +114,6 @@ constexpr uint32_t kScratchBytes = 0x100;
 constexpr uint32_t kLivingCylinderSurface = 0x718;
 constexpr uint32_t kDefaultSurface = 0;
 
-constexpr uint32_t kMb = 1024 * 1024;
 constexpr const char* kEditorTemplatesPack = "MET_Dependency";
 constexpr const char* kEditorTemplatePrefix = "MET_";  // the editor templates' folders, laid under custom levels
 
@@ -223,16 +222,6 @@ void SetUpEditor(PPCContext& ctx, uint32_t manager) {
     W32(SYM_Editor_NextObjectNumber, VectorCount(SYM_EditorObjects));
 }
 
-void LogOpened(const char* level) {
-    uint32_t entities = 0;
-    ForEachEntity([&](uint32_t) { entities++; });
-    mem::Stats s = mem::Query();
-    uint64_t used = uint64_t(s.total_pages - s.available_pages) * mem::kPage / kMb;
-    uint64_t total = uint64_t(s.total_pages) * mem::kPage / kMb;
-    LOGR("level editor: %s open, %u entities, %llu of %llu MB guest memory", level, entities,
-         (unsigned long long)used, (unsigned long long)total);
-}
-
 // the map's name, which a save names its folder after: a custom level's own, empty for a campaign level
 void SetMapName(uint32_t manager, const std::string& name) {
     constexpr uint32_t kMapNameChars = 32;
@@ -325,7 +314,6 @@ void StartCampaignLevel(PPCContext& ctx, uint32_t manager, const std::string& le
     CallGuest(ctx, SYM_Streaming_Wait, {R32(SYM_Streaming_pointer)});
     SetUpEditor(ctx, manager);
     W8(manager + kStartingLevel, 0);
-    LogOpened(level.c_str());
 }
 
 // the custom level's Mission.lua run from its folder as text: the game's script loader first opens <path>_compiled,

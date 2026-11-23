@@ -7,13 +7,11 @@
 #include "game/terrain_shade.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <utility>
 #include <vector>
 
 #include "common/render_pass.h"
-#include "core/log.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
 
@@ -143,16 +141,9 @@ void fcip::UpdateTerrainShade(const float world[16], float sea, gpu::FogView& vi
     for (int i = 0; i < 3; i++) now.sun[i] = clip[i * 4 + 2] / length;
     now.built = true;
     if (!Same(now, g_basis)) {
-        auto start = std::chrono::steady_clock::now();
         gpu::TerrainShade shade{kSide, Heights(terrain, now.x, now.y, sea)};
-        int cx = int(world[12]) - now.x * kSectorUnits;
-        int cy = int(world[13]) - now.y * kSectorUnits;
-        float eye = world[14] - sea - shade.heights[size_t(cy) * kSide + cx];
         Sweep(shade.heights, now.sun);
         d3d::PublishTerrainShade(std::move(shade));
-        std::chrono::duration<double, std::milli> took = std::chrono::steady_clock::now() - start;
-        LOGR("volumetric fog: terrain shade from sector %d %d, camera %.1f over ground, sun %.3f %.3f %.3f, %.1f ms",
-             now.x, now.y, eye, now.sun[0], now.sun[1], now.sun[2], took.count());
         g_basis = now;
     }
     for (int r = 0; r < 4; r++) {

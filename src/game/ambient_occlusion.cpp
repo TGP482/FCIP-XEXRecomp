@@ -26,7 +26,6 @@
 
 #include "common/render_pass.h"
 #include "common/settings.h"
-#include "core/log.h"
 #include "d3d/occlusion.h"
 #include "game/fpsfixes.h"
 #include "game/motion_vectors.h"
@@ -233,11 +232,6 @@ bool Ambient(PPCContext& ctx, float out[3]) {
         float floor = GF(outdoor + kAmbientFloor + i * 4);
         out[i] = std::fmax(base * scale * GF(engine + kEngineAmbientTint + i * 4), floor);
     }
-    static float logged[3] = {-1, -1, -1};
-    if (std::fabs(out[0] - logged[0]) + std::fabs(out[1] - logged[1]) + std::fabs(out[2] - logged[2]) > 0.02f) {
-        LOGR("global illumination: ambient %.3f %.3f %.3f, %s", out[0], out[1], out[2], area ? "vis area" : "outdoors");
-        std::copy(out, out + 3, logged);
-    }
     return true;
 }
 
@@ -382,11 +376,6 @@ void UpdateIndoors(const float world[16], float sea, gpu::FogView& v) {
         areas++;
     }
     o.count[0] = float(areas);
-    static size_t logged = size_t(-1);
-    if (unlit.size() != logged) {
-        LOGR("volumetric fog: %zu vis areas the sun doesn't light, %d nearest kept out", unlit.size(), areas);
-        logged = unlit.size();
-    }
 }
 
 // over the camera's list drawn so far, lit by the sun, as thick as the game's fog
@@ -402,13 +391,6 @@ void Fog(const FogSplit& f) {
         float sea = GF(dev + kDevVsConstants + kVsWaterLevel * 16);
         fcip::UpdateTerrainShade(world, sea, v);
         UpdateIndoors(world, sea, v);
-    }
-    static float logged[3] = {-1, -1, -1};
-    const float* c = v.sun_colour;
-    if (std::fabs(c[0] - logged[0]) + std::fabs(c[1] - logged[1]) + std::fabs(c[2] - logged[2]) > 0.02f) {
-        LOGR("volumetric fog: sun %.3f %.3f %.3f, sea level %.2f, %s", c[0], c[1], c[2],
-             GF(dev + kDevVsConstants + kVsWaterLevel * 16), v.shadowed ? "sun map" : "no sun map");
-        std::copy(c, c + 3, logged);
     }
     d3d::VolumetricFog(dev, a, v);
 }
@@ -437,7 +419,6 @@ void UpdateWeather(uint32_t engine) {
     float dt = float(fcip::FrameTime());
     g_weather.seconds += dt;
     bool raining = R8(engine + kEngineRain) != 0;
-    if (raining != g_weather.raining) LOGR("volumetric clouds: rain %s", raining ? "starts" : "stops");
     g_weather.raining = raining;
     float step = dt / kRainFade;
     float target = raining ? 1.0f : 0.0f;
@@ -529,12 +510,6 @@ void StartCaustics(uint32_t list) {
     t_caustics.under = fcip::SubmittedUnderWater();
     bool water = HoldsWater(list);
     if (t_caustics.under || water) t_caustics.list = list;
-    static int logged = -1;
-    int state = int(t_caustics.under) | int(water) << 1;
-    if (state == logged) return;
-    logged = state;
-    LOGR("caustics: camera %s the sea, water %s, pipelines ocean %d lake %d", t_caustics.under ? "under" : "over",
-         water ? "in view" : "out of view", int(t_caustics.ocean), int(t_caustics.lake));
 }
 
 // the caustics' light over what the camera's list drew so far, lit by the sun as the receivers are
