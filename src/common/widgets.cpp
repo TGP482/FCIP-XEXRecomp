@@ -276,6 +276,13 @@ void ShiftRect(uint32_t widget, int dx) {
     });
 }
 
+void MoveRectEdges(uint32_t widget, int top, int bottom) {
+    ForEachRect(widget, [&](uint32_t state) {
+        WriteS16(state + kRect + 4, ReadS16(state + kRect + 4) + top);
+        WriteS16(state + kRect + 6, ReadS16(state + kRect + 6) + bottom);
+    });
+}
+
 uint32_t Text(const char* text) {
     if (!text || !EnsureText()) return 0;
     WriteUtf16(g_text, text);
@@ -305,6 +312,10 @@ void HideWidget(uint32_t widget) {
     uint32_t down = Read32(widget + kWidgetDown);
     if (AddrOk(up) && Read32(up + kWidgetDown) == widget) Write32(up + kWidgetDown, down);
     if (AddrOk(down) && Read32(down + kWidgetUp) == widget) Write32(down + kWidgetUp, up);
+}
+
+void LowerWidget(uint32_t widget, int dy) {
+    if (TransformOf(widget)) ShiftWidget(widget, {0, dy});
 }
 
 void MoveWidget(uint32_t widget, uint32_t place) {

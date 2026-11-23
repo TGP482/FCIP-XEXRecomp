@@ -44,11 +44,15 @@ void SetCaption(PPCContext& ctx, uint32_t element, const char* text);
 void HideWidget(uint32_t widget);
 // widget moved to where place rests
 void MoveWidget(uint32_t widget, uint32_t place);
+// widget moved dy down, every keyframe with it
+void LowerWidget(uint32_t widget, int dy);
 // a copy of any widget pushed into the container, 0 when it failed
 uint32_t CloneChild(PPCContext& ctx, uint32_t container, uint32_t source);
 // a text or picture widget's left, right, top and bottom
 void SetRect(uint32_t widget, const int16_t (&rect)[4]);
 void ShiftRect(uint32_t widget, int dx);  // left and right
+// a text or picture widget's top moved top down and its bottom bottom down
+void MoveRectEdges(uint32_t widget, int top, int bottom);
 // a placed widget width wide moved to the other side of a screen that wide; twice puts it back
 void MirrorX(uint32_t widget, int width, int screen);
 // a picture widget's colour on all four corners

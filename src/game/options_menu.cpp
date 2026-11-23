@@ -33,6 +33,16 @@ constexpr uint32_t kCrcMainPage = 0x39514C08u;  // P_Main
 constexpr uint32_t kCrcMultiplayerPage = 0xE0159190u;  // P_Multiplayer
 constexpr uint32_t kCrcOptions = 0x188FC220u;
 constexpr uint32_t kCrcCredits = 0x89ADE9D9u;
+constexpr uint32_t kCrcHeader = 0x8D948810u;  // A_Header
+constexpr uint32_t kCrcHelp = 0x46740CFEu;    // A_Help
+constexpr uint32_t kCrcLowerCorner = 0xA1A022D5u;  // A_Header's corner line under the rows, which meets A_Help's frame
+constexpr uint32_t kCrcBlackPanel = 0x8EAC7B38u;   // A_Header's A_MidBlack02, the black behind the rows
+// its pictures ending on the corner line or under the help box, and the diagonal on the corner
+constexpr uint32_t kPanelBottoms[] = {0x18112B15u, 0x81187AAFu, 0xC7D6C2B1u};
+constexpr uint32_t kPanelCorner = 0x5ED4BAA2u;
+constexpr uint32_t kElementArea = 0x2Cu;      // a holder element's area, its children at [+0x08, +0x0C)
+constexpr uint32_t kElementRestyle = 0x48u;   // element vtable: (element, widget) after the widget's state bits change
+constexpr int kProfileRow = 35;               // P_EditProfile's rows sit this far apart
 // P_Main's rows top to bottom
 constexpr uint32_t kMainRows[] = {
     0x17130B2Fu,  // B_StoryMode
@@ -72,14 +82,49 @@ uint32_t LastRow(uint32_t page, const uint32_t (&rows)[N]) {
     return last;
 }
 
-// the hidden multiplayer slot comes back the way GAME OPTIONS sits, rather than guessing the bits the hide cleared
-void ShowEntry(uint32_t self) {
+// the hidden multiplayer slot comes back the way GAME OPTIONS sits, rather than guessing the bits the hide cleared;
+// its element restyles as after the hide (821E325C), else it keeps the disabled look until focus moves
+void ShowEntry(PPCContext& ctx, uint32_t self) {
     uint32_t page = ProfilePage(self, 1);
     uint32_t widget = FindWidget(page, kCrcMultiplayerSetup);
     uint32_t sibling = FindWidget(page, kCrcVideo);
-    if (!widget || !sibling || !AddrOk(Read32(widget + kWidgetElement))) return;
+    uint32_t element = Read32(widget + kWidgetElement);
+    if (!widget || !sibling || !AddrOk(element)) return;
     Write8(widget + kWidgetVisible, Read8(widget + kWidgetVisible) | (Read8(sibling + kWidgetVisible) & 0x80));
     Write8(widget + kWidgetEnabled, Read8(widget + kWidgetEnabled) | Read8(sibling + kWidgetEnabled));
+    uint32_t restyle = Read32(Read32(element) + kElementRestyle);
+    if (restyle) kernel::CallGuest(ctx, restyle, {element, widget});
+}
+
+// the User page once its rows are added; A_Header's area is one for every page showing it, so its frame is lowered
+// only while the User page shows
+uint32_t g_frame_page = 0;
+bool g_frame_lowered = false;
+
+// the corner line under the rows and the help box it runs into dy lower, the black behind the rows down to them, so
+// RESET DEFAULTS, pushed down by the added rows, stays above them; false when the frame is not as expected
+bool MoveBottomFrame(uint32_t page, int dy) {
+    uint32_t header = Read32(Read32(FindWidget(page, kCrcHeader) + kWidgetElement) + kElementArea);
+    uint32_t corner = FindWidget(header, kCrcLowerCorner);
+    uint32_t help = FindWidget(page, kCrcHelp);
+    uint32_t panel = Read32(Read32(FindWidget(header, kCrcBlackPanel) + kWidgetElement) + kElementArea);
+    if (!corner || !help || !panel) {
+        LOGR("options menu: User page frame not found, left in place");
+        return false;
+    }
+    LowerWidget(corner, dy);
+    LowerWidget(help, dy);
+    for (uint32_t crc : kPanelBottoms) MoveRectEdges(FindWidget(panel, crc), 0, dy);
+    MoveRectEdges(FindWidget(panel, kPanelCorner), dy, dy);
+    return true;
+}
+
+// a page shown: the frame lowers for the User page and goes back for any other page showing the header
+void UpdateBottomFrame(uint32_t shown) {
+    if (!g_frame_page || !FindWidget(shown, kCrcHeader)) return;
+    bool lower = shown == g_frame_page;
+    if (lower == g_frame_lowered) return;
+    if (MoveBottomFrame(g_frame_page, lower ? kProfileRow : -kProfileRow)) g_frame_lowered = lower;
 }
 
 // buttons cloned from GAME OPTIONS: MOUSE AND KEYBOARD, CONTROLLER and ACHIEVEMENTS on the User page take RESET
@@ -88,8 +133,10 @@ void AddEntriesFor(PPCContext& ctx, uint32_t self) {
     uint32_t vtable = Read32(self);
     if (vtable == kVtProfile) {
         uint32_t page = ProfilePage(self, 1);
+        bool added = FindWidget(page, kCrcMouseKeyboard) != 0;
         AddEntries(ctx, page, FindWidget(page, kCrcMultiplayerSetup), kCrcVideo, kCrcControlSetup,
                    {kCrcMouseKeyboard, kCrcControllerSettings, kCrcAchievements}, FindWidget(page, kCrcResetDefault));
+        if (!added && FindWidget(page, kCrcMouseKeyboard)) g_frame_page = page;
     } else if (vtable == kVtInGame) {
         uint32_t page = ProfilePage(self, 4);
         AddEntries(ctx, page, FindWidget(page, kCrcVideo), kCrcVideo, kCrcControlSetup,
@@ -745,11 +792,9 @@ void OpenNative(PPCContext& ctx, uint8_t* base, uint32_t page, int mode, PPCFunc
 // Watermark: B_Text mirrors "{A} SELECT" at the bottom left of P_Main; the prompt setter empties it on every call,
 // so this follows each one
 
-constexpr uint32_t kCrcHeader = 0x8D948810u;      // A_Header
 constexpr uint32_t kCrcNavigation = 0xDEB8BA8Bu;  // A_Navigation
 constexpr uint32_t kCrcBackText = 0xF3EC853Bu;    // B_Text, empty on P_Main
 constexpr uint32_t kVtTextElement = 0x82078CC8u;  // element type 8
-constexpr uint32_t kElementArea = 0x2Cu;
 constexpr uint32_t kElementAreaShown = 0x30u;
 constexpr const char* kWatermark = "XEX Recomp V1";
 
@@ -766,6 +811,7 @@ void SetWatermark(PPCContext& ctx, uint32_t page) {
 }  // namespace
 
 PPC_EXTERN_FUNC(__imp__sub_8216FA60);
+PPC_EXTERN_FUNC(__imp__sub_8216E5B8);
 PPC_EXTERN_FUNC(__imp__sub_821E31D0);
 PPC_EXTERN_FUNC(__imp__sub_8216F570);
 PPC_EXTERN_FUNC(__imp__sub_821E4648);
@@ -787,11 +833,19 @@ PPC_FUNC(sub_8216FA60) {
     if (uint32_t(ctx.r[3]) == 1) AddEntriesFor(ctx, self);
 }
 
+// a menu shows page index of its pages, (menu, index, fade in, ...)
+PPC_FUNC(sub_8216E5B8) {
+    uint32_t menu = uint32_t(ctx.r[3]);
+    uint32_t index = uint32_t(ctx.r[4]);
+    __imp__sub_8216E5B8(ctx, base);
+    UpdateBottomFrame(Read32(Read32(menu + kProfilePages) + index * 4));
+}
+
 // the User page hides its multiplayer slot in this build: it becomes RECOMP SETTINGS
 PPC_FUNC(sub_821E31D0) {
     uint32_t self = uint32_t(ctx.r[3]);
     __imp__sub_821E31D0(ctx, base);
-    ShowEntry(self);
+    ShowEntry(ctx, self);
 }
 
 // captions for our entries, after the page is localised

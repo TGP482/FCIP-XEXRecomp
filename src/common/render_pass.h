@@ -92,6 +92,9 @@ constexpr uint32_t kFogSlot = 24;
 // caustics: on kCausticsOut the index plus one of the screen a water draw shows behind it, which takes the light bound
 // at kCausticsSlot, rgb over what it falls on and a its view distance
 constexpr uint32_t kCausticsOut = 28;
+// on kCausticsOut instead: a water draw showing no screen behind it (lakes and rivers) draws first with this, lighting
+// what lies under it
+constexpr uint8_t kCausticsUnder = 0xFF;
 constexpr uint32_t kCausticsSlot = 23;
 // HLSL of CausticsFade(depth): the share of the caustics' light left under depth units of water
 extern const char* const kCausticsFadeHlsl;
