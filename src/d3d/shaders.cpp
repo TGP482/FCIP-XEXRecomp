@@ -493,10 +493,13 @@ float4 BlurTap(Texture2D<float4> t, SamplerState s, float2 uv, float2 size) {
 const char* kCausticsWaterPrelude = R"(
 static float4 g_pixel;  // the water's SV_Position, w its view distance
 
-float3 Caustics(float3 seen) {
+// the light under the water's pixel, a share of what it falls on
+float3 CausticsUnder() {
     float4 c = t_caustics.Load(int3(g_pixel.xy, 0));
-    return seen * (1 + c.rgb * CausticsFade(c.a - g_pixel.w));
+    return c.rgb * CausticsFade(c.a - g_pixel.w);
 }
+
+float3 Caustics(float3 seen) { return seen * (1 + CausticsUnder()); }
 )";
 
 // the pixel, which turns the soft filters' discs and the shadow rays: interleaved gradient noise
@@ -675,7 +678,12 @@ private:
     // pixel: a blur pass over an upscaled resolve
     bool Blur() const { return Pixel() && opt_.tex_flags[fcip::kBlurOut]; }
     // pixel: the index of the screen a water draw shows behind it, which takes the caustics' light, -1 none
-    int CausticsScreen() const { return Pixel() ? int(opt_.tex_flags[fcip::kCausticsOut]) - 1 : -1; }
+    int CausticsScreen() const {
+        uint8_t f = opt_.tex_flags[fcip::kCausticsOut];
+        return Pixel() && f != fcip::kCausticsUnder ? int(f) - 1 : -1;
+    }
+    // pixel: the pass before a water draw showing no screen, which outputs only the light under it
+    bool CausticsUnder() const { return Pixel() && opt_.tex_flags[fcip::kCausticsOut] == fcip::kCausticsUnder; }
     // pixel: what a shadow sampler's fetches do, fcip::kShadowOut
     uint8_t ShadowSampler(uint32_t fetch) const {
         bool shadow = fetch >= fcip::kShadowFirstFetch && fetch <= fcip::kSunFetch;
@@ -1349,7 +1357,7 @@ void CommitAlu() {
     if (OceanXbox()) s += kOceanXboxPrelude;
     if (Blur()) s += kBlurPrelude;
     if (FogIn()) s += F("Texture2D<float4> t_fog : register(t%u);\n", fcip::kFogSlot);
-    if (CausticsScreen() >= 0) {
+    if (CausticsScreen() >= 0 || CausticsUnder()) {
         s += F("Texture2D<float4> t_caustics : register(t%u);\n", fcip::kCausticsSlot);
         s += fcip::kCausticsFadeHlsl;
         s += kCausticsWaterPrelude;
@@ -1483,7 +1491,8 @@ POut main(PIn i) {
         s += F("    r[%d] = float4(i.front ? vpos.x : -vpos.x, vpos.y, 0, 0);\n", opt_.vpos_reg & 63);
     }
     if (sun_soft_ || ray_slots_) s += "    g_frag = i.pos.xy;\n";
-    if (CausticsScreen() >= 0) s += "    g_pixel = i.pos;\n";
+    if (CausticsScreen() >= 0 || CausticsUnder()) s += "    g_pixel = i.pos;\n";
+    if (CausticsUnder()) return s + "    POut o = (POut)0;\n    o.c0 = float4(CausticsUnder(), 0);\n    return o;\n}\n";
     s += "    Run();\n";
     if (OceanXbox()) s += "    if (g_reflection_set) oC[0].rgb = OceanXbox(oC[0].rgb, g_reflection.rgb);\n";
     s += Hooks().Output();

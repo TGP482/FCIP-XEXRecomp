@@ -427,8 +427,10 @@ struct PipelineKey {
     uint32_t stream_out = 0;  // a kStreamCaster, 0 none
     uint32_t motion = 0;      // kMotionTarget's format, 0 none
     uint32_t albedo = 0;      // fcip::kAlbedoTarget's use, kAlbedo*
-    uint32_t depth_only = 0;  // no colour written; the key is hashed and compared as bytes, so no padding
+    uint32_t pass = 0;  // a pass before the draw, 0 none; the key is hashed and compared as bytes, so no padding
 };
+// a pass's pipeline: the depth alone, no colour written; or the caustics' light multiplied into colour 0 under water
+enum : uint32_t { kDepthPass = 1, kCausticsPass = 2 };
 enum : uint32_t { kAlbedoWrite = 1, kAlbedoClear = 2 };
 
 // cache/pipelines.bin: the header, then per pipeline its record, the shaders' DXIL and the driver's blob
@@ -2079,6 +2081,8 @@ private:
     ID3D12PipelineState* EnsurePipeline(const PipelineKey& k, const Variant& vs, const Variant* ps);
     ID3D12PipelineState* EnsureDepthPass(const State& s, const ShaderOptions& ps_opt, const Variant& vs,
                                          PipelineKey& k);
+    ID3D12PipelineState* EnsureCausticsPass(const State& s, const ShaderOptions& ps_opt, const Variant& vs,
+                                            const PipelineKey& k);
     ID3D12PipelineState* FindPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps);
     ComPtr<ID3D12PipelineState> MakePipeline(const PipelineKey& k, D3D12_SHADER_BYTECODE vs,
                                              D3D12_SHADER_BYTECODE ps) const;
@@ -2377,6 +2381,7 @@ private:
     bool caustics_water_ = false;  // between kClearCausticsWater and kClearCausticsDry
     uint64_t caustics_rt_key_ = 0;
     ID3D12Resource* caustics_view_ = nullptr;  // the light the draw's pixel shader reads, null for none
+    bool caustics_under_ = false;  // the draw is water showing no screen, lit under by kCausticsPass
     // the terrain shade as last published
     ComPtr<ID3D12Resource> shade_;
     D3D12_RESOURCE_STATES shade_state_ = D3D12_RESOURCE_STATE_COMMON;
@@ -3382,8 +3387,11 @@ void FillBlend(const PipelineKey& k, D3D12_BLEND_DESC& d) {
         m.DestBlendAlpha = D3D12_BLEND_ZERO;
         m.BlendOpAlpha = D3D12_BLEND_OP_ADD;
     }
-    if (k.depth_only) {
+    if (k.pass) {
         for (D3D12_RENDER_TARGET_BLEND_DESC& rt : d.RenderTarget) rt.RenderTargetWriteMask = 0;
+        if (k.pass != kCausticsPass) return;
+        CausticsBlend(d.RenderTarget[0]);
+        d.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
         return;
     }
     if (!k.albedo) return;
@@ -3970,7 +3978,8 @@ bool D3D12Backend::OceanFlags(const State& s, const ShaderInfo& info, ShaderOpti
     return true;
 }
 
-// the water's draws into the caustics' target: the wide colour resolve they show behind them takes the light
+// the water's draws into the caustics' target: the wide colour resolve they show behind them takes the light, or with
+// none, as lakes and rivers, kCausticsPass lights what lies under them first
 bool D3D12Backend::CausticsFlags(const State& s, const ShaderInfo& info, ShaderOptions& opt) {
     if (!caustics_lit_ || !caustics_water_ || info.textures.size() > fcip::kCausticsSlot) return false;
     Target* rt = ColorTarget(s, 0, TargetHeight(s));
@@ -3987,8 +3996,9 @@ bool D3D12Backend::CausticsFlags(const State& s, const ShaderInfo& info, ShaderO
         return true;
     }
     static bool missed = false;
-    if (!std::exchange(missed, true)) LOGR("caustics: a water draw shows no screen");
-    return false;
+    if (!std::exchange(missed, true)) LOGR("caustics: a water draw shows no screen, lit under it first");
+    caustics_under_ = true;
+    return true;
 }
 
 // a blur pass's draws over an upscaled resolve: its taps, whole title texels apart, would skip host texels
@@ -4702,7 +4712,9 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     bool traced = s.ps && RayShadows(s, s.ps->info, ps_opt);
     bool ocean = s.ps && !sun && !traced && OceanFlags(s, s.ps->info, ps_opt);
     fog_view_ = FogFlags(s, ps_opt) ? fog_[0].Get() : nullptr;
-    bool caustics = s.ps && !sun && !traced && CausticsFlags(s, s.ps->info, ps_opt);
+    // the caustics take their own view and texture flag, so shadowed water takes them too
+    caustics_under_ = false;
+    bool caustics = s.ps && CausticsFlags(s, s.ps->info, ps_opt);
     caustics_view_ = caustics ? caustics_.Get() : nullptr;
     bool blur = s.ps && BlurFlags(s, s.ps->info, ps_opt);
     Variant* vs = VariantFor(s.vs, vs_opt);
@@ -4786,6 +4798,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         caster_vertices = 0;
     }
     ID3D12PipelineState* depth_pass = s.ps ? EnsureDepthPass(s, ps_opt, *vs, k) : nullptr;
+    ID3D12PipelineState* caustics_pass = caustics_under_ ? EnsureCausticsPass(s, ps_opt, *vs, k) : nullptr;
     ID3D12PipelineState* pso = EnsurePipeline(k, *vs, ps);
     if (!pso) return;
     g_perf.draws++;
@@ -4830,6 +4843,11 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     }
     if (depth_pass) {
         cl_->SetPipelineState(depth_pass);
+        cl_->DrawIndexedInstanced(count, 1, 0, a.base_vertex, 0);
+        cl_->SetPipelineState(pso);
+    }
+    if (caustics_pass) {
+        cl_->SetPipelineState(caustics_pass);
         cl_->DrawIndexedInstanced(count, 1, 0, a.base_vertex, 0);
         cl_->SetPipelineState(pso);
     }
@@ -6617,12 +6635,33 @@ ID3D12PipelineState* D3D12Backend::EnsureDepthPass(const State& s, const ShaderO
     PipelineKey depth = k;
     depth.ps = ps->key;
     depth.stream_out = 0;
-    depth.depth_only = 1;
+    depth.pass = kDepthPass;
     // an optimisation only: skipped until a build thread made it
     if (Async() && !PipelineReady(depth, vs, ps)) return nullptr;
     ID3D12PipelineState* pso = EnsurePipeline(depth, vs, ps);
     if (pso) k.depth_control = (c & ~kZWriteAndFunc) | kZEqual;
     return pso;
+}
+
+// a water draw showing no screen behind it: its triangles first multiply the caustics' light into what lies under
+// them, depth tested as the water without writing depth, colour 0 alone written
+ID3D12PipelineState* D3D12Backend::EnsureCausticsPass(const State& s, const ShaderOptions& ps_opt, const Variant& vs,
+                                                      const PipelineKey& k) {
+    constexpr uint32_t kZWrite = 4;  // RB_DEPTHCONTROL bit 2
+    if (!k.rt_formats[0]) return nullptr;
+    ShaderOptions opt = ps_opt;
+    opt.tex_flags[fcip::kCausticsOut] = fcip::kCausticsUnder;
+    Variant* ps = EnsureVariant(s.ps, opt);
+    if (!ps || !(ps->info.exports & 1)) return nullptr;
+    PipelineKey under = k;
+    under.ps = ps->key;
+    under.stream_out = 0;
+    under.depth_control &= ~kZWrite;
+    under.color_control &= ~(1u << 4);  // no alpha to coverage
+    under.pass = kCausticsPass;
+    // skipped until a build thread made it, as the draws' extras
+    if (Async() && !PipelineReady(under, vs, ps)) return nullptr;
+    return EnsurePipeline(under, vs, ps);
 }
 
 // the far sun map's rays spread over the sun's disc, its uv per unit of depth; another light's over a disc of the same
