@@ -48,6 +48,7 @@ thread_local bool g_text = false;    // a glyph is drawing
 thread_local bool g_paint = false;   // the red paint is drawing
 thread_local bool g_black = false;   // the black paint is drawing
 thread_local bool g_held = false;    // a menu part above has its place
+thread_local bool g_loading = false; // a loading screen is drawing
 
 // a kStretchWidgets part drawing: page x of its centre, -1 when none
 struct Stretch {
@@ -243,6 +244,17 @@ PPC_EXTERN_FUNC(GUEST_ORIG(UIWidget_Draw));
 PPC_EXTERN_FUNC(GUEST_ORIG(Font_Draw));
 PPC_EXTERN_FUNC(GUEST_ORIG(UI_DrawQuad));
 
+#if HAS_LoadingScreen_Draw
+PPC_EXTERN_FUNC(GUEST_ORIG(LoadingScreen_Draw));
+
+// one frame of a loading screen: its layout, then the spinner
+PPC_FUNC(GUEST(LoadingScreen_Draw)) {
+    g_loading = true;
+    GUEST_ORIG(LoadingScreen_Draw)(ctx, base);
+    g_loading = false;
+}
+#endif
+
 PPC_FUNC(GUEST(Device_Init)) {
     GUEST_ORIG(Device_Init)(ctx, base);
     if (g_wide < 0) g_wide = fcip::DisplayWide();
@@ -403,9 +415,10 @@ PPC_FUNC(GUEST(Font_Draw)) {
 }
 
 // a corner's x scaled by k with pos the share of the spare width before it; when narrowed, a corner at or past a page
-// edge goes with that edge, so the paint, panels and lines stretch out while text and logos keep their shape
+// edge goes with that edge, so the paint, panels and lines stretch out while text and logos keep their shape, as do
+// the loading screens' pictures
 static float Fit(float x, float k, float pos, float width) {
-    bool edge = !g_text && !g_paint && k < 1.0f && (x <= 1.5f || x >= width - 2.5f);
+    bool edge = !g_text && !g_paint && !g_loading && k < 1.0f && (x <= 1.5f || x >= width - 2.5f);
     if (edge) return x;
     return (x + 0.5f) * k + pos * (1.0f - k) * width - 0.5f;
 }
