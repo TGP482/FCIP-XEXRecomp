@@ -1,6 +1,7 @@
 // default.xex: the original Xbox profile list (P_Profile), left unopened by the 360 build, opened by OPTIONS again;
 // the first start names a profile and each one saves to profiles\<name>.bin, the current also to the gamer's settings,
-// and keeps its multiplayer stats in profiles\<name>.stats and its achievements in profiles\<name>.achievements
+// and keeps its multiplayer stats in profiles\<name>.stats, its achievements in profiles\<name>.achievements and its
+// saved games in profiles\<name>
 #include "game/profiles.h"
 
 #include <algorithm>
@@ -64,6 +65,10 @@ constexpr uint32_t kMenuShowPage = 0x2C;  // vtable: (menu, page, 1, 1)
 constexpr uint32_t kSystemUi = 0x18;
 constexpr uint32_t kUiActivePages = 0x38;
 constexpr uint32_t kEventPressA = 0x2F;
+
+// saved game content, named by 82229668 with the campaign's letter first; user maps start P or K
+constexpr uint32_t kSavedGameContent = 1;
+constexpr const char* kSavePrefixes[] = {"I", "E"};
 
 constexpr uint32_t kUserPad = 0x24C;  // the user manager's player: the pad that pressed START
 constexpr uint32_t kOtherUsers = 0x100;  // profiles other than the current one save to no user
@@ -145,10 +150,12 @@ std::vector<uint32_t> Loaded() {
 fs::path Folder() { return app::ExeDir() / "profiles"; }
 fs::path FileFor(const std::string& name) { return Folder() / (name + ".bin"); }
 
-// the stats and achievements the game reads and writes are the profile in play's
+// the stats, achievements and saved games the game reads and writes are the profile in play's
 void UseProfileFiles(const std::string& name) {
     xam::UseStatsFile(name.empty() ? std::string() : (Folder() / (name + ".stats")).string());
     xam::UseAchievementsFile(name.empty() ? std::string() : (Folder() / (name + ".achievements")).string());
+    if (name.empty()) return;
+    for (const char* prefix : kSavePrefixes) xam::SplitContent(kSavedGameContent, prefix, (Folder() / name).string());
 }
 
 // a gamertag: a letter first, then letters, digits and single spaces, none at the end
