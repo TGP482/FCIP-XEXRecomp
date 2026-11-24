@@ -82,7 +82,8 @@ constexpr uint32_t kLeftWidgets[] = {0x17C753E5u, 0xA4F0EADFu, 0x4DA638F6u, 0xCF
 constexpr uint32_t kRightWidgets[] = {0x2909DFF7u, 0xB0008E4Du, 0xDC33DFAAu, 0x0A5255EEu};
 // the menus' red paint image, RedBar.xbt
 constexpr uint32_t kRedPaintWidget = 0xA4E1836Eu;
-// the press start screen's black paint, RedBar.xbt turned and drawn black, unnamed
+// the press start screen's black paint, RedBar.xbt turned and drawn black, unnamed; the HUD's stance jump charge
+// image shares the first name, so it counts only in menus
 constexpr uint32_t kBlackPaintWidgets[] = {0x8EFD67A5u, 0xBCE7140Du};
 // menu parts that stay about the middle: the help box (A_Help, A_InfoText), the controller map's label groups and its
 // page list, the objective screen's header and list (ai_main, l_objectives)
@@ -356,7 +357,7 @@ PPC_FUNC(GUEST(UIWidget_Draw)) {
     if (!g_held) HoldInPlace(widget);
     UpdateStretch(widget, name);
     g_paint = name == kRedPaintWidget;
-    g_black = In(name, kBlackPaintWidgets);
+    g_black = In(name, kBlackPaintWidgets) && MenuLayout();
     g_open.push_back({widget});
     GUEST_ORIG(UIWidget_Draw)(ctx, base);
     Remember(g_open.back(), g_anchor);
