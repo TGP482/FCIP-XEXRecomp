@@ -315,8 +315,10 @@ bool OnNewName(PPCContext& ctx, uint32_t text, uint32_t length) {
     return true;
 }
 
-bool AskName(PPCContext& ctx, fcip::keyboard::Accept accept) {
-    return fcip::keyboard::Open(ctx, GuestText(0, kDefaultName), GuestText(1, fcip::Translate(kCreateTitle)), kMaxName, accept);
+bool AskName(PPCContext& ctx, fcip::keyboard::Accept accept, bool can_back) {
+    uint32_t start = GuestText(0, kDefaultName);
+    uint32_t info = GuestText(1, fcip::Translate(kCreateTitle));
+    return fcip::keyboard::Open(ctx, start, info, kMaxName, accept, can_back);
 }
 
 bool ListShown(PPCContext& ctx, uint32_t menu) {
@@ -335,7 +337,7 @@ void fcip::profiles::Tick(PPCContext& ctx) {
     if (!g_main_seen || g_asked || !Get().profile.empty()) return;
     uint32_t manager = Manager();
     if (!manager || !R32(manager + kManagerCurrent)) return;
-    g_asked = AskName(ctx, OnFirstName);
+    g_asked = AskName(ctx, OnFirstName, false);
 }
 
 PPC_EXTERN_FUNC(GUEST_ORIG(Profile_Save));
@@ -393,7 +395,7 @@ PPC_FUNC(GUEST(ProfileList_Key)) {
     uint32_t profile = Selected(ctx, menu);
     if (!profile) {
         g_menu = menu;
-        if (Loaded().size() < kMaxProfiles) AskName(ctx, OnNewName);
+        if (Loaded().size() < kMaxProfiles) AskName(ctx, OnNewName, true);
     } else {
         SetCurrent(ctx, profile);
         CallGuest(ctx, R32(R32(menu) + kMenuShowPage), {menu, 1, 1, 1});

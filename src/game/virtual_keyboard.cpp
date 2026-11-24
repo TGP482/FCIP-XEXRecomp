@@ -19,6 +19,7 @@ constexpr uint32_t kKeyboardListener = 0x60;  // left unset by the constructor, 
 constexpr uint32_t kKeyboardInfo = 0xB4;  // L_InfoText
 constexpr uint32_t kKeyboardLine = 0xB8;  // L_Text
 constexpr uint32_t kKeyboardText = 0xD8;  // std::wstring
+constexpr uint32_t kKeyboardCanBack = 0xF4;  // B backs out and its prompt shows (82171828)
 // both set: the first letter typed replaces the starting text, as the original's default name
 constexpr uint32_t kKeyboardKeepStart = 0x100;
 constexpr uint32_t kKeyboardStartShown = 0x104;
@@ -148,6 +149,7 @@ bool Type(PPCContext& ctx, char16_t c) {
         bool symbols = R32(g_keyboard + kKeyboardLetterSet) == kSymbols;
         ShowLetterSet(ctx, symbols ? TypedCase() : kSymbols);
     } else if (c == kEscape) {
+        if (!R32(g_keyboard + kKeyboardCanBack)) return true;
         ClosePage(ctx);
         return false;
     } else if (c == kEnter) {
@@ -161,12 +163,13 @@ bool Type(PPCContext& ctx, char16_t c) {
     return true;
 }
 
-bool OpenPage(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length) {
+bool OpenPage(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length, bool can_back) {
     uint32_t keyboard = R32(SYM_VirtualKeyboard_pointer);
     if (!keyboard || g_request.open) return false;
     g_keyboard = keyboard;
     g_upper = -1;
     W32(keyboard + kKeyboardListener, 0);
+    W32(keyboard + kKeyboardCanBack, can_back ? 1 : 0);
     CallGuest(ctx, R32(R32(keyboard) + kMenuShowPage), {keyboard, 0, 1, 1});
     uint32_t length = WideLength(start);
     uint32_t text = start ? start : StringData(keyboard + kKeyboardText);
@@ -184,8 +187,9 @@ bool OpenPage(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_lengt
 PPC_EXTERN_FUNC(GUEST_ORIG(XShowKeyboardUI));
 PPC_EXTERN_FUNC(GUEST_ORIG(VirtualKeyboard_Close));
 
-bool fcip::keyboard::Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length, Accept accept) {
-    if (!OpenPage(ctx, start, info, max_length)) return false;
+bool fcip::keyboard::Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length, Accept accept,
+                          bool can_back) {
+    if (!OpenPage(ctx, start, info, max_length, can_back)) return false;
     g_request = {true, 0, 0, 0, accept};
     return true;
 }
@@ -212,7 +216,7 @@ PPC_FUNC(GUEST(XShowKeyboardUI)) {
     uint32_t result = uint32_t(ctx.r[8]);
     uint32_t start = uint32_t(ctx.r[5]);
     uint32_t info = ctx.r[7] ? uint32_t(ctx.r[7]) : uint32_t(ctx.r[6]);
-    if (!units || !OpenPage(ctx, start, info, units - 1)) {
+    if (!units || !OpenPage(ctx, start, info, units - 1, true)) {
         GUEST_ORIG(XShowKeyboardUI)(ctx, base);
         return;
     }

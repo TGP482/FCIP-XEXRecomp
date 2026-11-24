@@ -10,8 +10,8 @@ namespace fcip::keyboard {
 using Accept = bool (*)(PPCContext& ctx, uint32_t text, uint32_t length);
 
 // opens the page over the current menu with a starting text and the line above it, both UTF-16 in guest memory;
-// false while another entry is open
-bool Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length, Accept accept);
+// false while another entry is open; without can_back neither B nor Esc leaves it
+bool Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length, Accept accept, bool can_back);
 // the line above the text, while the page is open
 void SetInfo(PPCContext& ctx, uint32_t info);
 // once a menu frame: the real keyboard types into an open page

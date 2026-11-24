@@ -198,7 +198,7 @@ bool OnJoinIp(PPCContext&, uint32_t text, uint32_t length) {
 }
 
 void AskJoinIp(PPCContext& ctx) {
-    fcip::keyboard::Open(ctx, KeyboardText(0, JoinIp()), KeyboardText(1, kJoinIpTitle), kJoinIpChars, OnJoinIp);
+    fcip::keyboard::Open(ctx, KeyboardText(0, JoinIp()), KeyboardText(1, kJoinIpTitle), kJoinIpChars, OnJoinIp, true);
 }
 
 uint32_t TopPage(PPCContext& ctx, uint32_t self) {
