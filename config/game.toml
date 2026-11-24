@@ -94,6 +94,7 @@ CPlayer_Zoom = 0x82266208
 Localise_ByCrc = 0x82132D98
 Localise_ByName = 0x82132EB0
 MenuManager_UpdateInput = 0x821306F8
+MenuScan_ReadPad = 0x8212F258  # (pad, devices, held, held out, pressed out, released out, sticks as directions)
 UIInputStack_Top = 0x8246B608
 UIList_HitTest = 0x82470FF0
 UIList_Next = 0x824720E8

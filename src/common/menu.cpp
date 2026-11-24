@@ -524,7 +524,7 @@ void StepInputRow(int id, int step, char (&text)[64]) {
         std::snprintf(text, sizeof(text), stock ? "%.1f (DEFAULT)" : "%.1f", float(shown) / 10.0f);
     } else if (id == kDrawDistance) {
         uint32_t v = kDistances[StepTable(kDistances, g.draw_distance, step)];
-        std::snprintf(text, sizeof(text), v == 1 ? "DEFAULT" : "%ux", v);
+        std::snprintf(text, sizeof(text), v == 1 ? "GAME DEFAULT" : "%ux", v);
     } else if (id == kShadowResolution) {
         uint32_t size = kShadowSizes[StepTable(kShadowSizes, g.shadow_resolution, step)];
         if (size) std::snprintf(text, sizeof(text), size == 1344 ? "%ux%u (DEFAULT)" : "%ux%u", size, size);

@@ -196,6 +196,7 @@ PPC_EXTERN_FUNC(GUEST_ORIG(VirtualKeyboard_Close));
 PPC_EXTERN_FUNC(GUEST_ORIG(InGame_Load));
 PPC_EXTERN_FUNC(GUEST_ORIG(InGame_Update));
 PPC_EXTERN_FUNC(GUEST_ORIG(InGame_Destroy));
+PPC_EXTERN_FUNC(GUEST_ORIG(MenuScan_ReadPad));
 
 bool fcip::keyboard::Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length, Accept accept,
                           bool can_back) {
@@ -233,6 +234,13 @@ PPC_FUNC(GUEST(XShowKeyboardUI)) {
     g_request = {true, result, units, uint32_t(ctx.r[10]), nullptr};
     W32(g_request.overlapped + kOverlappedResult, kErrorIoPending);
     ctx.r[3] = kErrorIoPending;
+}
+
+// the 360 menu scan reads a held stick as a direction and then ignores the buttons, so A could never type the letter
+// the stick points at
+PPC_FUNC(GUEST(MenuScan_ReadPad)) {
+    if (g_request.open) ctx.r[9] = 0;
+    GUEST_ORIG(MenuScan_ReadPad)(ctx, base);
 }
 
 // the page's back out, and its close after an accept
