@@ -28,6 +28,7 @@ constexpr uint32_t kTimerFrame = 0x68;  // the timer's frame time, double second
 
 static float g_frame_ms = 0.0f;  // this frame's whole milliseconds for the menus and the UI
 static double g_game_seconds = 0.0;  // the frame times added up
+static uint64_t g_frames = 0;  // frames the timer has stepped
 
 static double GuestDouble(uint32_t va) {
     uint64_t raw = R64(va);
@@ -55,6 +56,7 @@ PPC_FUNC(GUEST(Timer_Now)) {
 PPC_FUNC(GUEST(Timer_Update)) {
     GUEST_ORIG(Timer_Update)(ctx, base);
     g_game_seconds += fcip::FrameTime();
+    g_frames++;
     static double carry = 0.0;
     double ms = fcip::FrameTime() * 1000.0 + carry;
     double whole = std::floor(ms);
@@ -155,22 +157,36 @@ PPC_FUNC(GUEST(Player_SetLadder)) {
 
 // The 3D engine's continuous emitters spawn their particle count once a frame, so at high frame rates they made many
 // times the console's particles. Each frame's count now follows the frame time, the fraction carried per emitter.
+// A spawn that doesn't follow one on the frame before (a burst such as a muzzle flash or a bullet hit, or a stream's
+// first frame) keeps the full count, as the console spawned it at once.
 
 constexpr uint32_t kEmitterParams = 0x8;
 constexpr uint32_t kParamsCount = 0xD4;  // particles per spawn
 
-static std::unordered_map<uint32_t, double> g_carry;  // per emitter
+struct EmitterSpawns {
+    uint64_t frame = 0;  // the timer frame of the last spawn, 0 for none
+    double carry = 0.0;
+};
+
+static std::unordered_map<uint32_t, EmitterSpawns> g_spawns;  // per emitter
 static uint32_t g_params = 0;  // whose count is changed for the spawn call
 static uint32_t g_count = 0;
 
 // before the spawn call: r3 the emitter, f1 the frame time
 void ScaleEmitterCount(PPCContext& ctx, uint8_t*) {
     double frame = ctx.f[1];
-    if (frame >= fcip::kConsoleFrame) return;  // the spawn thins itself below 30 fps
     uint32_t emitter = uint32_t(ctx.r[3]);
+    EmitterSpawns& spawns = g_spawns[emitter];
+    bool streaming = spawns.frame != 0 && spawns.frame + 1 == g_frames;
+    spawns.frame = g_frames;
+    if (!streaming) {
+        spawns.carry = 0.0;
+        return;
+    }
+    if (frame >= fcip::kConsoleFrame) return;  // the spawn thins itself below 30 fps
     g_params = R32(emitter + kEmitterParams);
     g_count = R32(g_params + kParamsCount);
-    double& carry = g_carry[emitter];
+    double& carry = spawns.carry;
     double count = g_count * frame / fcip::kConsoleFrame + carry;
     double whole = std::floor(count);
     carry = count - whole;
