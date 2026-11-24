@@ -8,12 +8,12 @@
 #include <cstring>
 #include <iterator>
 
+#include "common/fpsfixes.h"
 #include "common/input.h"
 #include "common/keys.h"
 #include "common/menu.h"
 #include "common/settings.h"
 #include "core/input.h"
-#include "game/fpsfixes.h"
 #include "kernel/memory.h"
 #include "xdk/hle.h"
 

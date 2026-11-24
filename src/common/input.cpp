@@ -281,9 +281,8 @@ void RestoreAutoAim(const AutoAimOverride& over) {
     if (over.player) W8(over.player + kPlayerAutoAim, over.saved);
 }
 
-// cl_display_hud flips on each press of the toggle key; the editor has no offset for it
+// cl_display_hud flips on each press of the toggle key
 void ToggleHud() {
-#if HAS_Game_DisplayHud
     static bool was_held = false;
     bool held = Held(K::kToggleHud, true);
     bool pressed = held && !was_held;
@@ -293,7 +292,6 @@ void ToggleHud() {
     uint32_t cvar = game ? R32(game + SYM_Game_DisplayHud) : 0;
     uint32_t slot = cvar ? R32(cvar + kCVarValuePtr) : 0;
     if (slot) W32(slot, R32(slot) ? 0 : 1);
-#endif
 }
 
 // looking with the mouse

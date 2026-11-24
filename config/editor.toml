@@ -40,6 +40,10 @@ D3DDevice_SetPredication      = 0x8263F728
 D3DDevice_SetViewport         = 0x82644800
 D3DQuery_GetData              = 0x8264ECD8
 D3DQuery_Issue                = 0x8264EB30
+D3DTexture_LockRect           = 0x8263EF40
+
+# D3DX, whose CPU copies read resolves
+D3DXLoadSurfaceFromSurface    = 0x8265E950
 
 # XAudio, mixed by the host
 XAudioCreateSourceVoice              = 0x8274B850
@@ -142,6 +146,23 @@ UIRect_Draw = 0x82608758
 UIWidget_Draw = 0x8239ABD0
 UI_DrawQuad = 0x82496B60
 
+# CryGame, level loading (src/common/level_loading.cpp): a level's load under its loading screen, and one frame of that
+# screen
+Game_LoadLevel = 0x821385B8
+LoadingScreen_Draw = 0x82391C28
+
+# the player's ladder grab and let go, (player, on, ladder id, ...)
+Player_SetLadder = 0x82162430
+
+# CryAnimation, MORE: a model's animation step
+Animation_Step = 0x825DA2D0
+
+# CrySystem, the frame clock: the millisecond clock, the timer's time source and its update
+Clock_Get = 0x8239EE38
+Clock_Ms = 0x824EF878
+Timer_Now = 0x823AF380
+Timer_Update = 0x823AF3C0
+
 # CryEditor: the Add Object tool's update and a map's save thread (src/editor/tools.cpp)
 AddTool_Update = 0x820D6C38
 UserMaps_SaveThread = 0x8211FB70
@@ -157,8 +178,10 @@ UITransform_vtable = 0x82005AC0
 UIWidgetFocus_vtable = 0x820022C4
 UIWidgetText_vtable = 0x8201E158
 
-# CryGame: the game object, its cl_aimingHelper offset and no menu flag
+# CryGame: the game object, its cl_display_hud and cl_aimingHelper offsets, no menu flag and loading screen
 Game_AimingHelper = 0xAC
+Game_DisplayHud = 0xA0
+Game_LoadingScreen = 0x314
 Game_NoMenu = 0x37D
 Game_pointer = 0x828C729C
 
@@ -180,6 +203,9 @@ DisplayBlock = 0x82908790
 ObjManager_pointer = 0x828C7990
 RenderTargets_Depth = 0x828C7B4C
 Renderer_pointer = 0x828C7A34
+
+# CrySystem, the frame clock: the timer
+Timer = 0x828C72A8
 
 # instruction hooks, defined in src/editor/draw_distance.cpp
 
@@ -207,6 +233,11 @@ call = "GrassTileRefilled"
 at = 0x82356BC4
 call = "GrassRadius"
 
+[[hook]]  # f1 = the sun shadow radius walk target
+at = 0x82338AC4
+call = "ShadowRadiusTarget"
+regs = ["f1"]
+
 [[hook]]  # f8 = the sun light radius
 at = 0x823EAAD8
 call = "ShadowRadiusLight"
@@ -214,6 +245,91 @@ call = "ShadowRadiusLight"
 [[hook]]  # f0 = the radius tested against the distance
 at = 0x82355668
 call = "ShadowRadiusRange"
+
+# instruction hooks, defined in src/common/fpsfixes.cpp
+[[hook]]  # f13 = frame time in milliseconds, the menu input's truncation
+at = 0x8219137C
+call = "WholeFrameMsF13"
+regs = ["f13"]
+
+[[hook]]  # f10 = the same for each pad's input
+at = 0x821913B0
+call = "WholeFrameMsF10"
+regs = ["f10"]
+
+[[hook]]  # f13 = the same for the menu manager's first page update
+at = 0x821918EC
+call = "WholeFrameMsF13"
+regs = ["f13"]
+
+[[hook]]  # f10 = the same for its second page update
+at = 0x8219195C
+call = "WholeFrameMsF10"
+regs = ["f10"]
+
+[[hook]]  # f10 = the same for the UI update at the end of sub_821F33E8
+at = 0x821F3B0C
+call = "WholeFrameMsF10"
+regs = ["f10"]
+
+[[hook]]  # f12 = 0.075, the least rise per call of a living entity's shown height stepping up
+at = 0x82447A7C
+call = "StepUpRate"
+regs = ["f12"]
+after = true
+
+[[hook]]  # f0 = 1e-6, the least squared move a living entity's step makes
+at = 0x8244DE3C
+call = "LeastMove"
+regs = ["f0", "r22"]
+after = true
+
+[[hook]]  # the ladder's top exit, just before it lets go: r30 the player
+at = 0x82167468
+call = "LadderTopExit"
+regs = ["r30"]
+
+[[hook]]  # the continuous emitters' spawn call: r3 the emitter, f1 the frame time
+at = 0x8240026C
+call = "ScaleEmitterCount"
+regs = ["r3", "f1"]
+
+[[hook]]  # after it, also the out of view branch's target
+at = 0x82400270
+call = "RestoreEmitterCount"
+regs = []
+
+[[hook]]  # f1 = the frame time in the path point arrival test
+at = 0x822ECDFC
+call = "ArrivalFrameTime"
+regs = ["f1"]
+
+[[hook]]  # f13 = 6.0, the degrees the loading screen's spinner turns each draw
+at = 0x8211577C
+call = "LoadingIconTurn"
+regs = ["f13"]
+
+[[hook]]  # r31 = the loading screen fade out's alpha, just stepped down by 10 after its draw
+at = 0x82115F30
+call = "LoadingFadeStep"
+regs = ["r31"]
+after = true
+
+[[hook]]  # f27 = p_waterbob_pitch, before the pitch adds sine times depth times it
+at = 0x82174DE4
+call = "WaterBobPitch"
+regs = ["f27"]
+
+[[hook]]  # f26 = p_waterbob_roll, f31 = depth past p_waterbob_mindepth in 0..1, before the roll adds and scales
+at = 0x82174DF8
+call = "WaterBobRoll"
+regs = ["f26", "f31"]
+
+[[hook]]  # f9 = Dampv and f10 = Dampvs, a boat's forward and sideways drag share per physics step, f29 the step
+at = 0x8217E578
+call = "BoatDrag"
+regs = ["f9", "f10", "f29"]
+after = true
 
 # instruction hooks, defined in src/common/screen_quads.cpp
 [[hook]]  # the full screen quad's draw: r6 its vertices, r29 set when it copies a texture, r22 a second one

@@ -7,7 +7,8 @@
 // f28 = engine+0xB30 from its getter, squared for the tile loop's radius and stored to params+0x1C
 void GrassRadius(PPCContext& ctx, uint8_t*) { fcip::ScaleGrassRadius(ctx.f[28]); }
 
-// engine+0x1174 as each reader loads it: the sun light radius f8, the range test f0
+// engine+0x1174 as each reader loads it: the walk target f1, the sun light radius f8, the range test f0
+void ShadowRadiusTarget(PPCContext& ctx, uint8_t*) { fcip::ScaleShadowRadius(ctx.f[1]); }
 void ShadowRadiusLight(PPCContext& ctx, uint8_t*) { fcip::ScaleShadowRadius(ctx.f[8]); }
 void ShadowRadiusRange(PPCContext& ctx, uint8_t*) { fcip::ScaleShadowRadius(ctx.f[0]); }
 

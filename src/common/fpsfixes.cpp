@@ -3,12 +3,16 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <string_view>
 #include <unordered_map>
 
-#include "game/fpsfixes.h"
+#include "common/fpsfixes.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
+
+// the editor's build keeps some hooked values in other registers
+constexpr bool kEditor = std::string_view(IMAGE_XEX) == "ige.xex";
 
 // Frame clock
 
@@ -123,12 +127,14 @@ void LeastMove(PPCContext& ctx, uint8_t*) {
 // rates the overlap lasted many frames and the script grabbed again, so the player got stuck at the top. Grabs are now
 // skipped from letting go at the top until the script has gone a console frame without asking.
 
+constexpr int kExitPlayer = kEditor ? 30 : 29;
+
 static uint32_t g_exit_player = 0;
 static double g_hold_until = 0.0;
 
-// the top exit's let go, r29 the player
+// the top exit's let go, kExitPlayer the player
 void LadderTopExit(PPCContext& ctx, uint8_t*) {
-    g_exit_player = uint32_t(ctx.r[29]);
+    g_exit_player = uint32_t(ctx.r[kExitPlayer]);
     g_hold_until = g_game_seconds + fcip::kConsoleFrame;
 }
 
@@ -231,19 +237,25 @@ void LoadingFadeStep(PPCContext& ctx, uint8_t*) {
 // the last update left, so the swing grew with the frame rate. Each update now adds its share of a console frame,
 // and the roll's pull back to level near the surface follows the frame time too.
 
+constexpr int kBobPitch = kEditor ? 27 : 29;  // p_waterbob_pitch
+constexpr int kBobRoll = kEditor ? 26 : 28;   // p_waterbob_roll
+constexpr int kBobDepth = kEditor ? 31 : 30;  // depth past p_waterbob_mindepth in 0..1
+
 static double ConsoleFrames() { return fcip::FrameTime() / fcip::kConsoleFrame; }
 
-// f29 = p_waterbob_pitch, before the pitch adds sine times depth times it
-void WaterBobPitch(PPCContext& ctx, uint8_t*) { ctx.f[29] = float(ctx.f[29] * ConsoleFrames()); }
+// before the pitch adds sine times depth times p_waterbob_pitch
+void WaterBobPitch(PPCContext& ctx, uint8_t*) { ctx.f[kBobPitch] = float(ctx.f[kBobPitch] * ConsoleFrames()); }
 
-// f28 = p_waterbob_roll, f30 = depth past p_waterbob_mindepth in 0..1, before the roll adds and scales by depth
+// before the roll adds p_waterbob_roll's swing and scales it by depth
 void WaterBobRoll(PPCContext& ctx, uint8_t*) {
     double frames = ConsoleFrames();
-    ctx.f[28] = float(ctx.f[28] * frames);
-    ctx.f[30] = float(std::pow(ctx.f[30], frames));
+    ctx.f[kBobRoll] = float(ctx.f[kBobRoll] * frames);
+    ctx.f[kBobDepth] = float(std::pow(ctx.f[kBobDepth], frames));
 }
 
 // Virtual keyboard
+
+#if HAS_VirtualKeyboard_Update  // the editor never opens it
 
 // The virtual keyboard's idle animation steps one of its 360 frames each update, a rate tuned to the console's 30 fps;
 // at high frame rates it cycled many times a second and the page shook. It now steps by console frames of time.
@@ -260,6 +272,7 @@ PPC_FUNC(GUEST(VirtualKeyboard_Update)) {
     W32(uint32_t(ctx.r[3]) + kKeyboardIdleFrame, uint32_t(frame));
     GUEST_ORIG(VirtualKeyboard_Update)(ctx, base);
 }
+#endif
 
 // Boat drag
 

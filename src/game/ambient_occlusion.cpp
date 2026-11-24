@@ -24,10 +24,10 @@
 #include <utility>
 #include <vector>
 
+#include "common/fpsfixes.h"
 #include "common/render_pass.h"
 #include "common/settings.h"
 #include "d3d/occlusion.h"
-#include "game/fpsfixes.h"
 #include "game/motion_vectors.h"
 #include "game/ocean_reflection.h"
 #include "game/scene.h"

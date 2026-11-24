@@ -241,11 +241,13 @@ UITransform_vtable = 0x82079188
 UIWidgetFocus_vtable = 0x82078BC4
 UIWidgetText_vtable = 0x82079880
 
-# CryGame: the game object, its cl_display_hud and cl_aimingHelper offsets, no menu flag, pad input and client count
+# CryGame: the game object, its cl_display_hud and cl_aimingHelper offsets, no menu flag, pad input, client count and
+# loading screen
 Game_AimingHelper = 0xA8
 Game_ClientCount = 0x68
 Game_DisplayHud = 0x9C
 Game_Input = 0x24
+Game_LoadingScreen = 0x310
 Game_NoMenu = 0x379
 Game_pointer = 0x8291234C
 
@@ -345,7 +347,7 @@ regs = ["r5", "r7"]
 after = true
 
 
-# instruction hooks, defined in src/game/fpsfixes.cpp
+# instruction hooks, defined in src/common/fpsfixes.cpp
 [[hook]]  # f13 = frame time in milliseconds, the menu input's truncation
 at = 0x82130818
 call = "WholeFrameMsF13"
