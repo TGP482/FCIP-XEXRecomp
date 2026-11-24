@@ -834,6 +834,7 @@ void RestoreDefaults(int page) {
     CopyPadSettings(Get(), keep);
     Get().invincible = keep.invincible;
     Get().noclip = keep.noclip;
+    Get().profile = keep.profile;  // not a setting; empty opens the first start's profile popup
     Changed(true);
 }
 
