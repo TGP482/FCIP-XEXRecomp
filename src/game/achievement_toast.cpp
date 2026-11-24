@@ -57,6 +57,7 @@ constexpr int kHudHideKey = 20;
 constexpr uint32_t kCrcText = 0x81FDCEB5u;   // t_text
 constexpr uint32_t kCrcItem = 0xC1745286u;   // i_item1
 constexpr uint32_t kCrcDesc = 0x3DB56427u;   // t_description, our copy of t_text below it
+constexpr uint32_t kCrcBox = 0xC48B0B92u;    // ai_contextual_achievement, our copy of ai_contextual_1
 constexpr uint32_t kSetPicture = 0x82477458u;  // (element, child name crc, sprite)
 constexpr uint32_t kSetText = 0x82477168u;     // (element, child name crc, const wchar_t*)
 constexpr uint32_t kTransformRect = 0x10u;     // s16 left, right, top, bottom
@@ -215,6 +216,7 @@ bool EnsureBox(PPCContext& ctx, uint32_t hud) {
     uint32_t system = kernel::R32(SYM_UISystem_pointer);
     int screen = system ? int16_t(kernel::R16(system + kUiVirtualWidth)) : 0;
     if (!element || element == kernel::R32(game_box + kWidgetElement) || screen <= 0) return false;
+    Write32(widget + kWidgetNameCrc, kCrcBox);
     KeepShown(widget);
     MirrorX(widget, kBoxWidth, screen);
     g_box = {hud, widget, element};

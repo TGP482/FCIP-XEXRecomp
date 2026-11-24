@@ -76,10 +76,12 @@ thread_local std::vector<Span> g_open;  // the widgets drawing now, outermost fi
 std::mutex g_placed_lock;
 std::unordered_map<uint32_t, Placed> g_placed;
 
-// HUD widgets that sit against a screen side, by crc32 of their name: ai_status-base, -Valerie, -Doyle, -Kade
-constexpr uint32_t kLeftWidgets[] = {0x17C753E5u, 0xA4F0EADFu, 0x4DA638F6u, 0xCF7E37C7u};
-// ai_ammo-count1 and the unnamed count beside it, ai_objective-item, ai_live_event
-constexpr uint32_t kRightWidgets[] = {0x2909DFF7u, 0xB0008E4Du, 0xDC33DFAAu, 0x0A5255EEu};
+// HUD widgets that sit against a screen side, by crc32 of their name: ai_status-base, -Valerie, -Doyle, -Kade, the
+// hint and pickup message boxes ai_contextual_1 and ai_contextual_2
+constexpr uint32_t kLeftWidgets[] = {0x17C753E5u, 0xA4F0EADFu, 0x4DA638F6u, 0xCF7E37C7u, 0x964186A5u, 0x0F48D71Fu};
+// ai_ammo-count1 and the unnamed count beside it, ai_objective-item, ai_live_event, the achievement toast's
+// ai_contextual_achievement
+constexpr uint32_t kRightWidgets[] = {0x2909DFF7u, 0xB0008E4Du, 0xDC33DFAAu, 0x0A5255EEu, 0xC48B0B92u};
 // the menus' red paint image, RedBar.xbt
 constexpr uint32_t kRedPaintWidget = 0xA4E1836Eu;
 // the press start screen's black paint, RedBar.xbt turned and drawn black, unnamed; the HUD's stance jump charge
