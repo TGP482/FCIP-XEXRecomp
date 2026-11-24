@@ -1,6 +1,6 @@
 // default.xex: the original Xbox virtual keyboard page (P_VirtualKeyBoard), still built and updated by the 360 menus
-// but never opened, takes the title's XShowKeyboardUI requests (the CHEATS code entry) in place of the system keyboard,
-// and the profile names the profile list asks for
+// but never opened, takes the title's XShowKeyboardUI requests (the CHEATS code entry, also in the pause menu) in place
+// of the system keyboard, and the profile names the profile list asks for
 #include "game/virtual_keyboard.h"
 
 #include <algorithm>
@@ -32,6 +32,12 @@ constexpr uint32_t kLowercase = 1;
 constexpr uint32_t kSymbols = 2;
 constexpr uint32_t kMenuShowPage = 0x2C;  // vtable: (menu, page, 1, 1)
 constexpr uint32_t kMenuClose = 0x28;     // vtable: (menu, 0, 0)
+constexpr uint32_t kMenuDelete = 0x18;    // vtable: (menu, 1)
+constexpr uint32_t kMenuLoad = 0x1C;      // vtable: (menu)
+constexpr uint32_t kMenuUpdate = 0x34;    // vtable: (menu, frame)
+constexpr uint32_t kMenuGame = 0x0C;
+constexpr uint32_t kMenuSystem = 0x10;
+constexpr uint32_t kKeyboardBytes = 0x12C;
 
 // std::wstring
 constexpr uint32_t kStringData = 0x04;
@@ -64,6 +70,7 @@ struct Request {
 };
 Request g_request;
 uint32_t g_keyboard = 0;
+uint32_t g_in_game = 0;  // the keyboard made for CryInGame
 int g_upper = -1;  // Caps Lock against Shift as the ring last followed it, -1 for not yet
 
 uint32_t StringData(uint32_t str) {
@@ -186,6 +193,9 @@ bool OpenPage(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_lengt
 
 PPC_EXTERN_FUNC(GUEST_ORIG(XShowKeyboardUI));
 PPC_EXTERN_FUNC(GUEST_ORIG(VirtualKeyboard_Close));
+PPC_EXTERN_FUNC(GUEST_ORIG(InGame_Load));
+PPC_EXTERN_FUNC(GUEST_ORIG(InGame_Update));
+PPC_EXTERN_FUNC(GUEST_ORIG(InGame_Destroy));
 
 bool fcip::keyboard::Open(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length, Accept accept,
                           bool can_back) {
@@ -234,3 +244,35 @@ PPC_FUNC(GUEST(VirtualKeyboard_Close)) {
 // r31 the keyboard, before its accept hands the text to a listener (none is ever set on the 360): true closes the
 // page, false keeps it open
 bool VirtualKeyboardAccept(PPCContext& ctx, uint8_t*) { return HandOver(ctx, uint32_t(ctx.r[31])); }
+
+// (menu): the single player in game menus never make the keyboard, so their CHEATS entry had none; made into their
+// menu system as the split screen menus do (821AB4A8)
+PPC_FUNC(GUEST(InGame_Load)) {
+    uint32_t menu = uint32_t(ctx.r[3]);
+    GUEST_ORIG(InGame_Load)(ctx, base);
+    if (!ctx.r[3] || R32(SYM_VirtualKeyboard_pointer)) return;
+    uint32_t memory = uint32_t(CallGuest(ctx, SYM_Guest_Alloc, {kKeyboardBytes}));
+    if (!memory) return;
+    uint32_t game = R32(menu + kMenuGame);
+    uint32_t system = R32(menu + kMenuSystem);
+    g_in_game = uint32_t(CallGuest(ctx, SYM_VirtualKeyboard_New, {memory, 0, game, system}));
+    W32(SYM_VirtualKeyboard_pointer, g_in_game);
+    CallGuest(ctx, R32(R32(g_in_game) + kMenuLoad), {g_in_game});
+}
+
+// (menu, frame)
+PPC_FUNC(GUEST(InGame_Update)) {
+    uint32_t frame = uint32_t(ctx.r[4]);
+    GUEST_ORIG(InGame_Update)(ctx, base);
+    if (g_in_game) CallGuest(ctx, R32(R32(g_in_game) + kMenuUpdate), {g_in_game, frame});
+}
+
+// (menu): its keyboard goes with it, the front end makes its own again
+PPC_FUNC(GUEST(InGame_Destroy)) {
+    if (g_in_game && R32(SYM_VirtualKeyboard_pointer) == g_in_game) {
+        W32(SYM_VirtualKeyboard_pointer, 0);
+        CallGuest(ctx, R32(R32(g_in_game) + kMenuDelete), {g_in_game, 1});
+    }
+    g_in_game = 0;
+    GUEST_ORIG(InGame_Destroy)(ctx, base);
+}
