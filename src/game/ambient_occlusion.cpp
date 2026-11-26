@@ -52,13 +52,9 @@ constexpr uint32_t kRegistryEnd = 0xC;
 constexpr uint32_t kEntrySize = 0x18;
 constexpr uint32_t kEntryName = 0x4;
 constexpr uint32_t kEntryPipeline = 0x8;
-constexpr uint32_t kCharactersName = 0x82070D10;  // "PerPixel Phong Color (Characters)"
-constexpr uint32_t kOceanName = 0x8207D1C0;       // "Ocean"
-constexpr uint32_t kLakeName = 0x82070D80;        // "Lake"
 constexpr uint32_t kNoPipeline = 0xFFFFFFFF;
 // pipeline: vtable first, the item draw at +0xC; the PerPixel Phong draws all end in 8250DF28
 constexpr uint32_t kPipelineDraw = 0xC;
-constexpr uint32_t kPhongDraws[] = {0x8250DF28, 0x82504FB8, 0x825050F0, 0x825052B0};
 // render item: its mesh, which 8250DF28 draws SKINNED when the byte at +0x40 is set
 constexpr uint32_t kItemMesh = 0x18;
 constexpr uint32_t kMeshSkinned = 0x40;
@@ -126,7 +122,7 @@ bool Fogged() { return fcip::Get().volumetric_fog && fcip::SubmittedPass() == fc
 bool Caustic() { return fcip::Get().caustics && fcip::SubmittedPass() == fcip::kPassCamera; }
 
 bool PhongDraw(uint32_t draw) {
-    for (uint32_t d : kPhongDraws) {
+    for (uint32_t d : {SYM_PhongDraw_Item, SYM_PhongDraw_Texture, SYM_PhongDraw_Entry, SYM_PhongDraw_Constants}) {
         if (draw == d) return true;
     }
     return false;
@@ -142,7 +138,7 @@ Pipelines FindPipelines() {
     uint32_t end = R32(registry + kRegistryEnd);
     for (uint32_t i = 0; i < kLastPipeline && first + i * kEntrySize < end; i++) {
         uint32_t entry = first + i * kEntrySize;
-        if (R32(entry + kEntryName) == kCharactersName) p.characters = i;
+        if (R32(entry + kEntryName) == SYM_ShaderName_Characters) p.characters = i;
         uint32_t pipeline = R32(entry + kEntryPipeline);
         uint32_t vtable = pipeline ? R32(pipeline) : 0;
         if (vtable && PhongDraw(R32(vtable + kPipelineDraw))) p.phong |= 1u << i;
@@ -505,8 +501,8 @@ bool HoldsWater(uint32_t list) {
 
 // before the camera's list: the caustics go in when it holds water or the camera is under the sea
 void StartCaustics(uint32_t list) {
-    t_caustics.ocean = PipelineNamed(kOceanName);
-    t_caustics.lake = PipelineNamed(kLakeName);
+    t_caustics.ocean = PipelineNamed(SYM_ShaderName_Ocean);
+    t_caustics.lake = PipelineNamed(SYM_ShaderName_Lake);
     t_caustics.under = fcip::SubmittedUnderWater();
     bool water = HoldsWater(list);
     if (t_caustics.under || water) t_caustics.list = list;

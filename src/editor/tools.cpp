@@ -27,39 +27,23 @@ using namespace kernel;
 
 namespace {
 
-// EditorInterfaceHandler, a static object: +0x104 1 editing or 2 first person, +0x108 the tool, +0x10C the tool
-// object; the four tools live inside it
-constexpr uint32_t kEditorHandler = 0x8296F758;
+// EditorHandler: +0x104 1 editing or 2 first person, +0x108 the tool, +0x10C the tool object; the four tools live
+// inside it
 constexpr uint32_t kHandlerMode = 0x104;
 constexpr uint32_t kHandlerTool = 0x108;
 constexpr uint32_t kHandlerToolObject = 0x10C;
 constexpr uint32_t kModeEditing = 1;
+constexpr uint32_t kHandlerTerrainTool = 0x110;
+constexpr uint32_t kHandlerAddTool = 0x248;
+constexpr uint32_t kHandlerEnvironmentTool = 0x628;
 // terrain tool: +0x108 mode (bump, raise, set height, paint), +0x10C radius step, +0x12C paint texture
-constexpr uint32_t kTerrainTool = kEditorHandler + 0x110;
 constexpr uint32_t kTerrainMode = 0x108;
 constexpr uint32_t kTerrainRadiusStep = 0x10C;
 constexpr uint32_t kTerrainTexture = 0x12C;
-constexpr uint32_t kRadiusTable = 0x82067C10;  // metres per step
-constexpr uint32_t kRadius = 0x8296B1BC;       // the step's metres, which the brushes read
-constexpr uint32_t kHeightTarget = 0x828C4A54;
-constexpr uint32_t kSquareCursor = 0x8296B1D4;
-constexpr uint32_t kToolCursor = 0x828C5D50;   // xyz, where the tools act
-constexpr uint32_t kCursorMoved = 0x8296B245;  // the camera update's flag the tools re-aim on (brush area, selection)
-constexpr uint32_t kCursorTarget = 0x8296C724;  // xyz, what the camera aims at; previews and moves use it
-constexpr uint32_t kWaterPoint = 0x8296C730;    // xyz, floating objects' place, where the view meets the water
-constexpr uint32_t kFloating = 0x8296B265;      // the object placed floats
-constexpr uint32_t kWaterHeight = 0x82067BD0;   // float, metres
-constexpr uint32_t kMapChanged = 0x8296B266;
-// camera: distance 1 to 115 from what it orbits; mode 0 orbits the cursor, 1 flies looking at kCursorTarget, 2 casts
-// its view's centre ray
-constexpr uint32_t kCameraDistance = 0x828C49A4;
-constexpr uint32_t kCameraMode = 0x8296B240;
+// EditorCamera_Mode: 0 orbits the cursor, 1 flies looking at Editor_CursorTarget, 2 casts its view's centre ray
 constexpr uint32_t kCameraPlace = 1;
 constexpr uint32_t kCameraRaycast = 2;
-constexpr uint32_t kFrameSeconds = 0x828C7310;  // double
 // undo: a vector of command objects with methods destroy(this, 1) and undo(this)
-constexpr uint32_t kUndoFirst = 0x828C632C;
-constexpr uint32_t kUndoLast = 0x828C6330;
 constexpr uint32_t kUndoDestroy = 0x0;
 constexpr uint32_t kUndoRun = 0x4;
 constexpr uint32_t kToolUndone = 0x3C;  // tool method
@@ -71,7 +55,6 @@ constexpr uint32_t kSurfaceTexture = 0xB0;  // Texture_None when unused
 constexpr uint32_t kSurfaceName = 0x1EC;
 // add object tool: +0x244 the category object shown, +0x248 the item picked in each category, +0x26C its category
 // objects, +0x27C the category shown
-constexpr uint32_t kAddTool = kEditorHandler + 0x248;
 constexpr uint32_t kAddShown = 0x244;
 constexpr uint32_t kAddPicked = 0x248;
 constexpr uint32_t kAddCategories = 0x26C;
@@ -85,16 +68,13 @@ constexpr uint32_t kCategoryLimit = 0x14;
 constexpr uint32_t kCategoryPreview = 0x4;  // the object that follows the cursor, which every placing step uses
 constexpr int kCatalogueFrames = 30;  // between reads of the catalogue
 // environment tool: +0x110 changes since its row was picked; the editor's manager holds its values
-constexpr uint32_t kEnvironmentTool = kEditorHandler + 0x628;
 constexpr uint32_t kEnvironmentChanges = 0x110;
 // the editor's interface manager, which also holds the map's settings and name (+0x68, 16 UTF-16 characters)
-constexpr uint32_t kManager = 0x8296B2CC;
 constexpr uint32_t kMapName = 0x68;
 constexpr uint32_t kMapNameChars = 16;
 constexpr uint32_t kHandlerActive = 0xF0;
-// the start menu, a static object, and its buttons by their names' crc32
-constexpr uint32_t kStartMenuListener = 0x82971908 + 0x8;
-constexpr uint32_t kStartMenuName = 0x82067EBC;  // "StartMenuInterfaceHandler"
+// the start menu: its listener inside StartMenuHandler, and its buttons by their names' crc32
+constexpr uint32_t kStartMenuListener = 0x8;
 constexpr uint32_t kButtonSave = 0x6535D687u;     // B_SaveMap
 constexpr uint32_t kButtonExit = 0xD23F714Cu;     // B_ExitEditor
 constexpr uint32_t kButtonControls = 0xB297004Cu; // B_Controls
@@ -104,8 +84,7 @@ constexpr uint32_t kInfoContent = 0x10;  // XCONTENT_DATA
 constexpr uint32_t kContentBytes = 0x134;
 constexpr uint32_t kInfoShare = 0x158;
 constexpr uint32_t kShared = 0xC;
-// the four multiplayer modes, each +0x8 set once the map has what the mode needs
-constexpr uint32_t kGameModes = 0x8296C870;
+// Map_GameModes, the four multiplayer modes, each +0x8 set once the map has what the mode needs
 constexpr uint32_t kGameModeBytes = 0xD4;
 constexpr uint32_t kGameModeCount = 4;
 constexpr uint32_t kGameModeComplete = 0x8;
@@ -113,12 +92,8 @@ constexpr uint32_t kMapTimeOfDay = 0x1F8;
 constexpr uint32_t kMapFogThickness = 0x1FC;
 constexpr uint32_t kMapFogDistance = 0x200;
 constexpr uint32_t kMapSounds = 0x220;
-constexpr uint32_t kFogDistanceTable = 0x828C49D8;
-// editing options, bytes in the object at *0x8296B130, in the options list's order
-constexpr uint32_t kOptions = 0x8296B130;
+// editing options, bytes in the object at *Editor_Options_pointer, in the options list's order
 constexpr uint32_t kOptionBytes[] = {0x414, 0x417, 0x410, 0x411, 0x412, 0x413, 0x415, 0x416, 0x418};
-constexpr uint32_t kConsole = 0x828C71DC;
-constexpr uint32_t kOceanVariable = 0x82068614;  // "e_water_ocean"
 // a page draws its widgets: r3 the page, +0x14 its name's crc32
 constexpr uint32_t kPageName = 0x14;
 constexpr uint32_t kConsolePages[] = {
@@ -134,33 +109,6 @@ constexpr uint32_t kMapManagerPage = 0x8811FEBDu;  // P_MapManager
 constexpr uint32_t kActionLookX = 0x12;
 constexpr uint32_t kActionLookY = 0x13;
 constexpr uint32_t kActionPitchHeld = 0xC;
-
-// guest functions
-constexpr uint32_t kSelectTool = 0x820C5340;  // (handler, tool, 1)
-constexpr uint32_t kTerrainModeButtons = 0x820D20B8;
-constexpr uint32_t kTerrainModeCaptions = 0x820D0C78;
-constexpr uint32_t kRadiusCaption = 0x820D1BE8;
-constexpr uint32_t kHeightCaption = 0x820D19F0;
-constexpr uint32_t kTextureCaption = 0x820D18D0;
-constexpr uint32_t kUndoPop = 0x8210DDD8;
-constexpr uint32_t kTerrainHeight = 0x82324AA8;  // (x f1, y f2, terrain)
-constexpr uint32_t kPickTarget = 0x820EE8F8;     // (object) kCursorTarget where the view's centre ray hits, past it
-constexpr uint32_t kClampToMap = 0x82103000;    // (out, in), returns out
-constexpr uint32_t kCategoryShown = 0x820D6498;  // (add tool) after its category changes
-constexpr uint32_t kItemShown = 0x820D6788;      // (add tool) after its item changes
-constexpr uint32_t kEnvironmentUndo = 0x820DFE50;
-constexpr uint32_t kSoundApplied[] = {0x820E0A70, 0x820E0AE8, 0x820E0B60};
-constexpr uint32_t kTimeOfDayApplied = 0x820E0240;
-constexpr uint32_t kTimeOfDayLight = 0x820E0880;
-constexpr uint32_t kEnvironmentCaptions = 0x820E0940;
-constexpr uint32_t kSetFogDistance = 0x823364A0;   // (f1, engine)
-constexpr uint32_t kSetFogThickness = 0x823364A8;  // (f1, engine)
-constexpr uint32_t kFindVariable = 0x8233DF48;     // (console, name)
-constexpr uint32_t kSetVariable = 0x8233C0B0;      // (variable, value)
-constexpr uint32_t kFree = 0x8230F2D8;
-constexpr uint32_t kShowHandler = 0x82113178;     // (manager, handler name)
-constexpr uint32_t kStartMenuPress = 0x820C2C88;  // (listener, widget), the widget's name crc at +4
-constexpr uint32_t kSetEditorMode = 0x820C5548;   // (handler, 1 editing or 2 first person)
 
 // how the editor turns its look inputs into motion each second, an input of v moving v * |v| times this
 constexpr double kYawPerSecond = 90.0;
@@ -245,8 +193,8 @@ bool g_have_orbit = false;
 Vec g_orbit;    // what the camera orbits, kept while the cursor follows the mouse
 Vec g_written;  // the cursor as we left it
 bool g_have_view = false;
-Vec g_view_target;     // what the place camera looks at, kept while kCursorTarget follows the mouse
-Vec g_target_written;  // kCursorTarget as we left it
+Vec g_view_target;     // what the place camera looks at, kept while Editor_CursorTarget follows the mouse
+Vec g_target_written;  // Editor_CursorTarget as we left it
 uint32_t g_scratch = 0;
 uint32_t g_name_scratch = 0;
 uint32_t g_widget_scratch = 0;
@@ -284,11 +232,22 @@ void WriteVec(uint32_t at, const Vec& v) {
 uint32_t Method(uint32_t object, uint32_t slot) { return R32(R32(object) + slot); }
 
 size_t UndoCount() {
-    uint32_t first = R32(kUndoFirst);
-    return first ? (R32(kUndoLast) - first) / 4 : 0;
+    uint32_t first = R32(SYM_Undo_First);
+    return first ? (R32(SYM_Undo_Last) - first) / 4 : 0;
 }
 
-int CurrentTool() { return int(R32(kEditorHandler + kHandlerTool)); }
+int CurrentTool() { return int(R32(SYM_EditorHandler + kHandlerTool)); }
+uint32_t TerrainTool() { return SYM_EditorHandler + kHandlerTerrainTool; }
+uint32_t AddTool() { return SYM_EditorHandler + kHandlerAddTool; }
+uint32_t EnvironmentTool() { return SYM_EditorHandler + kHandlerEnvironmentTool; }
+uint32_t StartMenuListener() { return SYM_StartMenuHandler + kStartMenuListener; }
+
+// each sound row's apply, after its value changes
+uint32_t SoundApplied(int row) {
+    const uint32_t applied[] = {SYM_EnvironmentTool_Sound1Applied, SYM_EnvironmentTool_Sound2Applied,
+                                SYM_EnvironmentTool_Sound3Applied};
+    return applied[row];
+}
 
 // the chosen brush when it works in the terrain mode set, else that mode's first
 int BrushFor(int mode) {
@@ -320,18 +279,18 @@ void RunUndo(PPCContext& ctx) {
         fcip::editor::g_extra_undo.undo(ctx);
         return;
     }
-    uint32_t command = uint32_t(CallGuest(ctx, kUndoPop, {}));
+    uint32_t command = uint32_t(CallGuest(ctx, SYM_Undo_Pop, {}));
     if (!command) return;
     CallGuest(ctx, Method(command, kUndoRun), {command});
     CallGuest(ctx, Method(command, kUndoDestroy), {command, 1});
-    W8(kMapChanged, 1);
-    uint32_t tool = R32(kEditorHandler + kHandlerToolObject);
+    W8(SYM_Editor_MapChanged, 1);
+    uint32_t tool = R32(SYM_EditorHandler + kHandlerToolObject);
     if (tool) CallGuest(ctx, Method(tool, kToolUndone), {tool});
 }
 
 // the terrain tool's captions exist while its page is up
 void Caption(PPCContext& ctx, uint32_t fn) {
-    if (CurrentTool() == fcip::editor::kTerrain) CallGuest(ctx, fn, {kTerrainTool});
+    if (CurrentTool() == fcip::editor::kTerrain) CallGuest(ctx, fn, {TerrainTool()});
 }
 
 // a float argument in f1 for one call
@@ -344,12 +303,12 @@ void CallWithFloat(PPCContext& ctx, uint32_t fn, double value, uint32_t arg) {
 
 // each row's first change since another row's pushes an undo, as the tool does
 void RunEnvironment(PPCContext& ctx, int row, float value) {
-    uint32_t settings = R32(kManager);
+    uint32_t settings = R32(SYM_Editor_Manager_pointer);
     if (!settings || CurrentTool() != fcip::editor::kEnvironment) return;
-    uint32_t changes = kEnvironmentTool + kEnvironmentChanges;
+    uint32_t changes = EnvironmentTool() + kEnvironmentChanges;
     if (row != g_environment_row) W32(changes, 0);
     g_environment_row = row;
-    if (R32(changes) == 0) CallGuest(ctx, kEnvironmentUndo, {kEnvironmentTool});
+    if (R32(changes) == 0) CallGuest(ctx, SYM_EnvironmentTool_Undo, {EnvironmentTool()});
     W32(changes, R32(changes) + 1);
     uint32_t engine = R32(SYM_C3DEngine_pointer);
     int step = int(std::lround(value));
@@ -358,49 +317,53 @@ void RunEnvironment(PPCContext& ctx, int row, float value) {
         case fcip::editor::kSound2:
         case fcip::editor::kSound3:
             W32(settings + kMapSounds + uint32_t(row) * 4, uint32_t(step));
-            CallGuest(ctx, kSoundApplied[row], {kEnvironmentTool});
+            CallGuest(ctx, SoundApplied(row), {EnvironmentTool()});
             break;
-        case fcip::editor::kFogDistance:
+        case fcip::editor::kFogDistance: {
             W32(settings + kMapFogDistance, uint32_t(step));
-            CallWithFloat(ctx, kSetFogDistance, GF(kFogDistanceTable + uint32_t(step) * 4), engine);
+            float distance = GF(SYM_Environment_FogDistanceTable + uint32_t(step) * 4);
+            CallWithFloat(ctx, SYM_Engine_SetFogDistance, distance, engine);
             break;
+        }
         case fcip::editor::kFogThickness: {
             WF(settings + kMapFogThickness, value);
-            bool fog = R8(R32(kOptions) + kOptionBytes[fcip::editor::kOptionFog]) != 0;
-            CallWithFloat(ctx, kSetFogThickness, fog ? value : 0.0, engine);
+            bool fog = R8(R32(SYM_Editor_Options_pointer) + kOptionBytes[fcip::editor::kOptionFog]) != 0;
+            CallWithFloat(ctx, SYM_Engine_SetFogThickness, fog ? value : 0.0, engine);
             break;
         }
         case fcip::editor::kTimeOfDay:
             W32(settings + kMapTimeOfDay, uint32_t(step));
-            CallGuest(ctx, kTimeOfDayApplied, {kEnvironmentTool});
-            CallGuest(ctx, kTimeOfDayLight, {kEnvironmentTool});
+            CallGuest(ctx, SYM_EnvironmentTool_TimeOfDayApplied, {EnvironmentTool()});
+            CallGuest(ctx, SYM_EnvironmentTool_TimeOfDayLight, {EnvironmentTool()});
             break;
     }
-    W8(kMapChanged, 1);
-    CallGuest(ctx, kEnvironmentCaptions, {kEnvironmentTool});
+    W8(SYM_Editor_MapChanged, 1);
+    CallGuest(ctx, SYM_EnvironmentTool_Captions, {EnvironmentTool()});
 }
 
 // as the options list sets them, the ocean and fog applied at once
 void RunOption(PPCContext& ctx, int option, bool on) {
-    uint32_t options = R32(kOptions);
+    uint32_t options = R32(SYM_Editor_Options_pointer);
     if (!options) return;
     W8(options + kOptionBytes[option], on ? 1 : 0);
     if (option == fcip::editor::kOptionOcean) {
-        uint32_t variable = uint32_t(CallGuest(ctx, kFindVariable, {R32(kConsole), kOceanVariable}));
-        if (variable) CallGuest(ctx, kSetVariable, {variable, on ? 1u : 0u});
+        uint32_t console = R32(SYM_Console_pointer);
+        uint32_t variable = uint32_t(CallGuest(ctx, SYM_Console_FindVariable, {console, SYM_WaterOcean_name}));
+        if (variable) CallGuest(ctx, SYM_Console_SetVariable, {variable, on ? 1u : 0u});
     }
-    uint32_t settings = R32(kManager);
+    uint32_t settings = R32(SYM_Editor_Manager_pointer);
     if (option == fcip::editor::kOptionFog && settings) {
-        CallWithFloat(ctx, kSetFogThickness, on ? GF(settings + kMapFogThickness) : 0.0, R32(SYM_C3DEngine_pointer));
+        double thickness = on ? GF(settings + kMapFogThickness) : 0.0;
+        CallWithFloat(ctx, SYM_Engine_SetFogThickness, thickness, R32(SYM_C3DEngine_pointer));
     }
 }
 
 void RunPick(PPCContext& ctx, int category, int item) {
     if (CurrentTool() != fcip::editor::kAddObject) return;
-    W32(kAddTool + kAddCategory, uint32_t(category));
-    CallGuest(ctx, kCategoryShown, {kAddTool});
-    W32(kAddTool + kAddPicked + uint32_t(category) * 4, uint32_t(item));
-    CallGuest(ctx, kItemShown, {kAddTool});
+    W32(AddTool() + kAddCategory, uint32_t(category));
+    CallGuest(ctx, SYM_AddTool_CategoryShown, {AddTool()});
+    W32(AddTool() + kAddPicked + uint32_t(category) * 4, uint32_t(item));
+    CallGuest(ctx, SYM_AddTool_ItemShown, {AddTool()});
 }
 
 // a start menu button pressed as a player does: the menu shown, then its button
@@ -408,9 +371,9 @@ void RunStartMenu(PPCContext& ctx, uint32_t button) {
     constexpr uint32_t kWidgetName = 0x4;
     if (!g_widget_scratch) g_widget_scratch = mem::AllocSystem(8);
     if (!g_widget_scratch) return;
-    CallGuest(ctx, kShowHandler, {R32(kManager), kStartMenuName});
+    CallGuest(ctx, SYM_Editor_ShowHandler, {R32(SYM_Editor_Manager_pointer), SYM_StartMenuHandler_name});
     W32(g_widget_scratch + kWidgetName, button);
-    CallGuest(ctx, kStartMenuPress, {kStartMenuListener, g_widget_scratch});
+    CallGuest(ctx, SYM_StartMenuHandler_Press, {StartMenuListener(), g_widget_scratch});
 }
 
 uint32_t MapInfo() {
@@ -425,39 +388,41 @@ void RunPublish(PPCContext& ctx) {
     std::memcpy(g_saved_content.data(), HostPtr(info + kInfoContent), kContentBytes);
     g_publishing = true;
     W8(R32(info + kInfoShare) + kShared, 1);
-    CallGuest(ctx, SYM_UserMapInfo_New, {R32(SYM_UserMaps_pointer), info + kInfoContent, R32(kManager) + kMapName, 1});
+    uint32_t name = R32(SYM_Editor_Manager_pointer) + kMapName;
+    CallGuest(ctx, SYM_UserMapInfo_New, {R32(SYM_UserMaps_pointer), info + kInfoContent, name, 1});
     RunStartMenu(ctx, kButtonSave);
 }
 
 void RunPlayTest(PPCContext& ctx) {
-    uint32_t mode = R32(kEditorHandler + kHandlerMode) == kModeEditing ? 2 : kModeEditing;
-    CallGuest(ctx, kSetEditorMode, {kEditorHandler, mode});
+    uint32_t mode = R32(SYM_EditorHandler + kHandlerMode) == kModeEditing ? 2 : kModeEditing;
+    CallGuest(ctx, SYM_EditorHandler_SetMode, {SYM_EditorHandler, mode});
 }
 
 void Run(PPCContext& ctx, const Command& c) {
     switch (c.op) {
         case Op::SelectTool:
-            if (CurrentTool() != c.value) CallGuest(ctx, kSelectTool, {kEditorHandler, uint32_t(c.value), 1});
+            if (CurrentTool() == c.value) break;
+            CallGuest(ctx, SYM_EditorHandler_SelectTool, {SYM_EditorHandler, uint32_t(c.value), 1});
             break;
         case Op::TerrainMode:
-            W32(kTerrainTool + kTerrainMode, uint32_t(c.value));
-            Caption(ctx, kTerrainModeButtons);
-            Caption(ctx, kTerrainModeCaptions);
+            W32(TerrainTool() + kTerrainMode, uint32_t(c.value));
+            Caption(ctx, SYM_TerrainTool_ModeButtons);
+            Caption(ctx, SYM_TerrainTool_ModeCaptions);
             break;
         case Op::RadiusStep:
-            W32(kTerrainTool + kTerrainRadiusStep, uint32_t(c.value));
-            WF(kRadius, GF(kRadiusTable + uint32_t(c.value) * 4));
-            Caption(ctx, kRadiusCaption);
+            W32(TerrainTool() + kTerrainRadiusStep, uint32_t(c.value));
+            WF(SYM_Terrain_Radius, GF(SYM_Terrain_RadiusTable + uint32_t(c.value) * 4));
+            Caption(ctx, SYM_TerrainTool_RadiusCaption);
             break;
         case Op::SetHeight:
-            WF(kHeightTarget, c.amount);
-            Caption(ctx, kHeightCaption);
+            WF(SYM_Terrain_HeightTarget, c.amount);
+            Caption(ctx, SYM_TerrainTool_HeightCaption);
             break;
         case Op::Texture:
-            W32(kTerrainTool + kTerrainTexture, uint32_t(c.value));
-            Caption(ctx, kTextureCaption);
+            W32(TerrainTool() + kTerrainTexture, uint32_t(c.value));
+            Caption(ctx, SYM_TerrainTool_TextureCaption);
             break;
-        case Op::SquareCursor: W32(kSquareCursor, uint32_t(c.value)); break;
+        case Op::SquareCursor: W32(SYM_Terrain_SquareCursor, uint32_t(c.value)); break;
         case Op::Undo: RunUndo(ctx); break;
         case Op::Environment: RunEnvironment(ctx, c.value, c.amount); break;
         case Op::Option: RunOption(ctx, c.value, c.item != 0); break;
@@ -491,7 +456,7 @@ std::string TakeWideString(PPCContext& ctx, uint32_t str) {
             out += char(0x80 | (c & 0x3F));
         }
     }
-    if (heap) CallGuest(ctx, kFree, {text});
+    if (heap) CallGuest(ctx, SYM_Memory_Release, {text});
     return out;
 }
 
@@ -499,7 +464,7 @@ std::string TakeWideString(PPCContext& ctx, uint32_t str) {
 void ReadCatalogue(PPCContext& ctx) {
     constexpr uint32_t kWideStringBytes = 0x1C;
     if (!g_name_scratch) g_name_scratch = mem::AllocSystem(kWideStringBytes);
-    uint32_t first = R32(kAddTool + kAddCategories);
+    uint32_t first = R32(AddTool() + kAddCategories);
     if (!first || !g_name_scratch) return;
     std::vector<fcip::editor::Category> catalogue;
     {
@@ -511,7 +476,7 @@ void ReadCatalogue(PPCContext& ctx) {
         uint32_t category = R32(first + c * 4);
         if (!category) continue;
         fcip::editor::Category& k = catalogue[c];
-        if (category == R32(kAddTool + kAddShown)) g_category_shown[c] = true;
+        if (category == R32(AddTool() + kAddShown)) g_category_shown[c] = true;
         if (g_category_shown[c]) {
             k.used = int(CallGuest(ctx, Method(category, kCategoryPlaced), {category}));
             k.limit = int(CallGuest(ctx, Method(category, kCategoryLimit), {category})) * fcip::editor::BudgetScale();
@@ -559,7 +524,7 @@ double ZoomRate(double distance) {
 // the look this frame from the mouse; a pitch and a zoom share an input, so a zoom waits for a frame without pitch
 Inject TakeLook() {
     Inject in;
-    double dt = GD(kFrameSeconds);
+    double dt = GD(SYM_Editor_FrameSeconds);
     std::lock_guard lock(g_lock);
     if (dt <= 0.0) return in;
     in.look_x = InputFor(g_view.look_x * kLookDegreesPerCount, dt * kYawPerSecond);
@@ -567,7 +532,7 @@ Inject TakeLook() {
         in.pitch = true;
         in.look_y = InputFor(g_view.look_y * kLookDegreesPerCount, dt * kPitchPerSecond);
     } else if (g_view.wheel != 0.0f) {
-        double distance = GF(kCameraDistance);
+        double distance = GF(SYM_EditorCamera_Distance);
         in.look_y = InputFor(g_view.wheel * distance * kZoomPerNotch, dt * ZoomRate(distance));
         g_view.wheel = 0.0f;
     }
@@ -584,7 +549,7 @@ double TerrainHeight(PPCContext& ctx, uint32_t terrain, float x, float y) {
     double f2 = ctx.f[2];
     ctx.f[1] = x;
     ctx.f[2] = y;
-    CallGuest(ctx, kTerrainHeight, {terrain});
+    CallGuest(ctx, SYM_Terrain_HeightAt, {terrain});
     double h = ctx.f[1];
     ctx.f[1] = f1;
     ctx.f[2] = f2;
@@ -621,7 +586,7 @@ Vec ClampToMap(PPCContext& ctx, const Vec& v) {
     if (!g_scratch) g_scratch = mem::AllocSystem(kVecBytes * 2);
     if (!g_scratch) return v;
     WriteVec(g_scratch, v);
-    uint32_t out = uint32_t(CallGuest(ctx, kClampToMap, {g_scratch + kVecBytes, g_scratch}));
+    uint32_t out = uint32_t(CallGuest(ctx, SYM_Editor_ClampToMap, {g_scratch + kVecBytes, g_scratch}));
     return out ? ReadVec(out) : v;
 }
 
@@ -642,51 +607,53 @@ bool MouseRay(float origin[3], float dir[3]) {
 
 // the orbit cursor back, unless the editor moved the cursor itself since
 void RestoreOrbit() {
-    if (g_have_orbit && ReadVec(kToolCursor) == g_written) WriteVec(kToolCursor, g_orbit);
+    if (g_have_orbit && ReadVec(SYM_Editor_ToolCursor) == g_written) WriteVec(SYM_Editor_ToolCursor, g_orbit);
 }
 
 // true when the mouse moved the cursor
 bool PlaceCursor(PPCContext& ctx) {
-    g_orbit = ReadVec(kToolCursor);
+    g_orbit = ReadVec(SYM_Editor_ToolCursor);
     g_have_orbit = true;
     float origin[3];
     float dir[3];
     Vec hit;
-    if (MouseRay(origin, dir) && TerrainHit(ctx, origin, dir, hit)) WriteVec(kToolCursor, ClampToMap(ctx, hit));
+    bool aimed = MouseRay(origin, dir) && TerrainHit(ctx, origin, dir, hit);
+    if (aimed) WriteVec(SYM_Editor_ToolCursor, ClampToMap(ctx, hit));
     Vec last = g_written;
-    g_written = ReadVec(kToolCursor);
+    g_written = ReadVec(SYM_Editor_ToolCursor);
     return g_written != last;
 }
 
 // the place camera's own target back, unless the editor moved it itself since
 void RestoreViewTarget() {
-    if (g_have_view && ReadVec(kCursorTarget) == g_target_written) WriteVec(kCursorTarget, g_view_target);
+    bool ours = g_have_view && ReadVec(SYM_Editor_CursorTarget) == g_target_written;
+    if (ours) WriteVec(SYM_Editor_CursorTarget, g_view_target);
 }
 
-// as the place camera sets kWaterPoint (820EF06C), along the mouse's ray
+// as the place camera sets Editor_WaterPoint (820EF06C), along the mouse's ray
 void PlaceOnWater(const float o[3], const float d[3]) {
-    Vec target = ReadVec(kCursorTarget);
+    Vec target = ReadVec(SYM_Editor_CursorTarget);
     Vec water = target;
-    float t = d[2] != 0.0f ? (GF(kWaterHeight) - o[2]) / d[2] : -1.0f;
-    if (t > 0.0f && GF(kWaterHeight) > target.z) water = {o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t};
-    WriteVec(kWaterPoint, water);
-    if (R8(kFloating) && water != target) WriteVec(kCursorTarget, water);
+    float t = d[2] != 0.0f ? (GF(SYM_Editor_WaterHeight) - o[2]) / d[2] : -1.0f;
+    if (t > 0.0f && GF(SYM_Editor_WaterHeight) > target.z) water = {o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t};
+    WriteVec(SYM_Editor_WaterPoint, water);
+    if (R8(SYM_Editor_Floating) && water != target) WriteVec(SYM_Editor_CursorTarget, water);
 }
 
 // the editor's own pick again, along the mouse's ray, so the object goes where it points with the editor's snapping;
 // true when it ran
 bool AimAtMouse(PPCContext& ctx, uint32_t object) {
-    g_view_target = ReadVec(kCursorTarget);
+    g_view_target = ReadVec(SYM_Editor_CursorTarget);
     g_have_view = true;
     float origin[3];
     bool picked = MouseRay(origin, t_inject.dir);
     if (picked) {
         t_inject.ray = true;
-        CallGuest(ctx, kPickTarget, {object});
+        CallGuest(ctx, SYM_Editor_PickTarget, {object});
         t_inject.ray = false;
         PlaceOnWater(origin, t_inject.dir);
     }
-    g_target_written = ReadVec(kCursorTarget);
+    g_target_written = ReadVec(SYM_Editor_CursorTarget);
     return picked;
 }
 
@@ -695,12 +662,12 @@ bool AimAtMouse(PPCContext& ctx, uint32_t object) {
 namespace fcip::editor {
 
 bool MapOpen() { return g_map_open; }
-bool ShellUp() { return g_map_open && R32(kEditorHandler + kHandlerMode) == kModeEditing; }
-bool ConsoleMenuUp() { return R8(kEditorHandler + kHandlerActive) == 0; }
-bool MapChanged() { return R8(kMapChanged) != 0; }
+bool ShellUp() { return g_map_open && R32(SYM_EditorHandler + kHandlerMode) == kModeEditing; }
+bool ConsoleMenuUp() { return R8(SYM_EditorHandler + kHandlerActive) == 0; }
+bool MapChanged() { return R8(SYM_Editor_MapChanged) != 0; }
 
 std::string MapName() {
-    uint32_t manager = R32(kManager);
+    uint32_t manager = R32(SYM_Editor_Manager_pointer);
     std::string name;
     for (uint32_t i = 0; manager && i < kMapNameChars; i++) {
         uint16_t c = R16(manager + kMapName + i * 2);
@@ -722,7 +689,7 @@ bool CanPublishMap() {
     uint32_t share = info ? R32(info + kInfoShare) : 0;
     if (!g_map_open || g_publishing || !share || R8(share + kShared) || MapName().empty()) return false;
     for (uint32_t i = 0; i < kGameModeCount; i++) {
-        if (R8(kGameModes + i * kGameModeBytes + kGameModeComplete)) return true;
+        if (R8(SYM_Map_GameModes + i * kGameModeBytes + kGameModeComplete)) return true;
     }
     return false;
 }
@@ -730,31 +697,31 @@ bool CanPublishMap() {
 State Read() {
     State s;
     s.tool = std::clamp(CurrentTool(), 0, kToolCount - 1);
-    int mode = int(R32(kTerrainTool + kTerrainMode));
+    int mode = int(R32(TerrainTool() + kTerrainMode));
     s.brush = BrushFor(mode);
-    s.radius_step = std::clamp(int(R32(kTerrainTool + kTerrainRadiusStep)), 0, kRadiusSteps - 1);
-    s.radius = GF(kRadius);
-    s.set_height = GF(kHeightTarget);
-    s.texture = std::clamp(int(R32(kTerrainTool + kTerrainTexture)), 0, kMaxTextures - 1);
-    s.square_cursor = R32(kSquareCursor) != 0;
-    Vec c = ReadVec(kToolCursor);
+    s.radius_step = std::clamp(int(R32(TerrainTool() + kTerrainRadiusStep)), 0, kRadiusSteps - 1);
+    s.radius = GF(SYM_Terrain_Radius);
+    s.set_height = GF(SYM_Terrain_HeightTarget);
+    s.texture = std::clamp(int(R32(TerrainTool() + kTerrainTexture)), 0, kMaxTextures - 1);
+    s.square_cursor = R32(SYM_Terrain_SquareCursor) != 0;
+    Vec c = ReadVec(SYM_Editor_ToolCursor);
     s.cursor[0] = c.x;
     s.cursor[1] = c.y;
     s.cursor[2] = c.z;
     s.undo_count = UndoCount() + ExtraSteps().size();
     s.applying = g_apply;
-    if (uint32_t settings = R32(kManager)) {
+    if (uint32_t settings = R32(SYM_Editor_Manager_pointer)) {
         s.has_environment = true;
         for (int i = kSound1; i <= kSound3; i++) s.environment[i] = float(R32(settings + kMapSounds + uint32_t(i) * 4));
         s.environment[kFogDistance] = float(R32(settings + kMapFogDistance));
         s.environment[kFogThickness] = GF(settings + kMapFogThickness);
         s.environment[kTimeOfDay] = float(R32(settings + kMapTimeOfDay));
     }
-    if (uint32_t options = R32(kOptions)) {
+    if (uint32_t options = R32(SYM_Editor_Options_pointer)) {
         for (int i = 0; i < kOptionCount; i++) s.options[i] = R8(options + kOptionBytes[i]) != 0;
     }
-    s.category = std::clamp(int(R32(kAddTool + kAddCategory)), 0, kCategoryCount - 1);
-    s.item = int(R32(kAddTool + kAddPicked + uint32_t(s.category) * 4));
+    s.category = std::clamp(int(R32(AddTool() + kAddCategory)), 0, kCategoryCount - 1);
+    s.item = int(R32(AddTool() + kAddPicked + uint32_t(s.category) * 4));
     return s;
 }
 
@@ -782,7 +749,9 @@ std::vector<std::string> PaintTextures() {
     return names;
 }
 
-float RadiusMetres(int step) { return GF(kRadiusTable + uint32_t(std::clamp(step, 0, kRadiusSteps - 1)) * 4); }
+float RadiusMetres(int step) {
+    return GF(SYM_Terrain_RadiusTable + uint32_t(std::clamp(step, 0, kRadiusSteps - 1)) * 4);
+}
 const char* OptionName(int option) { return kOptionNames[std::clamp(option, 0, kOptionCount - 1)]; }
 const char* CategoryName(int category) {
     const char* const* names = g_solo ? kSoloCategoryNames : kCategoryNames;
@@ -790,7 +759,7 @@ const char* CategoryName(int category) {
 }
 const char* TimeOfDayName(int time) { return kTimeNames[std::clamp(time, 0, kTimesOfDay - 1)]; }
 float FogDistanceMetres(int step) {
-    return GF(kFogDistanceTable + uint32_t(std::clamp(step, 0, kFogDistanceSteps - 1)) * 4);
+    return GF(SYM_Environment_FogDistanceTable + uint32_t(std::clamp(step, 0, kFogDistanceSteps - 1)) * 4);
 }
 
 void SelectTool(int tool) { Queue({Op::SelectTool, std::clamp(tool, 0, kToolCount - 1)}); }
@@ -854,7 +823,7 @@ std::vector<std::string> History() {
     return out;
 }
 
-void NoteMapChanged() { W8(kMapChanged, 1); }
+void NoteMapChanged() { W8(SYM_Editor_MapChanged, 1); }
 
 uint64_t UndoStamp() { return ++g_stamp; }
 
@@ -881,7 +850,7 @@ void EditorPad(input::Pad& pad) {
     if (!g_apply) return;
     uint16_t button = input::kA;
     if (CurrentTool() == fcip::editor::kTerrain) {
-        int mode = int(R32(kTerrainTool + kTerrainMode));
+        int mode = int(R32(TerrainTool() + kTerrainMode));
         button = kBrushes[BrushFor(mode)].button;
     }
     pad.buttons |= button;
@@ -907,8 +876,8 @@ PPC_EXTERN_FUNC(__imp__sub_82313E70);
 // an editor interface handler (r3) becomes active: the main editor's once a map is open, or again when the start
 // menu closes, which cancels an Open Level that asked to leave
 PPC_FUNC(sub_820C0340) {
-    if (uint32_t(ctx.r[3]) == kEditorHandler && g_map_open) fcip::editor::ForgetLevelRequest();
-    if (uint32_t(ctx.r[3]) == kEditorHandler && !g_map_open) {
+    if (uint32_t(ctx.r[3]) == SYM_EditorHandler && g_map_open) fcip::editor::ForgetLevelRequest();
+    if (uint32_t(ctx.r[3]) == SYM_EditorHandler && !g_map_open) {
         g_map_open = true;
         std::fill(std::begin(g_category_shown), std::end(g_category_shown), false);
     }
@@ -933,7 +902,7 @@ PPC_FUNC(sub_820C6520) {
 PPC_FUNC(sub_820EFBB8) {
     if (!fcip::editor::ShellUp()) return __imp__sub_820EFBB8(ctx, base);
     uint32_t object = uint32_t(ctx.r[3]);
-    uint32_t mode = R32(kCameraMode);
+    uint32_t mode = R32(SYM_EditorCamera_Mode);
     t_inject = TakeLook();
     float origin[3];  // the editor casts from its own camera
     if (mode == kCameraRaycast) t_inject.ray = MouseRay(origin, t_inject.dir);
@@ -942,12 +911,12 @@ PPC_FUNC(sub_820EFBB8) {
     __imp__sub_820EFBB8(ctx, base);
     t_inject = {};
     if (mode == kCameraRaycast) return;
-    // the editor raises kCursorMoved only for the stick. The place camera's tools select and move what its pick
+    // the editor raises Editor_CursorMoved only for the stick. The place camera's tools select and move what its pick
     // left (8296B260), so there it is raised only with a fresh pick and while the left button holds, as a click selects
     bool moved = PlaceCursor(ctx);
     if (mode == kCameraPlace) moved = AimAtMouse(ctx, object) && g_apply;
-    else WriteVec(kCursorTarget, g_written);  // the orbit camera keeps its target on the cursor (820EF398)
-    if (moved) W8(kCursorMoved, 1);
+    else WriteVec(SYM_Editor_CursorTarget, g_written);  // the orbit camera keeps its target on the cursor (820EF398)
+    if (moved) W8(SYM_Editor_CursorMoved, 1);
 }
 
 // an input action's value (r3 the input map, r4 the action), the mouse added to the camera's
@@ -980,7 +949,7 @@ PPC_FUNC(sub_820DFA90) {
 PPC_FUNC(sub_820D6C38) {
     uint32_t tool = uint32_t(ctx.r[3]);
     uint32_t shown = R32(tool + kAddShown);
-    if (shown && !R32(shown + kCategoryPreview)) CallGuest(ctx, kItemShown, {tool});
+    if (shown && !R32(shown + kCategoryPreview)) CallGuest(ctx, SYM_AddTool_ItemShown, {tool});
     if (shown && !R32(shown + kCategoryPreview)) {
         ctx.r[3] = 1;
         return;
@@ -1001,7 +970,7 @@ PPC_FUNC(sub_8211FB70) {
 PPC_FUNC(sub_8210DCD8) {
     int tool = std::clamp(CurrentTool(), 0, fcip::editor::kToolCount - 1);
     std::string label = kToolNames[tool];
-    if (tool == fcip::editor::kTerrain) label += std::string(": ") + kModeNames[R32(kTerrainTool + kTerrainMode) & 3];
+    if (tool == fcip::editor::kTerrain) label += std::string(": ") + kModeNames[R32(TerrainTool() + kTerrainMode) & 3];
     {
         std::lock_guard lock(g_lock);
         if (g_history.size() >= kUndoKept) g_history.pop_front();

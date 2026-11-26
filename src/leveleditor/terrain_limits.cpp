@@ -41,9 +41,8 @@ constexpr uint32_t kTerrainHeap = 0xB03;
 constexpr uint32_t kCopyFreeLine = 0xF5;
 constexpr uint32_t kTableFreeLine = 0xF8;
 constexpr uint32_t kDeletingDestructor = 0x00;
-// the terrain tool: the surface type Paint lays, and the widget its caption is on
+// the terrain tool: the surface type Paint lays
 constexpr uint32_t kPaintTexture = 0x12C;
-constexpr uint32_t kTextureWidget = 0x82067C70;  // "B_xBoxBtn_Power"
 
 uint32_t g_layers = 0;  // the paint layer table
 uint32_t g_capacity = 0;
@@ -150,7 +149,7 @@ PPC_FUNC(sub_820D18D0) {
     std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::toupper(c)); });
     char caption[96];
     std::snprintf(caption, sizeof(caption), "{DPUD} %s (%u/%zu)", name.c_str(), number + 1, textures.size());
-    if (uint32_t text = fcip::ui::View(caption)) CallGuest(ctx, SYM_Page_SetText, {tool, kTextureWidget, text});
+    if (uint32_t text = fcip::ui::View(caption)) CallGuest(ctx, SYM_Page_SetText, {tool, SYM_PowerButton_name, text});
 }
 
 // a sector's surface types from its paint layer (r3 the sector), unpainted texels by height

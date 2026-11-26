@@ -27,6 +27,7 @@
 #include "common/custom_levels.h"
 #include "core/log.h"
 #include "cpu/dispatch.h"
+#include "image_symbols.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 #include "xam/xam.h"
@@ -44,12 +45,8 @@ constexpr const char* kPackPath = "game:\\Magma\\Textures\\Achievements\\achieve
 constexpr const char* kMenuFolder = "\\Textures\\Achievements\\";  // the sprite loader puts Magma before it
 
 // the packs: up to 32 open, the one last found in, and whether lookups use them
-constexpr uint32_t kPackManager = 0x829128B0u;
 constexpr uint32_t kManagerLast = 0x80u;
 constexpr uint32_t kManagerPacks = 0x88u;  // u8
-constexpr uint32_t kOpenPack = 0x823F1858u;  // (manager, const char* path, 0, 0, 0, 0)
-constexpr uint32_t kStreamers = 0x829128BCu;
-constexpr uint32_t kNewStreamer = 0x823FB810u;  // (streamers, const char* path, block bytes, blocks, 0, total bytes)
 constexpr uint32_t kStreamBlock = 0x10000u;
 constexpr uint32_t kStreamBlocks = 4;
 // the loader's packs and their streamers, weaponpack, level, common, farcryed; a read names its pack at +0x1C
@@ -59,10 +56,6 @@ constexpr uint32_t kRequestPack = 0x1Cu;
 constexpr uint32_t kPathBytes = 0x80u;
 
 // a texture by path in a UI's sprites (a menu's or the HUD's +0x14), as the map list adds them (821684E0)
-constexpr uint32_t kAddSprite = 0x8216C440u;   // (sprites, std::string* path, std::string* name, u16 texels[4])
-constexpr uint32_t kFindSprite = 0x8246E1C8u;  // (sprites, name crc)
-constexpr uint32_t kStringInit = 0x820C0DB8u;  // (std::string*, const char*)
-constexpr uint32_t kStringFree = 0x820C0518u;  // (std::string*, 1, 0)
 constexpr uint32_t kStringBytes = 0x1Cu;
 constexpr uint16_t kIconTexels[4] = {0, 64, 0, 64};  // left, right, top, bottom of the SPA's 64x64 pictures
 constexpr uint32_t kSpriteText = 0x40u;
@@ -195,18 +188,19 @@ uint32_t WritePack() {
 
 // opening a pack makes it the one last found in, which the level's own lookups go to first
 bool OpenPack(PPCContext& ctx, uint32_t bytes) {
-    uint32_t manager = kernel::R32(kPackManager);
+    uint32_t manager = kernel::R32(SYM_PackManager_pointer);
     uint32_t path = mem::AllocSystem(kPathBytes);
     if (!manager || !path) return false;
     std::memcpy(kernel::HostPtr(path), kPackPath, std::strlen(kPackPath) + 1);
     uint32_t last = kernel::R32(manager + kManagerLast);
     uint8_t packs = kernel::R8(manager + kManagerPacks);
-    g_pack = uint32_t(kernel::CallGuest(ctx, kOpenPack, {manager, path, 0, 0, 0, 0}));
+    g_pack = uint32_t(kernel::CallGuest(ctx, SYM_PackManager_Open, {manager, path, 0, 0, 0, 0}));
     kernel::W32(manager + kManagerLast, last);
     kernel::W8(manager + kManagerPacks, packs);
     if (g_pack) {
-        uint32_t streamers = kernel::R32(kStreamers);
-        uint64_t streamer = kernel::CallGuest(ctx, kNewStreamer, {streamers, path, kStreamBlock, kStreamBlocks, 0, bytes});
+        uint32_t streamers = kernel::R32(SYM_Streamers_pointer);
+        uint64_t streamer =
+            kernel::CallGuest(ctx, SYM_Streamers_New, {streamers, path, kStreamBlock, kStreamBlocks, 0, bytes});
         g_streamer = uint32_t(streamer);
     }
     mem::FreeSystem(path);
@@ -231,7 +225,7 @@ uint32_t Sprite(PPCContext& ctx, uint32_t sprites, uint32_t image) {
     static const uint32_t block = mem::AllocSystem(kSpriteBlockBytes);
     if (!block || sprites < 0x10000u || sprites >= 0xC0000000u || !Ensure(ctx)) return 0;
     std::string name = "achievement_" + std::to_string(image);
-    if (uint32_t sprite = uint32_t(kernel::CallGuest(ctx, kFindSprite, {sprites, Crc32(name)}))) return sprite;
+    if (uint32_t sprite = uint32_t(kernel::CallGuest(ctx, SYM_Sprites_Find, {sprites, Crc32(name)}))) return sprite;
     uint32_t path_string = block;
     uint32_t name_string = path_string + kStringBytes;
     uint32_t texels = name_string + kStringBytes;
@@ -240,12 +234,12 @@ uint32_t Sprite(PPCContext& ctx, uint32_t sprites, uint32_t image) {
     for (uint32_t i = 0; i < 4; i++) kernel::W16(texels + i * 2, kIconTexels[i]);
     PutText(path_text, Path(image));
     PutText(name_text, name);
-    kernel::CallGuest(ctx, kStringInit, {path_string, path_text});
-    kernel::CallGuest(ctx, kStringInit, {name_string, name_text});
-    kernel::CallGuest(ctx, kAddSprite, {sprites, path_string, name_string, texels});
-    kernel::CallGuest(ctx, kStringFree, {path_string, 1, 0});
-    kernel::CallGuest(ctx, kStringFree, {name_string, 1, 0});
-    return uint32_t(kernel::CallGuest(ctx, kFindSprite, {sprites, Crc32(name)}));
+    kernel::CallGuest(ctx, SYM_String_Init, {path_string, path_text});
+    kernel::CallGuest(ctx, SYM_String_Init, {name_string, name_text});
+    kernel::CallGuest(ctx, SYM_Sprites_Add, {sprites, path_string, name_string, texels});
+    kernel::CallGuest(ctx, SYM_String_Free, {path_string, 1, 0});
+    kernel::CallGuest(ctx, SYM_String_Free, {name_string, 1, 0});
+    return uint32_t(kernel::CallGuest(ctx, SYM_Sprites_Find, {sprites, Crc32(name)}));
 }
 
 }  // namespace fcip::achievement_icons

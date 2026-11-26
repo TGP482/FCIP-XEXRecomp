@@ -118,6 +118,48 @@ Editor_Manager_pointer = 0x8296B2CC
 Movie_pointer = 0x828C7204
 ScriptSystem_pointer = 0x828C785C
 
+# what src/leveleditor/simulation.cpp reads and calls by address
+EntitySystem_RemoveEntity = 0x8218D090  # (system, id, 0, 0), as the editor removes entities after play test (820C6030)
+
+# what src/leveleditor/custom_save.cpp reads and calls by address
+Editor_MissionObject = 0x8296CBC0  # the mission object the save writes (82106B00 r3)
+# the terrain the editor's writers save (terrain.sdat 823255E8, LevelData 82109278), set by its save (82109C24)
+Editor_SavedTerrain = 0x8296B2C8
+GenericObject_vtable = 0x8206AA30
+Editor_Tools = 0x828C60A8
+# zipline.dat and MountedWeapon.dat, the names their writers take as level files
+Zipline_name = 0x8206B8A4
+MountedWeapon_name = 0x8206B8B0
+
+# what src/leveleditor/terrain_limits.cpp reads and calls by address
+PowerButton_name = 0x82067C70  # "B_xBoxBtn_Power", the widget the terrain tool's texture caption is on
+
+# what src/leveleditor/layers.cpp reads and calls by address
+Entity_Hide = 0x82130518  # (entity, hide, 0)
+
+# what src/leveleditor/campaign_levels.cpp reads and calls by address
+MapManagerHandler = 0x82971408
+EditorHandler_name = 0x82067344  # "EditorInterfaceHandler"
+GodMode_name = 0x8206E344  # "GodMode"
+
+# what src/leveleditor/sequences.cpp reads and calls by address
+Movie_FindSequence = 0x823A33E8  # (movie, name)
+Sequence_Activate = 0x8251B948  # (sequence)
+Sequence_Deactivate = 0x8251BA50  # (sequence)
+Movie_Serialize = 0x823ABFE8  # (movie, XmlNodeRef of a Mission, loading, remove old nodes, 0)
+
+# what src/leveleditor/picking.cpp reads and calls by address
+Editor_ObjectsByEntity = 0x828C62F0
+Editor_ObjectsByEntityEnd = 0x828C6300  # its end node
+ObjectMap_Find = 0x8210CAA8  # (out node, map, key*)
+EditTool_ClearSelection = 0x820DD830  # (tool)
+Vector_PushBack = 0x820CE908  # (vector, value*)
+EditTool_SelectionChanged = 0x820DDB68  # (tool)
+
+# what src/leveleditor/editor_classes.cpp reads and calls by address
+EditorObject_MakeGeneric = 0x820E2218  # (entity) a generic editor object
+EditorObject_Register = 0x8210BA10  # (object, 0)
+
 # instruction hooks, defined in src/leveleditor/terrain_limits.cpp; each runs after its instruction
 
 [[hook]]  # li r6, 0x40: the height undo snapshot's table

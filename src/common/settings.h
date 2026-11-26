@@ -16,7 +16,7 @@ struct Settings {
     float fov = 90.0f;  // true horizontal degrees, 45 to 140
     float viewmodel_fov = 90.0f;  // the weapon and arms on the same measure, 90 keeps the game's
     bool fps_counter = false;
-    bool hdr_output = false;  // HDR10 on a display with Windows HDR on
+    bool hdr_output = true;  // HDR10 on a display with Windows HDR on
     uint32_t colour_blind = 0;  // 0 off, 1 protanopia, 2 deuteranopia, 3 tritanopia
     bool smaa = false;          // over the finished frame, HUD included; combines with MSAA
     bool taa = false;           // temporal anti aliasing in place of MSAA, at the render resolution

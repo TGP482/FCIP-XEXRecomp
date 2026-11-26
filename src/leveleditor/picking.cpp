@@ -30,16 +30,9 @@ constexpr ImU32 kPickedColour = IM_COL32(255, 255, 255, 255);
 // Edit Object tool: +0x108 a move or turn under way, +0x114 the selection vector (first at +0x118)
 constexpr uint32_t kToolDragging = 0x108;
 constexpr uint32_t kToolSelection = 0x114;
-// editor objects by entity (std::map at 0x828C62F0, its end node at 0x828C6300): node key +0xC, object +0x10
-constexpr uint32_t kObjectsByEntity = 0x828C62F0;
-constexpr uint32_t kObjectsByEntityEnd = 0x828C6300;
+// Editor_ObjectsByEntity, a std::map of editor objects by entity: node key +0xC, object +0x10
 constexpr uint32_t kMapNodeObject = 0x10;
 constexpr uint32_t kObjectPicked = 0xC0;  // editor object method
-// guest functions
-constexpr uint32_t kFindObject = 0x8210CAA8;      // (out node, map, key*)
-constexpr uint32_t kClearSelection = 0x820DD830;  // (tool)
-constexpr uint32_t kPushBack = 0x820CE908;        // (vector, value*)
-constexpr uint32_t kSelectionChanged = 0x820DDB68;  // (tool)
 // guest scratch: the found node, the key, the pushed object
 constexpr uint32_t kScratchNode = 0x0;
 constexpr uint32_t kScratchKey = 0x4;
@@ -107,9 +100,9 @@ uint32_t FindEntity(uint32_t id) {
 
 uint32_t EditorObjectOf(PPCContext& ctx, uint32_t entity) {
     W32(g_scratch + kScratchKey, entity);
-    CallGuest(ctx, kFindObject, {g_scratch + kScratchNode, kObjectsByEntity, g_scratch + kScratchKey});
+    CallGuest(ctx, SYM_ObjectMap_Find, {g_scratch + kScratchNode, SYM_Editor_ObjectsByEntity, g_scratch + kScratchKey});
     uint32_t node = R32(g_scratch + kScratchNode);
-    return node && node != R32(kObjectsByEntityEnd) ? R32(node + kMapNodeObject) : 0;
+    return node && node != R32(SYM_Editor_ObjectsByEntityEnd) ? R32(node + kMapNodeObject) : 0;
 }
 
 }  // namespace
@@ -160,11 +153,11 @@ void ApplyPick(PPCContext& ctx, uint32_t tool) {
     if (!id || R32(tool + kToolDragging)) return;
     uint32_t object = EditorObjectOfEntity(ctx, id);
     if (!object) return;
-    CallGuest(ctx, kClearSelection, {tool});
+    CallGuest(ctx, SYM_EditTool_ClearSelection, {tool});
     CallGuest(ctx, Method(object, kObjectPicked), {object});
     W32(g_scratch + kScratchNode, object);
-    CallGuest(ctx, kPushBack, {tool + kToolSelection, g_scratch + kScratchNode});
-    CallGuest(ctx, kSelectionChanged, {tool});
+    CallGuest(ctx, SYM_Vector_PushBack, {tool + kToolSelection, g_scratch + kScratchNode});
+    CallGuest(ctx, SYM_EditTool_SelectionChanged, {tool});
 }
 
 }  // namespace fcip::editor

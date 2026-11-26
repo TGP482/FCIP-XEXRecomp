@@ -28,8 +28,6 @@ constexpr const char* kKeptClasses[] = {
 };
 constexpr uint32_t kEntityFlags = 0x2D;
 constexpr uint8_t kNoEditorObject = 0x80;
-constexpr uint32_t kMakeObject = 0x820E2218;      // (entity) a generic editor object
-constexpr uint32_t kRegisterObject = 0x8210BA10;  // (object, 0)
 
 thread_local bool t_allow = false;  // the class check says yes while set
 
@@ -47,8 +45,8 @@ void AddEditorObjects(PPCContext& ctx) {
     ForEachEntity([&](uint32_t entity) {
         if (!mission.count(R32(entity + kEntityId)) || (R8(entity + kEntityFlags) & kNoEditorObject)) return;
         if (!IsKept(ClassOf(ctx, entity)) || EditorObjectFor(ctx, entity)) return;
-        uint32_t object = uint32_t(CallGuest(ctx, kMakeObject, {entity}));
-        if (object) CallGuest(ctx, kRegisterObject, {object, 0});
+        uint32_t object = uint32_t(CallGuest(ctx, SYM_EditorObject_MakeGeneric, {entity}));
+        if (object) CallGuest(ctx, SYM_EditorObject_Register, {object, 0});
     });
 }
 

@@ -286,6 +286,73 @@ UserManager_pointer = 0x8293A808
 # CrySystem, the frame clock: the timer
 Timer = 0x828BBE50
 
+# what src/game/achievement_icons.cpp reads and calls by address
+PackManager_pointer = 0x829128B0
+PackManager_Open = 0x823F1858  # (manager, const char* path, 0, 0, 0, 0)
+Streamers_pointer = 0x829128BC
+Streamers_New = 0x823FB810  # (streamers, const char* path, block bytes, blocks, 0, total bytes)
+Sprites_Add = 0x8216C440  # (sprites, std::string* path, std::string* name, u16 texels[4])
+Sprites_Find = 0x8246E1C8  # (sprites, name crc)
+String_Init = 0x820C0DB8  # (std::string*, const char*)
+String_Free = 0x820C0518  # (std::string*, 1, 0)
+
+# what src/game/custom_level_start.cpp reads and calls by address
+ScriptBuffer_name = 0x82074180  # "__script_buffer__", the chunk name 823CB380 runs text under
+
+# what src/game/exit_menu.cpp reads and calls by address
+# (boxes, id, title, text, type, priority, listener, A text, B text, 0, 0, 0, pad), the strings std::wstring
+MessageBox_Show = 0x8216B168
+UIPage_SetHelp = 0x8216E3D8  # (menu, page, std::wstring*, 0): the page's A_Help text
+PreGame_LaunchEditor = 0x821B3130  # (CryPreGame) hands over to ige.xex and never returns
+LevelList_PushBack = 0x820E7A30  # (vector, const std::string*)
+LevelList_Erase = 0x820E7B08  # (iterator out, vector, first, last)
+UIList_Clear = 0x82471F18  # (list), keeps the columns
+UIList_AddRow = 0x82471CA0  # (list, UTF-16 text, 0)
+UIWidget_Enable = 0x82478188  # (widget, on)
+
+# what src/game/options_menu.cpp reads and calls by address
+CryProfile_vtable = 0x8205CBA8  # CryProfile, P_EditProfile is pages[1]
+CryInGame_vtable = 0x82059CA0  # CryInGame, P_EditProfile is pages[4]
+CryPreGame_vtable = 0x82059FD0  # CryPreGame, P_Main is pages[1]
+UIList_SetCell = 0x8246F6C8  # (list, row, column, const std::wstring*), copies the text
+UIList_Refresh = 0x8246FAB8  # (list)
+UIList_AddColumn = 0x8246F500  # (list, name crc)
+SoundSystem_pointer = 0x82912824
+SoundSystem_Play = 0x823BAD40  # (system, sound)
+UIList_SetSprite = 0x8246F7A0  # (list, row, column, sprite)
+OptionsHelper_RowIcon = 0x821BB968  # (helper, row, const u32* colour), the colour hides the rating
+ValuesListener_vtable = 0x8205A79C
+ValuesListenerBase_vtable = 0x8205A7D4
+SoundListener_vtable = 0x82056974
+SoundListenerBase_vtable = 0x8205638C
+UIPage_AddListener = 0x8246CCA0  # (page, listener**) to each widget, drops the passed reference
+UIPage_RemoveListeners = 0x8246CD68  # (page)
+HelpBar_pointer = 0x8293A878
+HelpBar_Set = 0x821BBA70  # (bar, page, const std::string* buttons, const std::string* text, 1)
+Popup_Buttons = 0x8205A6A0  # "Y,Empty_Y,B,Default_B,A,Default_A"
+Popup_Text = 0x82056B88  # " "
+UIDrawStack_Push = 0x821303B0  # (draw, page, 1, 0, 0, 0)
+UIDrawStack_Pop = 0x821304D8  # (draw, 0, 0, 0, 0)
+UIInputStack_Push = 0x8246B158  # (stack, page, 1, 0)
+UIInputStack_Pop = 0x8246B318  # (stack, 0, 0)
+UIPage_DefaultFocus = 0x8246BB58  # (page)
+UITextElement_vtable = 0x82078CC8  # element type 8
+
+# what src/game/ambient_occlusion.cpp reads and calls by address
+ShaderName_Characters = 0x82070D10  # "PerPixel Phong Color (Characters)"
+ShaderName_Ocean = 0x8207D1C0  # "Ocean"
+ShaderName_Lake = 0x82070D80  # "Lake"
+# the PerPixel Phong pipelines' item draws, the others ending in PhongDraw_Item
+PhongDraw_Item = 0x8250DF28
+PhongDraw_Texture = 0x82504FB8    # binds a texture first
+PhongDraw_Entry = 0x825050F0      # a register save run straight into it
+PhongDraw_Constants = 0x825052B0  # sets a shader constant and a texture first
+
+# what src/game/achievement_toast.cpp reads and calls by address
+Hud_ShowHelp = 0x821FC620  # (hud, const std::wstring* text, 1), writes the HUD's help box
+UIElement_SetPicture = 0x82477458  # (element, child name crc, sprite)
+UIElement_SetText = 0x82477168  # (element, child name crc, const wchar_t*)
+
 # instruction hooks, defined in src/game/draw_distance.cpp
 
 # jump tables the scan cannot bound: the index's check is before a join 

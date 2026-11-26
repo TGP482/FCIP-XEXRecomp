@@ -72,24 +72,17 @@ constexpr const char* kCustomSuffix = "_Custom";  // a custom level never takes 
 
 // the object the editor's save takes (820C3968): the manager +0x58; the map changed flag it then clears
 constexpr uint32_t kSaveObject = 0x58;
-constexpr uint32_t kMapChanged = 0x8296B266;
-// the mission object the save writes (82106B00 r3)
-constexpr uint32_t kMissionObject = 0x8296CBC0;
 // the editor's interface manager: the map's name, UTF-16
 constexpr uint32_t kMapName = 0x68;
 constexpr uint32_t kMapNameChars = 32;
 // the 3D engine: the level folder's path, a C string, and its terrain
 constexpr uint32_t kEngineLevelPath = 0x3A8;
 constexpr uint32_t kEngineTerrain = 0x364;
-// the terrain the editor's writers save (terrain.sdat 823255E8, LevelData 82109278), set by its save (82109C24)
-constexpr uint32_t kSavedTerrain = 0x8296B2C8;
 // the zip line ends the map save (82104C38) and zipline.dat (820F6A10) write, each with the cable to its other end;
 // a ZipLine entity the solo editor gives a generic editor object, or one placed on its own, has none
 constexpr uint32_t kZiplineCable = 0x80;
-constexpr uint32_t kGenericObjectVtable = 0x8206AA30;
 // the mounted weapons MountedWeapon.dat (820F6F10) writes, each with its weapon and the weapon's model, whose class
 // names the type (820E7C78)
-constexpr uint32_t kMountedWeapons = 0x828C5E7C;
 constexpr uint32_t kMountedWeapon = 0x48;
 constexpr uint32_t kWeaponModel = 0x2C;
 // a std::vector: its first, last and end
@@ -115,12 +108,8 @@ constexpr uint32_t kLevelPathBytes = 0x40;
 // the pack manager: set while a pack takes the files written
 constexpr uint32_t kPacksWriting = 0x88;
 // the editor's tools, each saved by its method +0x18 (tool, manager)
-constexpr uint32_t kTools = 0x828C60A8;
 constexpr uint32_t kToolsFirst = 0x04;
 constexpr uint32_t kToolSave = 0x18;
-// zipline.dat and MountedWeapon.dat, the names their writers take as level files
-constexpr uint32_t kZiplineName = 0x8206B8A4;
-constexpr uint32_t kMountedWeaponName = 0x8206B8B0;
 // File_Open's modes
 constexpr uint32_t kRead = 1;
 
@@ -498,7 +487,7 @@ void WriteLevelData(PPCContext& ctx) {
 
 // the campaign's mission with the editor's entities and the edited AI objects
 void WriteMission(PPCContext& ctx) {
-    uint32_t mission = MissionToSave(ctx, kMissionObject);
+    uint32_t mission = MissionToSave(ctx, SYM_Editor_MissionObject);
     if (!mission) return;
     WriteXml(ctx, kMissionFile, mission);
     CallGuest(ctx, Method(mission, kNodeRelease), {mission});
@@ -634,15 +623,16 @@ struct KeptList {
     uint32_t end = 0;
 };
 
-bool Cabled(uint32_t end) { return R32(end) != kGenericObjectVtable && R32(end + kZiplineCable); }
+bool Cabled(uint32_t end) { return R32(end) != SYM_GenericObject_vtable && R32(end + kZiplineCable); }
 
 bool Armed(uint32_t mounted) {
     uint32_t weapon = R32(mounted + kMountedWeapon);
-    return R32(mounted) != kGenericObjectVtable && weapon && R32(weapon + kWeaponModel);
+    return R32(mounted) != SYM_GenericObject_vtable && weapon && R32(weapon + kWeaponModel);
 }
 
-KeptList g_ziplines{SYM_Ziplines, Cabled};
-KeptList g_mounted{kMountedWeapons, Armed};
+// their lists are set at each keep: symbol addresses come from the game code, loaded after static init
+KeptList g_ziplines{0, Cabled};
+KeptList g_mounted{0, Armed};
 
 void Keep(KeptList& kept) {
     kept.first = R32(kept.list + kVectorFirst);
@@ -673,15 +663,16 @@ void Restore(const KeptList& kept) {
 // the editor's own writers, their files going to the level path
 void WriteEditorFiles(PPCContext& ctx, uint32_t manager) {
     uint32_t count = uint32_t(CallGuest(ctx, SYM_Tools_Count, {}));
-    uint32_t first = R32(kTools + kToolsFirst);
+    uint32_t first = R32(SYM_Editor_Tools + kToolsFirst);
     for (uint32_t i = 0; first && i < count; i++) {
         uint32_t tool = R32(first + i * 4);
         CallGuest(ctx, Method(tool, kToolSave), {tool, manager});
     }
     CallGuest(ctx, SYM_Terrain_Save, {manager});
     uint32_t engine = R32(SYM_C3DEngine_pointer);
-    CallGuest(ctx, SYM_Zipline_Save, {uint32_t(CallGuest(ctx, SYM_Engine_LevelFilePath, {engine, kZiplineName, 0}))});
-    uint32_t mounted = uint32_t(CallGuest(ctx, SYM_Engine_LevelFilePath, {engine, kMountedWeaponName, 0}));
+    uint32_t ziplines = uint32_t(CallGuest(ctx, SYM_Engine_LevelFilePath, {engine, SYM_Zipline_name, 0}));
+    CallGuest(ctx, SYM_Zipline_Save, {ziplines});
+    uint32_t mounted = uint32_t(CallGuest(ctx, SYM_Engine_LevelFilePath, {engine, SYM_MountedWeapon_name, 0}));
     CallGuest(ctx, SYM_MountedWeapon_Save, {mounted});
 }
 
@@ -692,7 +683,9 @@ void fcip::editor::SaveCustomLevel(PPCContext& ctx, uint32_t manager) {
     std::error_code ec;
     fs::create_directories(LevelFolder() / "sdat", ec);
     uint32_t engine = R32(SYM_C3DEngine_pointer);
-    W32(kSavedTerrain, R32(engine + kEngineTerrain));
+    W32(SYM_Editor_SavedTerrain, R32(engine + kEngineTerrain));
+    g_ziplines.list = SYM_Ziplines;
+    g_mounted.list = SYM_MountedWeapons;
     Keep(g_ziplines);
     Keep(g_mounted);
     std::string level_path = ReadCString(engine + kEngineLevelPath);
@@ -742,7 +735,7 @@ void fcip::editor::SaveCustomLevelAs(PPCContext& ctx, const std::string& name) {
     std::error_code ec;
     if (fs::is_directory(from, ec) && !fs::equivalent(from, LevelFolder(), ec)) CopyOwnFiles(from, old);
     SaveCustomLevel(ctx, manager + kSaveObject);
-    W8(kMapChanged, 0);
+    W8(SYM_Editor_MapChanged, 0);
 }
 
 std::filesystem::path fcip::editor::OwnScriptPath() { return LevelFolder() / kScriptName; }

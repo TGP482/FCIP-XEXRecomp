@@ -34,11 +34,8 @@ using namespace fcip::ui;
 namespace {
 
 // the message boxes, as CryPreGame's own (0x821B4518) reach them
-constexpr uint32_t kSystem = 0x8291234Cu;
 constexpr uint32_t kSystemUi = 0x340u;
 constexpr uint32_t kUiMessageBoxes = 0x0Cu;
-// (boxes, id, title, text, type, priority, listener, A text, B text, 0, 0, 0, pad), the strings std::wstring
-constexpr uint32_t kShowMessageBox = 0x8216B168u;
 constexpr uint32_t kYesNo = 4;
 constexpr uint32_t kAnyPad = 0xFFFFFFFFu;
 constexpr uint32_t kExitId = 0x45584954u;
@@ -46,15 +43,12 @@ constexpr uint32_t kEditorId = 0x45444954u;
 // CryPreGame's message box listener: slot 0 on A, slot 1 on B (a no op)
 constexpr uint32_t kPreGameListener = 0xECu;
 constexpr uint32_t kPages = 0x50u;
-// (menu, page, std::wstring*, 0): the page's A_Help text
-constexpr uint32_t kSetPageHelp = 0x8216E3D8u;
 
 constexpr const char* kExitQuestion = "Are you sure you want to exit to the desktop?";
 constexpr const char* kEditorQuestion = "Are you sure you want to launch the map editor?";
 
-// B_MapEditor, and what its press runs (821B1FD0): (CryPreGame) hands over to ige.xex and never returns
+// B_MapEditor, whose press (821B1FD0) runs PreGame_LaunchEditor
 constexpr uint32_t kCrcMapEditor = 0x08D70D76u;
-constexpr uint32_t kLaunchEditor = 0x821B3130u;
 
 // CryPreGame's menu system, as its help setter (821B7B40) reaches the page on top
 constexpr uint32_t kMenuSystem = 0x10u;
@@ -77,13 +71,6 @@ constexpr uint32_t kMapLevels = 0xF8u;  // std::vector<std::string>, begin +4, e
 constexpr uint32_t kPageListener = 0x04u;  // the page shown listener inside CryPreGame
 constexpr uint32_t kStringBytes = 0x1Cu;
 constexpr uint32_t kNameBytes = 0x100u;
-constexpr uint32_t kStringInit = 0x820C0DB8u;   // (std::string*, const char*)
-constexpr uint32_t kStringFree = 0x820C0518u;   // (std::string*, 1, 0)
-constexpr uint32_t kLevelsPush = 0x820E7A30u;   // (vector, const std::string*)
-constexpr uint32_t kLevelsErase = 0x820E7B08u;  // (iterator out, vector, first, last)
-constexpr uint32_t kListClear = 0x82471F18u;    // (list)
-constexpr uint32_t kListAddRow = 0x82471CA0u;   // (list, UTF-16 text, 0)
-constexpr uint32_t kWidgetEnable = 0x82478188u;  // (widget, on)
 
 // an empty std::wstring: inline buffer at +0x04, length +0x14, capacity +0x18
 constexpr uint32_t kWstringBytes = 0x1Cu;
@@ -101,15 +88,16 @@ uint32_t EmptyText() {
 }
 
 void Ask(PPCContext& ctx, uint32_t self, uint32_t id, const char* text) {
-    uint32_t boxes = Read32(Read32(Read32(kSystem) + kSystemUi) + kUiMessageBoxes);
+    uint32_t boxes = Read32(Read32(Read32(SYM_Game_pointer) + kSystemUi) + kUiMessageBoxes);
     uint32_t empty = EmptyText();
     uint32_t question = View(text);
     if (!boxes || !empty || !question) {
         LOGE("main menu: no message box, %08X", boxes);
         return;
     }
-    kernel::CallGuest(ctx, kShowMessageBox, {boxes, id, empty, question, kYesNo, 0, self + kPreGameListener, empty,
-                                             empty, 0, 0, 0, kAnyPad});
+    uint32_t listener = self + kPreGameListener;
+    kernel::CallGuest(ctx, SYM_MessageBox_Show, {boxes, id, empty, question, kYesNo, 0, listener, empty, empty, 0, 0, 0,
+                                                 kAnyPad});
 }
 
 // the story button for the first custom level's campaign, 0 with no custom levels
@@ -141,16 +129,16 @@ void ListCustomLevels(PPCContext& ctx, uint32_t self) {
     uint32_t name = iterator + 4;
     uint32_t levels = self + kMapLevels;
     uint32_t list = Read32(self + kMapList);
-    kernel::CallGuest(ctx, kLevelsErase, {iterator, levels, Read32(levels + 4), Read32(levels + 8)});
-    kernel::CallGuest(ctx, kListClear, {list});
+    kernel::CallGuest(ctx, SYM_LevelList_Erase, {iterator, levels, Read32(levels + 4), Read32(levels + 8)});
+    kernel::CallGuest(ctx, SYM_UIList_Clear, {list});
     for (const fcip::CustomLevel& level : fcip::FindCustomLevels()) {
         size_t n = std::min<size_t>(level.name.size(), kNameBytes - 1);
         for (size_t i = 0; i < n; i++) Write8(name + uint32_t(i), uint8_t(level.name[i]));
         Write8(name + uint32_t(n), 0);
-        kernel::CallGuest(ctx, kStringInit, {str, name});
-        kernel::CallGuest(ctx, kLevelsPush, {levels, str});
-        kernel::CallGuest(ctx, kStringFree, {str, 1, 0});
-        kernel::CallGuest(ctx, kListAddRow, {list, Text(Upper(level.name).c_str()), 0});
+        kernel::CallGuest(ctx, SYM_String_Init, {str, name});
+        kernel::CallGuest(ctx, SYM_LevelList_PushBack, {levels, str});
+        kernel::CallGuest(ctx, SYM_String_Free, {str, 1, 0});
+        kernel::CallGuest(ctx, SYM_UIList_AddRow, {list, Text(Upper(level.name).c_str()), 0});
     }
 }
 
@@ -183,7 +171,8 @@ std::string JoinIp() {
 void ShowOnlineHelp(PPCContext& ctx, uint32_t page) {
     std::string ip = JoinIp();
     std::string text = kOnlineHelp + (ip.empty() ? std::string("NONE") : ip);
-    if (uint32_t help = View(text.c_str())) kernel::CallGuest(ctx, kSetPageHelp, {g_online.self, page, help, 0});
+    uint32_t help = View(text.c_str());
+    if (help) kernel::CallGuest(ctx, SYM_UIPage_SetHelp, {g_online.self, page, help, 0});
     g_online.pending = false;
 }
 
@@ -259,7 +248,7 @@ PPC_FUNC(sub_821B7B40) {
         return;
     }
     if (crc != kCrcExit && crc != kCrcCustomCampaign) return;
-    if (uint32_t help = View(HelpFor(crc))) kernel::CallGuest(ctx, kSetPageHelp, {self, page, help, 0});
+    if (uint32_t help = View(HelpFor(crc))) kernel::CallGuest(ctx, SYM_UIPage_SetHelp, {self, page, help, 0});
 }
 
 // a CryPreGame page shown, r3 its page listener, r4 the page; P_StoryMode turns LOAD A MAP off with no level unlocked
@@ -269,7 +258,7 @@ PPC_FUNC(sub_821B7CC0) {
     __imp__sub_821B7CC0(ctx, base);
     if (!fcip::CustomCampaignPending() || page != StoryPage(self)) return;
     uint64_t result = ctx.r[3];
-    kernel::CallGuest(ctx, kWidgetEnable, {Read32(self + kLoadMapButton), 1});
+    kernel::CallGuest(ctx, SYM_UIWidget_Enable, {Read32(self + kLoadMapButton), 1});
     ctx.r[3] = result;
 }
 
@@ -286,7 +275,7 @@ PPC_FUNC(sub_821B7FD8) {
 PPC_FUNC(sub_821B3380) {
     uint32_t id = uint32_t(ctx.r[4]);
     if (id == kEditorId) {
-        kernel::CallGuest(ctx, kLaunchEditor, {uint32_t(ctx.r[3]) - kPreGameListener});
+        kernel::CallGuest(ctx, SYM_PreGame_LaunchEditor, {uint32_t(ctx.r[3]) - kPreGameListener});
         return;
     }
     if (id != kExitId) {

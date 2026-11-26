@@ -37,11 +37,6 @@ constexpr int kTrackRotation = 2;
 constexpr int kTrackEvents = 4;
 constexpr float kDegrees = 180.0f / 3.14159265f;
 
-// the movie system and its sequences
-constexpr uint32_t kFindSequence = 0x823A33E8;        // (movie, name)
-constexpr uint32_t kSequenceActivate = 0x8251B948;    // (sequence)
-constexpr uint32_t kSequenceDeactivate = 0x8251BA50;  // (sequence)
-constexpr uint32_t kMovieSerialize = 0x823ABFE8;      // (movie, XmlNodeRef of a Mission, loading, remove old nodes, 0)
 // sequence: its nodes as {node, ?} pairs; node: its tracks by ParamId
 constexpr uint32_t kSequenceNodesFirst = 0x0C;
 constexpr uint32_t kSequenceNodesLast = 0x10;
@@ -304,7 +299,7 @@ void Place(PPCContext& ctx, uint32_t entity, const float pos[3], const float ang
 void Restore(PPCContext& ctx) {
     for (const Placement& p : g_moved) Place(ctx, p.entity, p.pos, p.angles);
     g_moved.clear();
-    if (g_preview_sequence) CallGuest(ctx, kSequenceDeactivate, {g_preview_sequence});
+    if (g_preview_sequence) CallGuest(ctx, SYM_Sequence_Deactivate, {g_preview_sequence});
     g_preview_sequence = 0;
     g_previewing.clear();
     g_preview_time = -1.0f;
@@ -354,9 +349,9 @@ void UpdatePreview(PPCContext& ctx) {
     uint32_t movie = R32(SYM_Movie_pointer);
     if (!want.on || !movie) return;
     if (g_previewing.empty()) {
-        g_preview_sequence = uint32_t(CallGuest(ctx, kFindSequence, {movie, KeyText(want.name)}));
+        g_preview_sequence = uint32_t(CallGuest(ctx, SYM_Movie_FindSequence, {movie, KeyText(want.name)}));
         if (!g_preview_sequence) return;
-        CallGuest(ctx, kSequenceActivate, {g_preview_sequence});
+        CallGuest(ctx, SYM_Sequence_Activate, {g_preview_sequence});
         g_previewing = want.name;
     }
     if (want.time == g_preview_time) return;
@@ -405,7 +400,7 @@ void Reload(PPCContext& ctx) {
     if (movie && mission) {
         CallGuest(ctx, SYM_Movie_StopAllSequences, {movie});
         W32(g_scratch + kScratchRef, mission);
-        CallGuest(ctx, kMovieSerialize, {movie, g_scratch + kScratchRef, 1, 1, 0});
+        CallGuest(ctx, SYM_Movie_Serialize, {movie, g_scratch + kScratchRef, 1, 1, 0});
     }
     Publish(ReadMovie());
 }

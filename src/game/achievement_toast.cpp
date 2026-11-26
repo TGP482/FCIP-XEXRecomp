@@ -31,7 +31,6 @@ constexpr uint32_t kGameClientCount = 0x68u;
 constexpr uint32_t kClientHudId = 0x38u;  // low 16 bits
 constexpr uint32_t kGameHuds = 0x340u;    // its +0x08 finds a HUD by id, vtable +0x38
 constexpr uint32_t kFindHud = 0x38u;
-constexpr uint32_t kHudHelp = 0x821FC620u;  // (hud, const std::wstring* text, 1), writes the box at kHudHelpBox
 constexpr uint32_t kHudPage = 0x50u;  // the HUD page behind one pointer, holding ai_contextual_1 (821F99D4)
 constexpr uint32_t kHudSprites = 0x14u;
 constexpr uint32_t kHudSelector = 0x32Cu;  // ai_selector, whose i_item1 picture the icon copies
@@ -58,8 +57,6 @@ constexpr uint32_t kCrcText = 0x81FDCEB5u;   // t_text
 constexpr uint32_t kCrcItem = 0xC1745286u;   // i_item1
 constexpr uint32_t kCrcDesc = 0x3DB56427u;   // t_description, our copy of t_text below it
 constexpr uint32_t kCrcBox = 0xC48B0B92u;    // ai_contextual_achievement, our copy of ai_contextual_1
-constexpr uint32_t kSetPicture = 0x82477458u;  // (element, child name crc, sprite)
-constexpr uint32_t kSetText = 0x82477168u;     // (element, child name crc, const wchar_t*)
 constexpr uint32_t kTransformRect = 0x10u;     // s16 left, right, top, bottom
 constexpr uint32_t kTextColour = 0x20u;        // a text state's ARGB
 constexpr uint32_t kWhite = 0x00FFFFFFu;
@@ -221,7 +218,7 @@ bool EnsureBox(PPCContext& ctx, uint32_t hud) {
     MirrorX(widget, kBoxWidth, screen);
     g_box = {hud, widget, element};
     g_extras = MakeExtras(ctx, hud, Read32(element + kElementArea));
-    kernel::CallGuest(ctx, kSetText, {kernel::R32(game_box + kWidgetElement), kCrcDesc, Text("")});
+    kernel::CallGuest(ctx, SYM_UIElement_SetText, {kernel::R32(game_box + kWidgetElement), kCrcDesc, Text("")});
     return true;
 }
 
@@ -230,12 +227,12 @@ void Show(PPCContext& ctx, uint32_t hud, const xam::Achievement& a) {
     uint32_t element = g_box.element;
     uint32_t sprite = a.image ? fcip::achievement_icons::Sprite(ctx, Read32(hud + kHudSprites), a.image) : 0;
     if (g_extras.icon) {
-        kernel::CallGuest(ctx, kSetPicture, {element, kCrcItem, sprite});
+        kernel::CallGuest(ctx, SYM_UIElement_SetPicture, {element, kCrcItem, sprite});
         SetVisible(g_extras.icon, sprite != 0);
         FadeIcon();
     }
     if (g_extras.desc) {
-        kernel::CallGuest(ctx, kSetText, {element, kCrcDesc, Text(a.description.c_str())});
+        kernel::CallGuest(ctx, SYM_UIElement_SetText, {element, kCrcDesc, Text(a.description.c_str())});
         SetVisible(g_extras.desc, true);
     }
     std::string title = "Achievement unlocked: " + a.name;
@@ -244,7 +241,7 @@ void Show(PPCContext& ctx, uint32_t hud, const xam::Achievement& a) {
     if (!text) return;
     uint32_t game_box = kernel::R32(hud + kHudHelpBox);
     kernel::W32(hud + kHudHelpBox, g_box.widget);
-    kernel::CallGuest(ctx, kHudHelp, {hud, text, 1});
+    kernel::CallGuest(ctx, SYM_Hud_ShowHelp, {hud, text, 1});
     kernel::W32(hud + kHudHelpBox, game_box);
     if (!g_showing) g_game_box_visible = Read8(game_box + kWidgetVisible) & 0x80;
     HideIdleGameBox(hud, true);

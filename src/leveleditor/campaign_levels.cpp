@@ -78,15 +78,12 @@ constexpr uint32_t kTemplateName = 0x204;  // std::string
 constexpr uint32_t kFromTemplate = 0x1EC;
 constexpr uint32_t kTemplateDaytime = 1;
 constexpr uint32_t kTemplateFogDistance = 9;
-constexpr uint32_t kMapManagerHandler = 0x82971408;
-constexpr uint32_t kEditorHandlerName = 0x82067344;  // "EditorInterfaceHandler"
 // the game: its menus, and the cheats the player update applies (8216F710); the editor sets 2 and 4, god mode
 constexpr uint32_t kGameMenus = 0x344;
 constexpr uint32_t kMenuSticks = 0x54;  // menus move with the sticks
 constexpr uint32_t kGameCheats = 0x410;
 constexpr uint32_t kCheatWeapons = 0x2;
 constexpr uint32_t kCheatGodMode = 0x4;
-constexpr uint32_t kGodModeVariable = 0x8206E344;  // "GodMode"
 // set once at start in ige (821175B4): levels then run the game type scripts instead of scripts/main.lua
 constexpr uint32_t kEditorGame = 0x3D4;
 // user map info, a new one per level started: 0x164 bytes at +0x30, named for the signed in profile
@@ -178,11 +175,11 @@ void NewMapInfo(PPCContext& ctx, uint32_t manager) {
 void EnterEditor(PPCContext& ctx, uint32_t manager, uint32_t game) {
     CallGuest(ctx, SYM_Editor_EnterLevel, {manager});
     W8(manager + kPlayerPlaced, 0);
-    CallGuest(ctx, SYM_Editor_ShowHandler, {manager, kEditorHandlerName});
+    CallGuest(ctx, SYM_Editor_ShowHandler, {manager, SYM_EditorHandler_name});
     W8(manager + kCommonBanksLoaded, 1);
     W8(R32(game + kGameMenus) + kMenuSticks, 0);
     W32(game + kGameCheats, R32(game + kGameCheats) | kCheatGodMode);
-    uint32_t god = uint32_t(CallGuest(ctx, SYM_Console_FindVariable, {R32(SYM_Console_pointer), kGodModeVariable}));
+    uint32_t god = uint32_t(CallGuest(ctx, SYM_Console_FindVariable, {R32(SYM_Console_pointer), SYM_GodMode_name}));
     if (god) CallGuest(ctx, SYM_Console_SetVariable, {god, 1});
     W32(game + kGameCheats, R32(game + kGameCheats) | kCheatWeapons);
 }
@@ -348,7 +345,7 @@ void ReloadOwnScript(PPCContext& ctx) {
 
 // the map manager is up: the editor's next update starts the level asked for
 void UpdateRequest(PPCContext& ctx, uint32_t manager) {
-    if (R32(manager + kActiveHandler) != kMapManagerHandler) return;
+    if (R32(manager + kActiveHandler) != SYM_MapManagerHandler) return;
     Request request;
     {
         std::lock_guard lock(g_lock);

@@ -209,6 +209,54 @@ Renderer_pointer = 0x828C7A34
 # CrySystem, the frame clock: the timer
 Timer = 0x828C72A8
 
+# what src/editor/tools.cpp reads and calls by address
+EditorHandler = 0x8296F758  # EditorInterfaceHandler, a static object
+Terrain_RadiusTable = 0x82067C10  # metres per step
+Terrain_Radius = 0x8296B1BC  # the step's metres, which the brushes read
+Terrain_HeightTarget = 0x828C4A54
+Terrain_SquareCursor = 0x8296B1D4
+Editor_ToolCursor = 0x828C5D50  # xyz, where the tools act
+Editor_CursorMoved = 0x8296B245  # the camera update's flag the tools re-aim on (brush area, selection)
+Editor_CursorTarget = 0x8296C724  # xyz, what the camera aims at; previews and moves use it
+Editor_WaterPoint = 0x8296C730  # xyz, floating objects' place, where the view meets the water
+Editor_Floating = 0x8296B265  # the object placed floats
+Editor_WaterHeight = 0x82067BD0  # float, metres
+Editor_MapChanged = 0x8296B266
+EditorCamera_Distance = 0x828C49A4  # 1 to 115 from what it orbits
+EditorCamera_Mode = 0x8296B240
+Editor_FrameSeconds = 0x828C7310  # double
+Undo_First = 0x828C632C
+Undo_Last = 0x828C6330
+StartMenuHandler = 0x82971908  # StartMenuInterfaceHandler, a static object
+StartMenuHandler_name = 0x82067EBC  # "StartMenuInterfaceHandler"
+Map_GameModes = 0x8296C870
+Environment_FogDistanceTable = 0x828C49D8
+Editor_Options_pointer = 0x8296B130
+WaterOcean_name = 0x82068614  # "e_water_ocean"
+EditorHandler_SelectTool = 0x820C5340  # (handler, tool, 1)
+TerrainTool_ModeButtons = 0x820D20B8
+TerrainTool_ModeCaptions = 0x820D0C78
+TerrainTool_RadiusCaption = 0x820D1BE8
+TerrainTool_HeightCaption = 0x820D19F0
+TerrainTool_TextureCaption = 0x820D18D0
+Terrain_HeightAt = 0x82324AA8  # (x f1, y f2, terrain)
+Editor_PickTarget = 0x820EE8F8  # (object) Editor_CursorTarget where the view's centre ray hits, past it
+Editor_ClampToMap = 0x82103000  # (out, in), returns out
+AddTool_CategoryShown = 0x820D6498  # (add tool) after its category changes
+AddTool_ItemShown = 0x820D6788  # (add tool) after its item changes
+EnvironmentTool_Undo = 0x820DFE50
+EnvironmentTool_Sound1Applied = 0x820E0A70
+EnvironmentTool_Sound2Applied = 0x820E0AE8
+EnvironmentTool_Sound3Applied = 0x820E0B60
+EnvironmentTool_TimeOfDayApplied = 0x820E0240
+EnvironmentTool_TimeOfDayLight = 0x820E0880
+EnvironmentTool_Captions = 0x820E0940
+Engine_SetFogDistance = 0x823364A0  # (f1, engine)
+Engine_SetFogThickness = 0x823364A8  # (f1, engine)
+Memory_Release = 0x8230F2D8
+StartMenuHandler_Press = 0x820C2C88  # (listener, widget), the widget's name crc at +4
+EditorHandler_SetMode = 0x820C5548  # (handler, 1 editing or 2 first person)
+
 # instruction hooks, defined in src/editor/draw_distance.cpp
 
 # jump tables the scan cannot bound: the index's check is before a join 

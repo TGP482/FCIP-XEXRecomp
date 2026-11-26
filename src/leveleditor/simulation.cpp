@@ -34,8 +34,6 @@ constexpr uint32_t kModePlayTest = 2;
 // entity: SetPos by vtable
 constexpr uint32_t kEntitySetPos = 0x14;  // (entity, Vec3, 0)
 constexpr uint32_t kScriptEventReset = 4;
-// the entity system's RemoveEntity (system, id, 0, 0), as the editor removes entities after play test (820C6030)
-constexpr uint32_t kRemoveEntity = 0x8218D090;
 
 struct Placement {
     bool has_pos = false;
@@ -91,7 +89,7 @@ void RestorePlacements(PPCContext& ctx) {
         }
     });
     uint32_t system = R32(SYM_EntitySystem_pointer);
-    for (uint32_t id : spawned) CallGuest(ctx, kRemoveEntity, {system, id, 0, 0});
+    for (uint32_t id : spawned) CallGuest(ctx, SYM_EntitySystem_RemoveEntity, {system, id, 0, 0});
     for (uint32_t id : kept) {
         uint32_t entity = EntityOfId(id);
         if (!entity) continue;

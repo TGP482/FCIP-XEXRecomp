@@ -21,8 +21,6 @@ using namespace fcip::editor;
 
 namespace {
 
-constexpr uint32_t kEntityHide = 0x82130518;  // (entity, hide, 0)
-
 struct Assignments {
     std::map<uint32_t, std::string> of;  // by EntityId
     std::set<std::string> created;       // made in the editor, still empty
@@ -75,10 +73,10 @@ void SetModelHidden(PPCContext& ctx, uint32_t entity, bool hide) {
     uint32_t id = R32(entity + kEntityId);
     bool hidden = R8(entity + kEntityFlags) & kEntityHidden;
     if (hide && !hidden) {
-        CallGuest(ctx, kEntityHide, {entity, 1, 0});
+        CallGuest(ctx, SYM_Entity_Hide, {entity, 1, 0});
         g_hid.insert(id);
     }
-    if (!hide && g_hid.erase(id) && hidden) CallGuest(ctx, kEntityHide, {entity, 0, 0});
+    if (!hide && g_hid.erase(id) && hidden) CallGuest(ctx, SYM_Entity_Hide, {entity, 0, 0});
 }
 
 }  // namespace

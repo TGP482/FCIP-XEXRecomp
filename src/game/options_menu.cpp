@@ -17,6 +17,7 @@
 #include "game/profiles.h"
 #include "game/virtual_keyboard.h"
 #include "cpu/dispatch.h"
+#include "image_symbols.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 
@@ -53,10 +54,7 @@ constexpr uint32_t kMainRows[] = {
     0x3C3BFDBBu,  // B_Cheats
 };
 
-// primary vtables of the two menu classes
-constexpr uint32_t kVtProfile = 0x8205CBA8u;  // CryProfile, P_EditProfile is pages[1]
-constexpr uint32_t kVtInGame = 0x82059CA0u;   // CryInGame, P_EditProfile is pages[4]
-constexpr uint32_t kVtPreGame = 0x82059FD0u;  // CryPreGame, P_Main is pages[1]
+// the menu classes, told apart by their primary vtables
 constexpr uint32_t kProfilePages = 0x50u;
 constexpr uint32_t kProfileHelp = 0x1F4u;
 constexpr uint32_t kInGameHelp = 0x10Cu;
@@ -132,17 +130,17 @@ void UpdateBottomFrame(uint32_t top) {
 // DEFAULTS' row, which moves to the bottom; the pause menu's copy of P_EditProfile has no spare slot, so it gets all four
 void AddEntriesFor(PPCContext& ctx, uint32_t self) {
     uint32_t vtable = Read32(self);
-    if (vtable == kVtProfile) {
+    if (vtable == SYM_CryProfile_vtable) {
         uint32_t page = ProfilePage(self, 1);
         bool added = FindWidget(page, kCrcMouseKeyboard) != 0;
         AddEntries(ctx, page, FindWidget(page, kCrcMultiplayerSetup), kCrcVideo, kCrcControlSetup,
                    {kCrcMouseKeyboard, kCrcControllerSettings, kCrcAchievements}, FindWidget(page, kCrcResetDefault));
         if (!added && FindWidget(page, kCrcMouseKeyboard)) g_frame_page = page;
-    } else if (vtable == kVtInGame) {
+    } else if (vtable == SYM_CryInGame_vtable) {
         uint32_t page = ProfilePage(self, 4);
         AddEntries(ctx, page, FindWidget(page, kCrcVideo), kCrcVideo, kCrcControlSetup,
                    {kCrcRecompSettings, kCrcMouseKeyboard, kCrcControllerSettings, kCrcAchievements});
-    } else if (vtable == kVtPreGame) {
+    } else if (vtable == SYM_CryPreGame_vtable) {
         uint32_t page = MainPage(self);
         // CUSTOM CAMPAIGN only with custom levels to play
         if (FindCustomLevels().empty()) {
@@ -168,7 +166,6 @@ constexpr uint32_t kCrcControllerMap = 0x434B3537u;      // B_ControllerMap
 constexpr uint32_t kCrcTitle = 0x06326AC4u;              // B_TitleButton
 constexpr uint32_t kControllerHelp = 0xACu;              // A_Help element
 // the list element, constructor 0x8246F288
-constexpr uint32_t kVtList = 0x82078A40u;
 constexpr uint32_t kListItems = 0x88u;
 constexpr uint32_t kListItemBytes = 0x40u;
 constexpr uint32_t kListRows = 0xC2u;      // visible rows, 5 in the layout
@@ -180,17 +177,6 @@ constexpr uint32_t kLockedColour = 0xFF7F7F7Fu;  // ABGR
 // 22 unit rows from y 125 end at 279, clear of the help frame at 299 once CONTROLLER SETUP is hidden
 constexpr uint8_t kNativeRows = 7;
 
-// the list's functions
-constexpr uint32_t kListSetCell = 0x8246F6C8u;  // (list, row, column, const std::wstring*), copies the text
-constexpr uint32_t kListRefresh = 0x8246FAB8u;  // (list)
-constexpr uint32_t kListClear = 0x82471F18u;    // (list), keeps the columns
-constexpr uint32_t kListAddRow = 0x82471CA0u;   // (list, text, 0)
-constexpr uint32_t kListSelect = 0x82471970u;   // (list, row, 1, 1)
-constexpr uint32_t kListAddColumn = 0x8246F500u;  // (list, name crc)
-constexpr uint32_t kTextSetString = 0x821557A8u;  // (text element, UTF-16)
-
-constexpr uint32_t kSoundSystem = 0x82912824u;
-constexpr uint32_t kSoundPlay = 0x823BAD40u;  // (system, sound)
 constexpr uint32_t kSoundChange = 0x2E60002u;
 
 // menu key codes
@@ -238,7 +224,6 @@ constexpr uint32_t kItemCells = 0x2Cu;     // [+0x2C, +0x30)
 constexpr uint32_t kCellBytes = 0x28u;
 constexpr uint32_t kCellColour = 0x20u;
 constexpr uint32_t kCellColoured = 0x24u;
-constexpr uint32_t kListSetSprite = 0x8246F7A0u;  // (list, row, column, sprite)
 constexpr int16_t kIconRect[4] = {0, 20, 1, 21};  // left, right, top, bottom in the 22 unit row
 constexpr int kNameShift = 24;
 constexpr uint32_t kMenuSprites = 0x14u;
@@ -253,46 +238,24 @@ constexpr uint32_t kHelperDescription = 0x08u;
 constexpr uint32_t kHelperPopup = 0x10u;
 constexpr uint32_t kHelperValues = 0x28u;
 constexpr uint32_t kHelperTitle = 0x2Cu;
-constexpr uint32_t kHelperRowIcon = 0x821BB968u;  // (helper, row, const u32* colour), the colour hides the rating
 constexpr uint32_t kIconHidden = 0x00FFFFFFu;
 constexpr uint32_t kCrcName = 0xAC4E3D8Au;        // L_Name
 constexpr uint32_t kCrcRating = 0x23D9A6A4u;      // i_icon_rating
 // a listener as the stock open builds it: +0x04 references, +0x08 enabled, +0x10 the helper
-constexpr uint32_t kVtValuesListener = 0x8205A79Cu;
-constexpr uint32_t kVtValuesListenerBase = 0x8205A7D4u;
-constexpr uint32_t kVtSoundListener = 0x82056974u;
-constexpr uint32_t kVtSoundListenerBase = 0x8205638Cu;
 constexpr uint32_t kListenerBase = 0x0Cu;
 constexpr uint32_t kListenerRefs = 0x04u;
 constexpr uint32_t kListenerEnabled = 0x08u;
 constexpr uint32_t kListenerHelper = 0x10u;
 constexpr uint32_t kListenerBytes = 0x14u;
-constexpr uint32_t kAddListener = 0x8246CCA0u;      // (page, listener**) to each widget, drops the passed reference
-constexpr uint32_t kRemoveListeners = 0x8246CD68u;  // (page)
-// the help bar: (bar, page, const std::string* buttons, const std::string* text, 1)
-constexpr uint32_t kHelpBar = 0x8293A878u;
-constexpr uint32_t kSetHelpBar = 0x821BBA70u;
-constexpr uint32_t kPopupButtons = 0x8205A6A0u;  // "Y,Empty_Y,B,Default_B,A,Default_A"
-constexpr uint32_t kPopupText = 0x82056B88u;     // " "
-constexpr uint32_t kStringInit = 0x820C0DB8u;    // (std::string*, const char*)
-constexpr uint32_t kStringFree = 0x820C0518u;    // (std::string*, 1, 0)
 constexpr uint32_t kStringBytes = 0x1Cu;
 // the UI manager: +0x340 its draw stack, whose +0x18 holds the input stack at +0xB8 and the drawn pages at +0x38
-constexpr uint32_t kUiManager = 0x8291234Cu;
 constexpr uint32_t kUiDraw = 0x340u;
 constexpr uint32_t kDrawInput = 0x18u;
 constexpr uint32_t kInputStack = 0xB8u;
 constexpr uint32_t kDrawnPages = 0x38u;
-constexpr uint32_t kPushDraw = 0x821303B0u;      // (draw, page, 1, 0, 0, 0)
-constexpr uint32_t kPopDraw = 0x821304D8u;       // (draw, 0, 0, 0, 0)
-constexpr uint32_t kInputTop = 0x8246B608u;      // (stack, 0, 0)
-constexpr uint32_t kPushInput = 0x8246B158u;     // (stack, page, 1, 0)
-constexpr uint32_t kPopInput = 0x8246B318u;      // (stack, 0, 0)
-constexpr uint32_t kDefaultFocus = 0x8246BB58u;  // (page)
 
 // the game's message box as RESET DEFAULTS on the User page opens it (0x821E44F8): (box, id, const std::wstring* title,
 // text, buttons, priority, listener, two button texts, 0, 0, 0, -1); the listener's vtable +0 runs on OK, +4 on cancel
-constexpr uint32_t kMessageBox = 0x8216B168u;
 constexpr uint32_t kMenuUi = 0x10u;  // a menu object's UI, its message boxes at +0x0C
 constexpr uint32_t kUiMessageBoxes = 0x0Cu;
 constexpr uint32_t kOkCancel = 4u;
@@ -337,7 +300,8 @@ int NativeCount() { return int(g_native.rows.size()); }
 bool ListOk() {
     uint32_t first = Read32(g_native.list + kListItems);
     uint32_t last = Read32(g_native.list + kListItems + 4);
-    return Read32(g_native.list) == kVtList && last >= first && (last - first) / kListItemBytes == uint32_t(NativeCount());
+    bool list = Read32(g_native.list) == SYM_UIList_vtable;
+    return list && last >= first && (last - first) / kListItemBytes == uint32_t(NativeCount());
 }
 
 // a heading or RESTORE DEFAULTS, where a section ends
@@ -359,7 +323,8 @@ void ListRows() {
 }
 
 void SetCell(PPCContext& ctx, int row, int column, const char* text) {
-    if (uint32_t view = View(text)) kernel::CallGuest(ctx, kListSetCell, {g_native.list, uint32_t(row), uint32_t(column), view});
+    uint32_t view = View(text);
+    if (view) kernel::CallGuest(ctx, SYM_UIList_SetCell, {g_native.list, uint32_t(row), uint32_t(column), view});
 }
 
 void RefreshValues(PPCContext& ctx) {
@@ -415,12 +380,12 @@ void Restore(PPCContext& ctx, uint32_t page) {
         const Saved was = saved;
         saved = {};
         bool same = Read32(was.widget + kWidgetNameCrc) == kCrcControllerOptions &&
-                    Read32(was.widget + kWidgetElement) == was.list && Read32(was.list) == kVtList;
+                    Read32(was.widget + kWidgetElement) == was.list && Read32(was.list) == SYM_UIList_vtable;
         if (!same) return;
         for (uint32_t i = 0; i < 4; i++) Write32(was.widget + kWidgetUp + i * 4, was.links[i]);
         RemoveIconColumn(was);
         Write8(was.list + kListRows, was.rows);
-        kernel::CallGuest(ctx, kListRefresh, {was.list});
+        kernel::CallGuest(ctx, SYM_UIList_Refresh, {was.list});
         if (was.map) {
             Write8(was.map + kWidgetVisible, was.map_visible);
             Write8(was.map + kWidgetEnabled, was.map_enabled);
@@ -473,7 +438,7 @@ void AddIconColumn(PPCContext& ctx, Saved& saved) {
     if (!icon) return;
     SetRect(icon, kIconRect);
     ShiftRect(name, kNameShift);
-    kernel::CallGuest(ctx, kListAddColumn, {list, kCrcRating});
+    kernel::CallGuest(ctx, SYM_UIList_AddColumn, {list, kCrcRating});
     saved.icon = icon;
     saved.name = name;
     g_native.icons = ColumnOf(list, kCrcRating);
@@ -484,7 +449,7 @@ void SetIcons(PPCContext& ctx, uint32_t list) {
     for (int i = 0; g_native.icons >= 0 && i < NativeCount(); i++) {
         uint32_t image = achievement_rows::Image(NativeRow(i));
         uint32_t sprite = image ? SpriteFor(ctx, image) : 0;
-        kernel::CallGuest(ctx, kListSetSprite, {list, uint32_t(i), uint32_t(g_native.icons), sprite});
+        kernel::CallGuest(ctx, SYM_UIList_SetSprite, {list, uint32_t(i), uint32_t(g_native.icons), sprite});
         uint32_t cell = Read32(Read32(list + kListItems) + uint32_t(i) * kListItemBytes + kItemCells);
         cell += uint32_t(g_native.icons) * kCellBytes;
         Write32(cell + kCellColour, kIconHidden);
@@ -493,9 +458,9 @@ void SetIcons(PPCContext& ctx, uint32_t list) {
 }
 
 void FillRows(PPCContext& ctx, uint32_t list, int select) {
-    kernel::CallGuest(ctx, kListClear, {list});
+    kernel::CallGuest(ctx, SYM_UIList_Clear, {list});
     for (int i = 0; i < NativeCount(); i++) {
-        kernel::CallGuest(ctx, kListAddRow, {list, Text(""), 0});
+        kernel::CallGuest(ctx, SYM_UIList_AddRow, {list, Text(""), 0});
         SetCell(ctx, i, 0, NativeRow(i).label);
         uint32_t item = Read32(list + kListItems) + uint32_t(i) * kListItemBytes;
         bool locked = achievement_rows::Locked(NativeRow(i));
@@ -504,8 +469,8 @@ void FillRows(PPCContext& ctx, uint32_t list, int select) {
     }
     SetIcons(ctx, list);
     RefreshValues(ctx);
-    kernel::CallGuest(ctx, kListRefresh, {list});
-    kernel::CallGuest(ctx, kListSelect, {list, uint32_t(select), 1, 1});
+    kernel::CallGuest(ctx, SYM_UIList_Refresh, {list});
+    kernel::CallGuest(ctx, SYM_UIList_Select, {list, uint32_t(select), 1, 1});
 }
 
 // after the stock open: our rows replace the stock options
@@ -514,7 +479,8 @@ void Customise(PPCContext& ctx, uint32_t obj, int mode) {
     uint32_t widget = FindWidget(page, kCrcControllerOptions);
     uint32_t list = Read32(widget + kWidgetElement);
     if (mode == kAchievementsPage) achievement_rows::Refresh();
-    if (Read32(page + kPageNameCrc) != kCrcController || !widget || Read32(list) != kVtList || PageRows(mode).empty()) {
+    bool expected = Read32(page + kPageNameCrc) == kCrcController && widget && Read32(list) == SYM_UIList_vtable;
+    if (!expected || PageRows(mode).empty()) {
         LOGE("options menu: controller page %08X not as expected, stock page kept", page);
         return;
     }
@@ -558,7 +524,7 @@ void DefaultsConfirmed(PPCContext& ctx, uint8_t*) {
         rows::Defaults(g_native.mode);
         RefreshValues(ctx);
     }
-    kernel::CallGuest(ctx, kSoundPlay, {Read32(kSoundSystem), kSoundChange});
+    kernel::CallGuest(ctx, SYM_SoundSystem_Play, {Read32(SYM_SoundSystem_pointer), kSoundChange});
 }
 
 void Ignored(PPCContext&, uint8_t*) {}
@@ -570,10 +536,10 @@ bool EnsureBlock() {
     if (!block) return false;
     uint32_t values = block + kBlockValuesListener;
     uint32_t sound = block + kBlockSoundListener;
-    Write32(values, kVtValuesListener);
-    Write32(values + kListenerBase, kVtValuesListenerBase);
-    Write32(sound, kVtSoundListener);
-    Write32(sound + kListenerBase, kVtSoundListenerBase);
+    Write32(values, SYM_ValuesListener_vtable);
+    Write32(values + kListenerBase, SYM_ValuesListenerBase_vtable);
+    Write32(sound, SYM_SoundListener_vtable);
+    Write32(sound + kListenerBase, SYM_SoundListenerBase_vtable);
     for (uint32_t listener : {values, sound}) {
         Write32(listener + kListenerRefs, 1);
         Write8(listener + kListenerEnabled, 1);
@@ -596,49 +562,49 @@ void AskDefaults(PPCContext& ctx) {
     uint32_t text = View(g_native.mode == kAchievementsPage ? kResetQuestion : kDefaultsQuestion);
     uint32_t empty = g_popup.block + kBlockEmpty;
     uint32_t listener = g_popup.block + kBlockConfirm;
-    kernel::CallGuest(ctx, kMessageBox,
+    kernel::CallGuest(ctx, SYM_MessageBox_Show,
                       {boxes, 0, empty, text, kOkCancel, 0, listener, empty, empty, 0, 0, 0, 0xFFFFFFFFu});
 }
 
-uint32_t DrawStack() { return Read32(Read32(kUiManager) + kUiDraw); }
+uint32_t DrawStack() { return Read32(Read32(SYM_Game_pointer) + kUiDraw); }
 uint32_t InputStack() { return Read32(DrawStack() + kDrawInput) + kInputStack; }
 
 void AddListener(PPCContext& ctx, uint32_t page, uint32_t listener) {
     uint32_t argument = g_popup.block + kBlockArgument;
     Write32(listener + kListenerRefs, Read32(listener + kListenerRefs) + 1);
     Write32(argument, listener);
-    kernel::CallGuest(ctx, kAddListener, {page, argument});
+    kernel::CallGuest(ctx, SYM_UIPage_AddListener, {page, argument});
 }
 
 void SetPopupHelpBar(PPCContext& ctx, uint32_t page) {
     uint32_t buttons = g_popup.block + kBlockButtons;
     uint32_t text = g_popup.block + kBlockText;
-    kernel::CallGuest(ctx, kStringInit, {buttons, kPopupButtons});
-    kernel::CallGuest(ctx, kStringInit, {text, kPopupText});
-    kernel::CallGuest(ctx, kSetHelpBar, {Read32(kHelpBar), page, buttons, text, 1});
-    kernel::CallGuest(ctx, kStringFree, {buttons, 1, 0});
-    kernel::CallGuest(ctx, kStringFree, {text, 1, 0});
+    kernel::CallGuest(ctx, SYM_String_Init, {buttons, SYM_Popup_Buttons});
+    kernel::CallGuest(ctx, SYM_String_Init, {text, SYM_Popup_Text});
+    kernel::CallGuest(ctx, SYM_HelpBar_Set, {Read32(SYM_HelpBar_pointer), page, buttons, text, 1});
+    kernel::CallGuest(ctx, SYM_String_Free, {buttons, 1, 0});
+    kernel::CallGuest(ctx, SYM_String_Free, {text, 1, 0});
 }
 
 // as 0x821BAFF8 fills it for an option
 void FillValues(PPCContext& ctx, uint32_t values, const std::vector<std::string>& choices) {
-    kernel::CallGuest(ctx, kListAddColumn, {values, kCrcName});
-    kernel::CallGuest(ctx, kListAddColumn, {values, kCrcRating});
-    kernel::CallGuest(ctx, kListClear, {values});
+    kernel::CallGuest(ctx, SYM_UIList_AddColumn, {values, kCrcName});
+    kernel::CallGuest(ctx, SYM_UIList_AddColumn, {values, kCrcRating});
+    kernel::CallGuest(ctx, SYM_UIList_Clear, {values});
     for (const std::string& choice : choices) {
-        uint32_t row = uint32_t(kernel::CallGuest(ctx, kListAddRow, {values, Text(""), 0}));
-        if (uint32_t view = View(choice.c_str())) kernel::CallGuest(ctx, kListSetCell, {values, row, 0, view});
+        uint32_t row = uint32_t(kernel::CallGuest(ctx, SYM_UIList_AddRow, {values, Text(""), 0}));
+        if (uint32_t view = View(choice.c_str())) kernel::CallGuest(ctx, SYM_UIList_SetCell, {values, row, 0, view});
     }
     uint32_t icon = g_popup.block + kBlockIcon;
     Write32(icon, kIconHidden);
     for (uint32_t row = 0; row < uint32_t(choices.size()); row++) {
-        kernel::CallGuest(ctx, kHelperRowIcon, {g_popup.helper, row, icon});
+        kernel::CallGuest(ctx, SYM_OptionsHelper_RowIcon, {g_popup.helper, row, icon});
     }
     // scrolled to, the long lists (sensitivity, field of view) start far down
-    kernel::CallGuest(ctx, kListSelect, {values, uint32_t(g_popup.current), 0, 1});
+    kernel::CallGuest(ctx, SYM_UIList_Select, {values, uint32_t(g_popup.current), 0, 1});
     uint32_t description = Read32(g_popup.helper + kHelperDescription);
     const char* help = NativeRow(g_popup.row).help;
-    if (description && help) kernel::CallGuest(ctx, kTextSetString, {description, Text(help)});
+    if (description && help) kernel::CallGuest(ctx, SYM_UIText_SetText, {description, Text(help)});
 }
 
 // as 0x821BB360 opens it
@@ -646,7 +612,7 @@ void OpenPopup(PPCContext& ctx, int row, const std::vector<std::string>& choices
     uint32_t helper = g_native.obj + kHelper;
     uint32_t page = Read32(helper + kHelperPopup);
     uint32_t values = Read32(helper + kHelperValues);
-    if (!page || Read32(values) != kVtList || !EnsureBlock()) {
+    if (!page || Read32(values) != SYM_UIList_vtable || !EnsureBlock()) {
         LOGE("options menu: value list %08X not as expected", page);
         return;
     }
@@ -658,12 +624,12 @@ void OpenPopup(PPCContext& ctx, int row, const std::vector<std::string>& choices
     AddListener(ctx, page, g_popup.block + kBlockSoundListener);
     SetPopupHelpBar(ctx, page);
     FillValues(ctx, values, choices);
-    kernel::CallGuest(ctx, kPushDraw, {DrawStack(), page, 1, 0, 0, 0});
+    kernel::CallGuest(ctx, SYM_UIDrawStack_Push, {DrawStack(), page, 1, 0, 0, 0});
     uint32_t stack = InputStack();
-    if (uint32_t(kernel::CallGuest(ctx, kInputTop, {stack, 0, 0})) != page) {
-        kernel::CallGuest(ctx, kPushInput, {stack, page, 1, 0});
+    if (uint32_t(kernel::CallGuest(ctx, SYM_UIInputStack_Top, {stack, 0, 0})) != page) {
+        kernel::CallGuest(ctx, SYM_UIInputStack_Push, {stack, page, 1, 0});
     }
-    kernel::CallGuest(ctx, kDefaultFocus, {page});
+    kernel::CallGuest(ctx, SYM_UIPage_DefaultFocus, {page});
     SetCaption(ctx, Read32(helper + kHelperTitle), "");
 }
 
@@ -714,7 +680,7 @@ void NativeKey(PPCContext& ctx, uint32_t code) {
     }
     if (r.kind != rows::Kind::Value || !StepValue(ctx, row, step)) return;
     RefreshValues(ctx);
-    kernel::CallGuest(ctx, kSoundPlay, {Read32(kSoundSystem), kSoundChange});
+    kernel::CallGuest(ctx, SYM_SoundSystem_Play, {Read32(SYM_SoundSystem_pointer), kSoundChange});
 }
 
 void Leave() {
@@ -732,10 +698,10 @@ void PopupKey(PPCContext& ctx, uint32_t code) {
     int row = g_popup.row;
     int pick = ReadS16(Read32(g_popup.helper + kHelperValues) + kListSelected);
     g_popup.row = -1;
-    kernel::CallGuest(ctx, kPopDraw, {DrawStack(), 0, 0, 0, 0});
-    kernel::CallGuest(ctx, kPopInput, {InputStack(), 0, 0});
+    kernel::CallGuest(ctx, SYM_UIDrawStack_Pop, {DrawStack(), 0, 0, 0, 0});
+    kernel::CallGuest(ctx, SYM_UIInputStack_Pop, {InputStack(), 0, 0});
     if (!accept) return;
-    kernel::CallGuest(ctx, kRemoveListeners, {Read32(g_popup.helper + kHelperPopup)});
+    kernel::CallGuest(ctx, SYM_UIPage_RemoveListeners, {Read32(g_popup.helper + kHelperPopup)});
     if (pick < 0 || pick == g_popup.current || !ListOk()) return;
     rows::Choose(NativeRow(row), pick);
     RefreshValues(ctx);
@@ -747,7 +713,7 @@ void NativeUnbind(PPCContext& ctx) {
     if (g_native.mode < 0 || !ListOk() || row < 0 || NativeRow(row).kind != rows::Kind::Bind) return;
     rows::ClearBind(NativeRow(row).id);
     RefreshValues(ctx);
-    kernel::CallGuest(ctx, kSoundPlay, {Read32(kSoundSystem), kSoundChange});
+    kernel::CallGuest(ctx, SYM_SoundSystem_Play, {Read32(SYM_SoundSystem_pointer), kSoundChange});
 }
 
 // menu thread, each frame: a bind row's capture ends with a key, Escape, or the page going away
@@ -796,7 +762,6 @@ void OpenNative(PPCContext& ctx, uint8_t* base, uint32_t page, int mode, PPCFunc
 
 constexpr uint32_t kCrcNavigation = 0xDEB8BA8Bu;  // A_Navigation
 constexpr uint32_t kCrcBackText = 0xF3EC853Bu;    // B_Text, empty on P_Main
-constexpr uint32_t kVtTextElement = 0x82078CC8u;  // element type 8
 constexpr uint32_t kElementAreaShown = 0x30u;
 constexpr const char* kWatermark = "XEX Recomp V2";
 
@@ -806,8 +771,8 @@ void SetWatermark(PPCContext& ctx, uint32_t page) {
     uint32_t nav = Read32(FindWidget(Read32(header + kElementArea), kCrcNavigation) + kWidgetElement);
     if (!Read32(nav + kElementAreaShown)) return;
     uint32_t text = Read32(FindWidget(Read32(nav + kElementArea), kCrcBackText) + kWidgetElement);
-    if (Read32(text) != kVtTextElement) return;
-    if (uint32_t guest = Text(kWatermark)) kernel::CallGuest(ctx, kTextSetString, {text, guest});
+    if (Read32(text) != SYM_UITextElement_vtable) return;
+    if (uint32_t guest = Text(kWatermark)) kernel::CallGuest(ctx, SYM_UIText_SetText, {text, guest});
 }
 
 }  // namespace
@@ -841,7 +806,7 @@ namespace {
 // the draw stack's top page after a push or pop, which every page shown or backed out of goes through
 void UpdateTopPage(PPCContext& ctx, uint32_t draw) {
     uint32_t pages = Read32(draw + kDrawInput) + kDrawnPages;
-    UpdateBottomFrame(uint32_t(kernel::CallGuest(ctx, kInputTop, {pages, 0, 0})));
+    UpdateBottomFrame(uint32_t(kernel::CallGuest(ctx, SYM_UIInputStack_Top, {pages, 0, 0})));
 }
 
 }  // namespace
