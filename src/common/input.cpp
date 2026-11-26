@@ -513,11 +513,13 @@ void GameRumble(int port, uint16_t& left, uint16_t& right) {
     right = uint16_t(std::min<uint32_t>(right * strength / 100, 0xFFFF));
 }
 
-// the cursor the client area shows: none while the mouse looks; false while the panel keeps its own
+// the cursor the client area shows: none while the mouse looks or a pad is in use; false while the panel keeps its own
 static bool WantedCursor(bool locked, HCURSOR& cursor) {
     cursor = nullptr;
     if (locked) return true;
     if (MenuOpen()) return false;
+    // the editor's panels want the mouse whatever the pad did
+    if (!g_editor_ui && K::PadActive()) return true;
     cursor = static_cast<HCURSOR>(MenuCursor());
     // the window class has none, so once play hid it nothing else brings the arrow back
     if (!cursor) cursor = LoadCursor(nullptr, IDC_ARROW);
@@ -535,6 +537,7 @@ static bool PointerInClient(HWND hwnd) {
 bool CursorMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
     static bool locked = false;
     static bool polling = false;
+    static bool pad = false;
     HWND window = static_cast<HWND>(hwnd);
     if (!polling) polling = SetTimer(window, kCursorTimer, kCursorPollMs, nullptr) != 0;
     bool tick = msg == WM_TIMER && wp == kCursorTimer;
@@ -555,7 +558,10 @@ bool CursorMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t
     }
     HCURSOR cursor;
     if (tick) {
-        if (flipped && PointerInClient(window) && WantedCursor(locked, cursor)) SetCursor(cursor);
+        bool active = K::PadActive();
+        bool swapped = active != pad;
+        pad = active;
+        if ((flipped || swapped) && PointerInClient(window) && WantedCursor(locked, cursor)) SetCursor(cursor);
         *result = 0;
         return true;
     }

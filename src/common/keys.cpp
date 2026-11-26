@@ -373,6 +373,8 @@ bool PadRecent() {
 
 bool KbmActive() { return g_kbm_ms > g_pad_ms; }
 
+bool PadActive() { return g_pad_ms > g_kbm_ms; }
+
 void NoteKbm() {
     if (!PadRecent()) g_kbm_ms = NowMs();
 }

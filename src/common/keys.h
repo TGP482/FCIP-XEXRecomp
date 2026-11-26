@@ -57,6 +57,8 @@ int Captured();
 // the pad was off neutral in the last 150 ms; keyboard or mouse was used after the pad
 bool PadRecent();
 bool KbmActive();
+// the pad was used after keyboard and mouse
+bool PadActive();
 void NoteKbm();
 
 // once per pad poll on port 0: tracks the keys against the pad
