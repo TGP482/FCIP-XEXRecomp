@@ -89,6 +89,8 @@ CPlayer_SelectWeaponSlot = 0x82267C48
 CPlayer_UpdateLookBones = 0x8225CA98
 CPlayer_UpdateView = 0x8225D0C8
 CPlayer_Zoom = 0x82266208
+CScriptObjectGame_HideHud = 0x821068C0
+CScriptObjectGame_ShowHud = 0x82106980
 
 # CryUI, menu input and text
 Localise_ByCrc = 0x82132D98

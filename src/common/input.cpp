@@ -107,6 +107,7 @@ std::atomic<bool> g_pad_aim{false};  // the pad's own right stick click
 std::atomic<int64_t> g_start_until{0};  // steady clock ns START stays held to
 std::atomic<uint64_t> g_menu_ms{0};  // the last frame the menus took input
 std::atomic<bool> g_title{false};
+std::atomic<bool> g_scene_hid_hud{false};  // a mission script's HideHud, until its ShowHud
 
 uint64_t NowMs() {
     auto since = std::chrono::steady_clock::now().time_since_epoch();
@@ -281,7 +282,10 @@ void RestoreAutoAim(const AutoAimOverride& over) {
     if (over.player) W8(over.player + kPlayerAutoAim, over.saved);
 }
 
-// cl_display_hud flips on each press of the toggle key
+// the game takes no look or aim input in cutscenes, so nothing written straight into the command may either
+bool InCutscene(uint32_t player) { return GuestOk(player) && R8(player + kPlayerCutscene); }
+
+// cl_display_hud flips on each press of the toggle key, but not in cutscenes or while a scene hid the HUD
 void ToggleHud() {
     static bool was_held = false;
     bool held = Held(K::kToggleHud, true);
@@ -291,7 +295,11 @@ void ToggleHud() {
     uint32_t game = R32(SYM_Game_pointer);
     uint32_t cvar = game ? R32(game + SYM_Game_DisplayHud) : 0;
     uint32_t slot = cvar ? R32(cvar + kCVarValuePtr) : 0;
-    if (slot) W32(slot, R32(slot) ? 0 : 1);
+    if (!slot) return;
+    uint32_t shown = R32(slot);
+    if (shown) g_scene_hid_hud = false;
+    if (g_scene_hid_hud || InCutscene(g_local_player)) return;
+    W32(slot, shown ? 0 : 1);
 }
 
 // looking with the mouse
@@ -302,9 +310,6 @@ bool Zoomed(uint32_t player) {
     uint32_t zoom = GuestOk(player) ? R32(player + kPlayerZoom) : 0;
     return GuestOk(zoom) && R8(zoom + kZoomOn);
 }
-
-// the game takes no look or aim input in cutscenes, so nothing written straight into the command may either
-bool InCutscene(uint32_t player) { return GuestOk(player) && R8(player + kPlayerCutscene); }
 
 void MouseLook(uint32_t cmd) {
     uint64_t now = NowMs();
@@ -585,6 +590,8 @@ PPC_EXTERN_FUNC(GUEST_ORIG(CAimHelper_Update));
 PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_UpdateLookBones));
 PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_UpdateView));
 PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_ProcessView));
+PPC_EXTERN_FUNC(GUEST_ORIG(CScriptObjectGame_HideHud));
+PPC_EXTERN_FUNC(GUEST_ORIG(CScriptObjectGame_ShowHud));
 
 // (this, cmd): clamps the move vector and applies the walk key
 PPC_FUNC(GUEST(CPlayer_ProcessMovements)) {
@@ -774,4 +781,15 @@ PPC_FUNC(GUEST(CPlayer_ProcessView)) {
     g_slot_players[client.slot] = player;
     if (KeysClient(client)) g_local_player = player;
     GUEST_ORIG(CPlayer_ProcessView)(ctx, base);
+}
+
+// scenes hide the HUD with HideHud and bring it back with ShowHud, so the toggle must not undo them
+PPC_FUNC(GUEST(CScriptObjectGame_HideHud)) {
+    g_scene_hid_hud = true;
+    GUEST_ORIG(CScriptObjectGame_HideHud)(ctx, base);
+}
+
+PPC_FUNC(GUEST(CScriptObjectGame_ShowHud)) {
+    g_scene_hid_hud = false;
+    GUEST_ORIG(CScriptObjectGame_ShowHud)(ctx, base);
 }

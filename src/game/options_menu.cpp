@@ -798,7 +798,7 @@ constexpr uint32_t kCrcNavigation = 0xDEB8BA8Bu;  // A_Navigation
 constexpr uint32_t kCrcBackText = 0xF3EC853Bu;    // B_Text, empty on P_Main
 constexpr uint32_t kVtTextElement = 0x82078CC8u;  // element type 8
 constexpr uint32_t kElementAreaShown = 0x30u;
-constexpr const char* kWatermark = "XEX Recomp V1";
+constexpr const char* kWatermark = "XEX Recomp V2";
 
 void SetWatermark(PPCContext& ctx, uint32_t page) {
     if (Read32(page + kPageNameCrc) != kCrcMainPage) return;
