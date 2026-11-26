@@ -2566,6 +2566,7 @@ private:
     std::unordered_map<uint64_t, uint32_t> sampler_sets_;
     uint32_t samplers_used_ = 0;
     std::ofstream pipeline_cache_;  // each pipeline appended as it is made
+    std::mutex pipeline_cache_lock_;
     // heavy pipelines made on the build threads while their draws go without what they add
     struct BuiltPipeline {
         PipelineKey key;
@@ -2941,6 +2942,7 @@ void D3D12Backend::StorePipeline(const PipelineKey& k, D3D12_SHADER_BYTECODE vs,
                                  ID3D12PipelineState* pso) {
     ComPtr<ID3DBlob> blob;
     if (!pipeline_cache_.is_open() || FAILED(pso->GetCachedBlob(&blob))) return;
+    std::lock_guard lock(pipeline_cache_lock_);
     PipelineRecord r{k, uint32_t(vs.BytecodeLength), uint32_t(ps.BytecodeLength), uint32_t(blob->GetBufferSize())};
     pipeline_cache_.write(reinterpret_cast<const char*>(&r), sizeof(r));
     pipeline_cache_.write(static_cast<const char*>(vs.pShaderBytecode), std::streamsize(vs.BytecodeLength));
@@ -3449,7 +3451,7 @@ ID3D12PipelineState* D3D12Backend::FindPipeline(const PipelineKey& k, const Vari
     if (ps) ps_code = {ps->dxil.data(), ps->dxil.size()};
     g_perf.pipelines++;
     ComPtr<ID3D12PipelineState> pso = MakePipeline(k, vs_code, ps_code);
-    if (pso) StorePipeline(k, vs_code, ps_code, pso.Get());
+    if (pso) Post([this, k, vs_code, ps_code, pso] { StorePipeline(k, vs_code, ps_code, pso.Get()); });
     pipelines_[key] = pso;
     return pso.Get();
 }
@@ -3484,6 +3486,7 @@ bool D3D12Backend::PipelineReady(const PipelineKey& k, const Variant& vs, const 
     if (ps) b.ps = {ps->dxil.data(), ps->dxil.size()};
     Post([this, b]() mutable {
         b.pso = MakePipeline(b.key, b.vs, b.ps);
+        if (b.pso) StorePipeline(b.key, b.vs, b.ps, b.pso.Get());
         std::lock_guard lock(built_lock_);
         built_.push_back(std::move(b));
         built_ready_.store(true, std::memory_order_release);
@@ -3491,7 +3494,7 @@ bool D3D12Backend::PipelineReady(const PipelineKey& k, const Variant& vs, const 
     return false;
 }
 
-// what the build threads made, kept and written to the cache on the render thread
+// what the build threads made and wrote to the cache, kept on the render thread
 void D3D12Backend::TakeBuilt() {
     if (!built_ready_.load(std::memory_order_acquire)) return;
     std::lock_guard lock(built_lock_);
@@ -3499,7 +3502,6 @@ void D3D12Backend::TakeBuilt() {
     for (BuiltPipeline& b : built_) {
         uint64_t key = Hash64(&b.key, sizeof(b.key));
         building_.erase(key);
-        if (b.pso) StorePipeline(b.key, b.vs, b.ps, b.pso.Get());
         pipelines_[key] = std::move(b.pso);
     }
     built_.clear();
