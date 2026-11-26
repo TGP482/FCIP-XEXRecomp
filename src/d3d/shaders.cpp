@@ -1032,6 +1032,13 @@ void Translator::EmitTextureFetch(const Fetch& f) {
         } else if (soft) {
             EmitSunSoft(t, op == kGetWeights, oy, sun);
         } else {
+            // a shadow map tap on its texel's centre, found as getWeights finds it, so the GPU's coarser subtexel
+            // rounding never picks the neighbour near an edge
+            bool shadow_map = sampler >= fcip::kShadowFirstFetch && sampler <= fcip::kSunFetch;
+            if (op == kTextureFetch && Pixel() && dim == kDim2D && !f.Unnormalized() && shadow_map) {
+                Line(F("float2 tap = float2(%d, %d) * 0.5;", ox, oy));
+                Line("uv = (floor(tc.xy * size + tap) + 0.5) / size;");
+            }
             Line("float4 ft = " + fetch + ";");
             if (shadow == fcip::kShadowCascades) EmitSunMaps(slot, t, op == kGetWeights);
             if (op == kTextureFetch && int(t) == CausticsScreen()) Line("ft.rgb = Caustics(ft.rgb);");
@@ -1065,9 +1072,10 @@ void Translator::EmitTextureFetch(const Fetch& f) {
 void Translator::EmitSunMaps(uint32_t slot, uint32_t t, bool weights) {
     Open(F("if (asuint(g_ext.y) >> %u & 1)", fcip::kSunCountBits + slot));
     OpenSunMap("3 / ns");
-    Open("if (nw > 0)");
-    if (weights) Line("ft = lerp(ft, float4(frac(un * ns - 0.5), 0, 0), nw);");
-    else Line(F("ft = lerp(ft, t_sun[sk].SampleLevel(s%u, un + (uv - tc.xy) * size / ns, 0), nw);", t));
+    // one map per pixel: the game's PCF weighs its taps, so taps and weights blended from two texel grids make seams
+    Open("if (nw >= 0.5)");
+    if (weights) Line("ft = float4(frac(un * ns - 0.5), 0, 0);");
+    else Line(F("ft = t_sun[sk].SampleLevel(s%u, (floor(un * ns + tap) + 0.5) / ns, 0);", t));
     Close();
     Close();
     Close();
@@ -1085,7 +1093,7 @@ void Translator::OpenSunMap(const std::string& margin) {
     Line("float2 sides = float2(floor(g_ext.z), frac(g_ext.z) * 2048) * 8;");
     // ShadowMatrix maps the centre to 0.5 + 0.5 / side, the guest side, not the host's
     Line("float2 un = (tc.xy - 0.5 - 0.5 / sides.x) * (g_ext.x / exp2(sk)) + 0.5 + 0.5 / sides.y;");
-    // the outer fifth hands over to the next coarser map: depths and weights blended, so shadow edges morph across it
+    // the outer fifth hands over to the next coarser map: soft results blend across it, sharp taps switch at its middle
     Line("float2 ne = abs(un - 0.5) * 2 + " + margin + ";");
     Line("float nw = 1 - saturate((max(ne.x, ne.y) - 0.8) / 0.2);");
 }
