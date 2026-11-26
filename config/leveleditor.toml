@@ -400,3 +400,17 @@ on_true = 0x8215FC4C
 at = 0x821B0130
 call = "LocalPlayerMissing"
 on_true = 0x821B0138
+
+# Title Update 1, the level editor's part
+[[update]]
+sha1 = "9ce465a90221091a3bb3a867a7670d5567a6e362"
+
+[update.addresses]
+0x8215FC28 = 0x8215F578  # a player's action 7, its next instruction's field offset changed
+
+# the game object lost 8 bytes before these
+[update.data]
+Game_Cheats = 0x408
+Game_EditorGame = 0x3CC
+Game_Menus = 0x33C
+Game_Weapons = 0x330

@@ -391,3 +391,12 @@ regs = ["r6", "r22", "r29"]
 at = 0x8235E354
 call = "ImageQuad"
 regs = ["r1"]
+
+# Title Update 1 (TU_1AL61US_0000004000000.0000000000081): the game code is built patched by it when it is in assets
+[[update]]
+sha1 = "9ce465a90221091a3bb3a867a7670d5567a6e362"
+
+# the game object lost 8 bytes before its loading screen
+[update.data]
+Game_LoadingScreen = 0x30C
+Game_NoMenu = 0x375

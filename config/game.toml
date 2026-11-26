@@ -535,3 +535,18 @@ at = 0x82228290
 call = "JoinMissingUserMap"
 on_true = 0x82228460
 regs = ["r10", "r27"]
+
+# Title Update 1 (TU_1AL61US_0000004000000.0000000000081): the game code is built patched by it when it is in assets
+[[update]]
+sha1 = "9ce465a90221091a3bb3a867a7670d5567a6e362"
+
+[update.addresses]
+0x82228290 = 0x82228CB8  # JoinMissingUserMap's lookup, its next instruction's stack offset changed
+
+# the game object lost 8 bytes before its loading screen, the HUD gained 4 before its selector
+[update.data]
+Game_LoadingScreen = 0x308
+Game_NoMenu = 0x371
+Game_Ui = 0x338
+Hud_HelpBox = 0x380
+Hud_Selector = 0x330
