@@ -43,6 +43,7 @@ struct Settings {
     bool hold_sprint = true;       // feral run while its key is held, not a toggle
     bool pad_invert_x = false;
     bool pad_hold_aim = false;     // aim while the right stick is held in, the game toggles on each click
+    bool aim_acceleration = true;  // the stick's turn speeds up while held at full tilt, as the game
     uint32_t vibration_strength = 100;  // percent of the game's rumble, 10 to 200
     bool skip_intros = false;      // the logo, the branding plate and the intro movie
     gyro::Settings gyro;           // the controller's gyro turns the view, beside the right stick

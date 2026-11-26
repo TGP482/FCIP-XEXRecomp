@@ -82,6 +82,10 @@ constexpr uint32_t kInvLast = 0x24;
 constexpr uint32_t kInvEntry = 0x10;
 constexpr uint32_t kEntrySlot = 0x08;
 
+// CAimHelper: when the stick first reached full tilt, the turn speed ramping from it; 0 restarts at the base speed
+constexpr uint32_t kHelperYawSince = 0xBC;
+constexpr uint32_t kHelperPitchSince = 0xC0;
+
 // cl_aimingHelper and cl_display_hud: ICVars the game object holds, their value through an int pointer at +0x10
 constexpr uint32_t kCVarValuePtr = 0x10;
 
@@ -587,6 +591,7 @@ PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_FireWeapon));
 PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_Feral));
 PPC_EXTERN_FUNC(GUEST_ORIG(CAimHelper_AutoAim));
 PPC_EXTERN_FUNC(GUEST_ORIG(CAimHelper_Update));
+PPC_EXTERN_FUNC(GUEST_ORIG(CAimHelper_TurnSpeeds));
 PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_UpdateLookBones));
 PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_UpdateView));
 PPC_EXTERN_FUNC(GUEST_ORIG(CPlayer_ProcessView));
@@ -726,6 +731,16 @@ PPC_FUNC(GUEST(CPlayer_FireWeapon)) {
     AutoAimOverride over = player == g_local_player ? SuppressAutoAim(player) : AutoAimOverride{};
     GUEST_ORIG(CPlayer_FireWeapon)(ctx, base);
     RestoreAutoAim(over);
+}
+
+// (helper): the stick's turn speeds; with aim acceleration off the ramp never starts
+PPC_FUNC(GUEST(CAimHelper_TurnSpeeds)) {
+    uint32_t helper = uint32_t(ctx.r[3]);
+    if (!fcip::Get().aim_acceleration) {
+        W32(helper + kHelperYawSince, 0);
+        W32(helper + kHelperPitchSince, 0);
+    }
+    GUEST_ORIG(CAimHelper_TurnSpeeds)(ctx, base);
 }
 
 // (helper, cmd): mouse look and the gyro add this frame's turn; the aiming helper is off for the call while the

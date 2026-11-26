@@ -145,7 +145,7 @@ enum RowId {
     kAudioOutput, kGlobalIllumination, kVolumetricFog, kOceanReflection, kVolumetricClouds,
     kCaustics, kPadInvertX,
     kPadHoldAim, kGyroRecenter, kJoinIp, kPlayer1, kPlayer2, kPlayer3, kPlayer4, kMicrophone, kPushToTalk,
-    kPauseOnFocusLoss, kLanguage, kVibration
+    kPauseOnFocusLoss, kLanguage, kVibration, kAimAcceleration
 };
 
 constexpr Row kSettingsRows[] = {
@@ -301,6 +301,7 @@ constexpr Row kControllerRows[] = {
     {Kind::Heading, -1, "GENERAL", "Controller inversion, hold or toggle and vibration"},
     {Kind::Value, kPadInvertX, "INVERT X-AXIS", "Inverts the horizontal right stick and gyro look"},
     {Kind::Value, kPadHoldAim, "HOLD TO AIM", "Aim only while the right stick is held in instead of toggling"},
+    {Kind::Value, kAimAcceleration, "AIM ACCELERATION", "Speeds up the turn while the right stick is held at full tilt"},
     {Kind::Value, kVibration, "VIBRATION STRENGTH", "Scales the controller's vibration from 10% to 200%"},
     {Kind::Heading, -1, "GYRO", "Gyro aiming for controllers with motion sensors"},
     {Kind::Value, kGyroAiming, "GYRO AIMING", "Turns the view with the controller's gyro, beside the right stick"},
@@ -408,6 +409,7 @@ bool* ToggleFlag(int id) {
         case kHoldSprint: return &g.hold_sprint;
         case kPadInvertX: return &g.pad_invert_x;
         case kPadHoldAim: return &g.pad_hold_aim;
+        case kAimAcceleration: return &g.aim_acceleration;
         case kSkipIntros: return &g.skip_intros;
         case kFpsCounter: return &g.fps_counter;
         case kHdrOutput: return &g.hdr_output;
@@ -509,8 +511,9 @@ void StepInputRow(int id, int step, char (&text)[64]) {
     Settings& g = Get();
     if (bool* on = ToggleFlag(id)) {
         Flip(*on, step);
-        // only the blur is the game's own, the other toggles have no base game value
-        std::snprintf(text, sizeof(text), "%s", id == kBlur ? OnOff(*on, true) : OnOff(*on));
+        // only the blur and aim acceleration are the game's own, the other toggles have no base game value
+        bool stock = id == kBlur || id == kAimAcceleration;
+        std::snprintf(text, sizeof(text), "%s", stock ? OnOff(*on, true) : OnOff(*on));
     } else if (float* sensitivity = SensitivityField(id)) {
         // 0.1 to 20.0 in steps of 0.1, shown as five times the stored value so the game's own reads 5.0
         int shown = std::clamp(int(std::lround(*sensitivity * 50.0f)), 1, 200);
@@ -790,6 +793,7 @@ void CopyMouseSettings(Settings& to, const Settings& from) {
 void CopyPadSettings(Settings& to, const Settings& from) {
     to.pad_invert_x = from.pad_invert_x;
     to.pad_hold_aim = from.pad_hold_aim;
+    to.aim_acceleration = from.aim_acceleration;
     to.vibration_strength = from.vibration_strength;
     to.gyro = from.gyro;
 }

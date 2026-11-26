@@ -78,6 +78,7 @@ UIWidget_Clone = 0x82496AE8
 
 # CryGame, the player and input
 CAimHelper_AutoAim = 0x8228B3B8
+CAimHelper_TurnSpeeds = 0x8228AB20
 CAimHelper_Update = 0x8228BC78
 CPlayer_Feral = 0x82268100
 CPlayer_Fire = 0x822671A0
