@@ -1562,7 +1562,8 @@ std::string TranslateShader(ShaderStage stage, const uint32_t* code, size_t dwor
 
 // caustics grow over the first half unit under the surface and fade as the water deepens
 const char* const fcip::kCausticsFadeHlsl = R"(
-float CausticsFade(float depth) { return smoothstep(0, 0.5, depth) * exp(-depth / 5); }
+// clamped: sky behind far water reads 0, its exp overflows and 0 * inf is NaN
+float CausticsFade(float depth) { return smoothstep(0, 0.5, depth) * exp(-max(depth, 0) / 5); }
 )";
 
 // the camera's and the shadow maps' ray traced casters: records of their clip position and the interpolator an alpha
