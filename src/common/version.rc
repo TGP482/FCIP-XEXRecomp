@@ -1,5 +1,7 @@
 #include "build_info.h"
 
+PIPELINE_LIST RCDATA "../d3d/pipeline_list.bin"
+
 1 VERSIONINFO
 FILEOS 0x40004
 FILETYPE 0x1

@@ -76,6 +76,8 @@ struct Variant {
     const wchar_t* profile = nullptr;
     std::vector<uint8_t> dxil;
     uint64_t key = 0;  // of the DXIL, so a cached pipeline of other DXIL never matches
+    uint64_t shader = 0;  // Shader::hash
+    ShaderOptions opt;
     std::atomic<bool> building{false};  // compiling on a build thread; dxil and key are read once it is done
 };
 
@@ -1997,6 +1999,7 @@ public:
     ~D3D12Backend() override;
     bool Init(uint32_t width, uint32_t height) override;
     Shader* CreateShader(ShaderStage stage, const uint32_t* code, size_t dwords) override;
+    bool MakeListed(const PipelineKey& k, D3D12_SHADER_BYTECODE vs, D3D12_SHADER_BYTECODE ps);
     const ShaderInfo& Info(const Shader* s) const override { return s->info; }
     void Draw(const State& s, const DrawArgs& a) override;
     void Clear(const State& s, uint32_t flags, const float color[4], float z, uint32_t stencil,
@@ -2566,6 +2569,7 @@ private:
     std::unordered_map<uint64_t, uint32_t> sampler_sets_;
     uint32_t samplers_used_ = 0;
     std::ofstream pipeline_cache_;  // each pipeline appended as it is made
+    std::unordered_set<uint64_t> cached_keys_;  // made from the cache at Init, read by the archive threads
     std::mutex pipeline_cache_lock_;
     // heavy pipelines made on the build threads while their draws go without what they add
     struct BuiltPipeline {
@@ -2650,6 +2654,8 @@ D3D12Backend::~D3D12Backend() {
     if (event_) CloseHandle(event_);
 }
 
+D3D12Backend* g_d3d12 = nullptr;
+
 bool D3D12Backend::Init(uint32_t width, uint32_t height) {
     guest_w_ = width;
     guest_h_ = height;
@@ -2658,6 +2664,7 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
     if (!CreateRootSignature()) return false;
     if (dev5_) CreateDividePipeline();
     CreateFrames();
+    g_d3d12 = this;
     LoadPipelineCache();
     ImGui_ImplDX12_Init(dev_.Get(), kFrames, kSwapFormat, ui_heap_.Get(),
                         ui_heap_->GetCPUDescriptorHandleForHeapStart(), ui_heap_->GetGPUDescriptorHandleForHeapStart());
@@ -2928,7 +2935,9 @@ void D3D12Backend::LoadPipelineCache() {
     size_t count = 0;
     for (size_t i = 0; i < cached.size(); i++) {
         if (!made[i]) continue;
-        pipelines_[Hash64(&cached[i].key, sizeof(PipelineKey))] = made[i];
+        uint64_t key = Hash64(&cached[i].key, sizeof(PipelineKey));
+        pipelines_[key] = made[i];
+        cached_keys_.insert(key);
         if (rewrite) StorePipeline(cached[i].key, cached[i].vs, cached[i].ps, made[i].Get());
         count++;
     }
@@ -3299,6 +3308,8 @@ Variant* D3D12Backend::FindVariant(Shader* s, const ShaderOptions& opt) {
     auto& v = s->variants[key];
     if (v) return v.get();
     v = std::make_unique<Variant>();
+    v->shader = s->hash;
+    v->opt = opt;
     v->hlsl = VariantHlsl(s->stage, s->code.data(), s->code.size(), opt, v->info, v->profile);
     return v.get();
 }
@@ -3433,6 +3444,110 @@ void D3D12Backend::FillPipelineDesc(const PipelineKey& k, D3D12_GRAPHICS_PIPELIN
     if (k.stream_out >= kStreamCaster) d.StreamOutput = CasterOutput(k.stream_out);
 }
 
+// a pipeline as a draw asked for it, made again from shaders.dat: its shaders by code hash, and their options
+struct ListedPipeline {
+    uint64_t vs_shader = 0;
+    uint64_t ps_shader = 0;  // 0 none
+    ShaderOptions vs_opt;
+    ShaderOptions ps_opt;
+    PipelineKey key;  // vs and ps 0, the DXIL's hashes once built
+};
+static_assert(sizeof(ListedPipeline) == 16 + 2 * sizeof(ShaderOptions) + sizeof(PipelineKey), "written as bytes");
+
+constexpr uint32_t kPipelineListHeader[2] = {0x314C5058, sizeof(ListedPipeline)};
+
+std::filesystem::path PipelineListPath() { return app::ExeDir() / "pipeline_list.bin"; }
+
+// header then whole entries, a cut off one dropped
+std::vector<ListedPipeline> ParsePipelineList(const char* bytes, size_t size) {
+    std::vector<ListedPipeline> entries;
+    constexpr size_t kHeader = sizeof(kPipelineListHeader);
+    if (!bytes || size < kHeader || std::memcmp(bytes, kPipelineListHeader, kHeader) != 0) return entries;
+    entries.resize((size - kHeader) / sizeof(ListedPipeline));
+    std::memcpy(entries.data(), bytes + kHeader, entries.size() * sizeof(ListedPipeline));
+    return entries;
+}
+
+// the recorded list every build makes at boot, version.rc's PIPELINE_LIST
+const std::vector<ListedPipeline>& PipelineList() {
+    static const std::vector<ListedPipeline> list = [] {
+        HRSRC res = FindResourceW(nullptr, L"PIPELINE_LIST", MAKEINTRESOURCEW(10));
+        HGLOBAL data = res ? LoadResource(nullptr, res) : nullptr;
+        const char* bytes = data ? static_cast<const char*>(LockResource(data)) : nullptr;
+        return ParsePipelineList(bytes, res ? SizeofResource(nullptr, res) : 0);
+    }();
+    return list;
+}
+
+// every pipeline a draw asks for, added to pipeline_list.bin beside the exe across runs, which starts from the built
+// in list; copied over src/d3d/pipeline_list.bin to ship it
+void RecordPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps) {
+    static std::unordered_set<uint64_t> seen;  // this run's keys, so a pipeline drawn again costs one lookup
+    static std::unordered_set<uint64_t> recorded;
+    static std::ofstream out;
+    if (!seen.insert(Hash64(&k, sizeof(k))).second) return;
+    if (!out.is_open()) {
+        std::vector<char> file = ReadWhole(PipelineListPath());
+        std::vector<ListedPipeline> earlier = ParsePipelineList(file.data(), file.size());
+        if (file.empty()) earlier = PipelineList();
+        out.open(PipelineListPath(), std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(kPipelineListHeader), sizeof(kPipelineListHeader));
+        for (const ListedPipeline& e : earlier) {
+            if (recorded.insert(Hash64(&e, sizeof(e))).second) out.write(reinterpret_cast<const char*>(&e), sizeof(e));
+        }
+        LOGR("pipeline list: recording into %s, %zu pipelines so far", PipelineListPath().string().c_str(),
+             recorded.size());
+    }
+    ListedPipeline e;
+    e.vs_shader = vs.shader;
+    e.vs_opt = vs.opt;
+    if (ps) {
+        e.ps_shader = ps->shader;
+        e.ps_opt = ps->opt;
+    }
+    e.key = k;
+    e.key.vs = 0;
+    e.key.ps = 0;
+    if (!recorded.insert(Hash64(&e, sizeof(e))).second) return;
+    out.write(reinterpret_cast<const char*>(&e), sizeof(e));
+    out.flush();
+}
+
+// a recorded variant compiled as a draw compiles it, so its DXIL and hash match the draw's
+std::vector<uint8_t> ListedDxil(ShaderStage stage, const std::vector<uint32_t>& code, const ShaderOptions& opt) {
+    ShaderInfo info;
+    const wchar_t* profile = nullptr;
+    std::string hlsl = VariantHlsl(stage, code.data(), code.size(), opt, info, profile);
+    std::vector<uint8_t> dxil;
+    if (!CompileHlsl(hlsl, profile, dxil)) dxil.clear();
+    return dxil;
+}
+
+struct ListedCounts {
+    std::atomic<uint32_t> made{0};
+    std::atomic<uint32_t> cached{0};
+    std::atomic<uint32_t> missing{0};  // a shader not in shaders.dat, compiled by the game at runtime
+    std::atomic<uint32_t> done{0};
+};
+ListedCounts g_listed;
+
+void BuildListed(const ListedPipeline& e, const std::vector<uint32_t>& vs_code, const std::vector<uint32_t>* ps_code) {
+    std::vector<uint8_t> vs = ListedDxil(ShaderStage::Vertex, vs_code, e.vs_opt);
+    std::vector<uint8_t> ps;
+    if (ps_code) ps = ListedDxil(ShaderStage::Pixel, *ps_code, e.ps_opt);
+    if (vs.empty() || (ps_code && ps.empty())) return;
+    PipelineKey k = e.key;
+    k.vs = Hash64(vs.data(), vs.size());
+    k.ps = ps_code ? Hash64(ps.data(), ps.size()) : 0;
+    D3D12_SHADER_BYTECODE ps_bytes{};
+    if (ps_code) ps_bytes = {ps.data(), ps.size()};
+    if (g_d3d12->MakeListed(k, {vs.data(), vs.size()}, ps_bytes)) {
+        g_listed.made++;
+    } else {
+        g_listed.cached++;
+    }
+}
+
 ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PipelineKey& k, const Variant& vs, const Variant* ps) {
     if (last_pso_ && std::memcmp(&k, &last_key_, sizeof(k)) == 0) return last_pso_;
     last_key_ = k;
@@ -3442,6 +3557,7 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PipelineKey& k, const Va
 
 // made at once even with async shaders: its shaders are built, and a draw skipped for it would vanish
 ID3D12PipelineState* D3D12Backend::FindPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps) {
+    RecordPipeline(k, vs, ps);
     TakeBuilt();
     uint64_t key = Hash64(&k, sizeof(k));
     auto it = pipelines_.find(key);
@@ -3472,6 +3588,7 @@ ComPtr<ID3D12PipelineState> D3D12Backend::MakePipeline(const PipelineKey& k, D3D
 // true when made; else it is made on a build thread, as a first pipeline of new shaders can take the driver a
 // quarter of a second
 bool D3D12Backend::PipelineReady(const PipelineKey& k, const Variant& vs, const Variant* ps) {
+    RecordPipeline(k, vs, ps);
     TakeBuilt();
     uint64_t key = Hash64(&k, sizeof(k));
     auto it = pipelines_.find(key);
@@ -3494,6 +3611,18 @@ bool D3D12Backend::PipelineReady(const PipelineKey& k, const Variant& vs, const 
     return false;
 }
 
+// a recorded pipeline made on an archive thread; false when the cache made it at Init
+bool D3D12Backend::MakeListed(const PipelineKey& k, D3D12_SHADER_BYTECODE vs, D3D12_SHADER_BYTECODE ps) {
+    if (cached_keys_.count(Hash64(&k, sizeof(k)))) return false;
+    BuiltPipeline b{k};
+    b.pso = MakePipeline(k, vs, ps);
+    if (b.pso) StorePipeline(k, vs, ps, b.pso.Get());
+    std::lock_guard lock(built_lock_);
+    built_.push_back(std::move(b));
+    built_ready_.store(true, std::memory_order_release);
+    return true;
+}
+
 // what the build threads made and wrote to the cache, kept on the render thread
 void D3D12Backend::TakeBuilt() {
     if (!built_ready_.load(std::memory_order_acquire)) return;
@@ -3502,7 +3631,8 @@ void D3D12Backend::TakeBuilt() {
     for (BuiltPipeline& b : built_) {
         uint64_t key = Hash64(&b.key, sizeof(b.key));
         building_.erase(key);
-        pipelines_[key] = std::move(b.pso);
+        // a recorded pipeline and a draw's may both be made; the first stays, a list may still draw with it
+        pipelines_.try_emplace(key, std::move(b.pso));
     }
     built_.clear();
 }
@@ -7793,6 +7923,22 @@ bool D3D12Backend::QueryResult(uint32_t q, uint32_t& samples) {
 }  // namespace
 
 std::unique_ptr<Backend> CreateBackend() { return std::make_unique<D3D12Backend>(); }
+
+size_t ListedPipelineCount() { return PipelineList().size(); }
+
+void BuildListedPipeline(size_t i) {
+    const ListedPipeline& e = PipelineList()[i];
+    const std::vector<uint32_t>* vs_code = d3d::ArchiveCode(e.vs_shader);
+    const std::vector<uint32_t>* ps_code = e.ps_shader ? d3d::ArchiveCode(e.ps_shader) : nullptr;
+    if (vs_code && (!e.ps_shader || ps_code)) {
+        BuildListed(e, *vs_code, ps_code);
+    } else {
+        g_listed.missing++;
+    }
+    if (++g_listed.done < PipelineList().size()) return;
+    LOGR("pipeline list: %u made, %u already cached, %u with shaders not in shaders.dat", g_listed.made.load(),
+         g_listed.cached.load(), g_listed.missing.load());
+}
 
 void NoteResolve(uint32_t base) {
     std::lock_guard lock(g_cpu.lock);

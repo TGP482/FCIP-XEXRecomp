@@ -15,6 +15,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "common/render_pass.h"
@@ -37,11 +38,14 @@ struct ArchiveShader {
     bool vertex = false;
     int8_t vpos = -1;  // pixel: the register given VPOS
     std::vector<uint32_t> code;
+    uint64_t hash = 0;  // as the renderer's Shader::hash
 };
 
-// the variants the settings draw with first, which loading screens wait for; then, with FSR's DLLs loaded, the
-// motion vector variants the settings leave out, so turning FSR or TAA on later finds them built
+// the variants the settings draw with first and the recorded pipelines, which loading screens wait for; then, with
+// FSR's DLLs loaded, the motion vector variants the settings leave out, so turning FSR or TAA on later finds them built
 std::vector<ArchiveShader> g_shaders;
+std::unordered_map<uint64_t, size_t> g_by_hash;
+size_t g_listed = 0;
 bool g_motion_first = false;
 size_t g_jobs = 0;
 std::atomic<size_t> g_next{0};
@@ -50,11 +54,14 @@ std::atomic<size_t> g_motion_done{0};
 std::atomic<bool> g_loading{false};
 std::chrono::steady_clock::time_point g_start;
 
-bool FirstPassDone() { return g_done >= g_shaders.size(); }
+size_t FirstPassJobs() { return g_shaders.size() + g_listed; }
+
+bool FirstPassDone() { return g_done >= FirstPassJobs(); }
 
 void LogReady(const char* what) {
     float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - g_start).count();
-    LOGR("d3d: %zu archive shaders ready%s in %.1f s", g_shaders.size(), what, seconds);
+    LOGR("d3d: %zu archive shaders and %zu recorded pipelines ready%s in %.1f s", g_shaders.size(), g_listed, what,
+         seconds);
 }
 
 uint32_t Be32(const std::vector<uint8_t>& b, size_t at) {
@@ -91,6 +98,7 @@ std::vector<ArchiveShader> ReadArchive(const std::vector<uint8_t>& file) {
         }
         a.code.resize(code_bytes / 4);
         for (size_t i = 0; i < a.code.size(); i++) a.code[i] = Be32(file, code_at + i * 4);
+        a.hash = gpu::Hash64(a.code.data(), a.code.size() * 4);
         shaders.push_back(std::move(a));
     }
     return shaders;
@@ -162,19 +170,25 @@ void CompileArchive() {
     bool hold = false;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     size_t count = g_shaders.size();
+    size_t first = FirstPassJobs();
     for (size_t j = g_next++; j < g_jobs; j = g_next++) {
         if (hold != (g_loading && !FirstPassDone())) {
             hold = !hold;
             SetThreadPriority(GetCurrentThread(), hold ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_LOWEST);
         }
-        if (j >= count) {
-            CompileArchiveShader(g_shaders[j - count], !g_motion_first);
+        if (j >= first) {
+            CompileArchiveShader(g_shaders[j - first], !g_motion_first);
             if (++g_motion_done == count) LogReady(" with motion vectors");
+            continue;
+        }
+        if (j >= count) {
+            gpu::BuildListedPipeline(j - count);
+            if (++g_done == first) LogReady("");
             continue;
         }
         CompileArchiveShader(g_shaders[j], false);
         if (g_motion_first) CompileArchiveShader(g_shaders[j], true);
-        if (++g_done == count) LogReady("");
+        if (++g_done == first) LogReady("");
     }
 }
 
@@ -184,9 +198,11 @@ void PrecompileShaderArchive() {
     std::vector<uint8_t> file;
     if (!kernel::ReadGameFile(kShaderArchive, file)) return;
     g_shaders = ReadArchive(file);
+    for (size_t i = 0; i < g_shaders.size(); i++) g_by_hash.emplace(g_shaders[i].hash, i);
+    g_listed = gpu::ListedPipelineCount();
     // motion vectors as Draw adds them: FSR, TAA or frame generation on and FSR's shaders present
     g_motion_first = fcip::Motion() && fsr::Upscaling();
-    g_jobs = g_shaders.size() * (fsr::Upscaling() && !g_motion_first ? 2 : 1);
+    g_jobs = FirstPassJobs() + (fsr::Upscaling() && !g_motion_first ? g_shaders.size() : 0);
     g_start = std::chrono::steady_clock::now();
     uint32_t threads = std::max(1u, std::thread::hardware_concurrency());
     for (uint32_t t = 0; t < threads; t++) std::thread(CompileArchive).detach();
@@ -199,7 +215,12 @@ bool ShaderArchiveBusy() {
 
 int ShaderArchivePercent() {
     if (!g_loading || FirstPassDone()) return -1;
-    return int(g_done * 100 / g_shaders.size());
+    return int(g_done * 100 / FirstPassJobs());
+}
+
+const std::vector<uint32_t>* ArchiveCode(uint64_t hash) {
+    auto it = g_by_hash.find(hash);
+    return it == g_by_hash.end() ? nullptr : &g_shaders[it->second].code;
 }
 
 }  // namespace d3d

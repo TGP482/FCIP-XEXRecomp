@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "gpu/shaders.h"
 
@@ -12,6 +13,10 @@ namespace gpu {
 // a variant's HLSL and its profile, as draws make it
 std::string VariantHlsl(ShaderStage stage, const uint32_t* code, size_t dwords, const ShaderOptions& opt,
                         ShaderInfo& info, const wchar_t*& profile);
+
+// the recorded pipelines, made ahead from the archive's shaders
+size_t ListedPipelineCount();
+void BuildListedPipeline(size_t i);
 
 }  // namespace gpu
 
@@ -23,5 +28,7 @@ void PrecompileShaderArchive();
 bool ShaderArchiveBusy();
 // how much of the archive is done while a loading screen holds for it, else -1
 int ShaderArchivePercent();
+// the archive's code whose hash is Shader::hash, else null
+const std::vector<uint32_t>* ArchiveCode(uint64_t hash);
 
 }  // namespace d3d
