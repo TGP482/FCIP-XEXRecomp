@@ -475,15 +475,14 @@ float3 OceanXbox(float3 water, float3 reflection) {
 )";
 
 // a console tap between two texels averages them: over upscaled texels, a box of two title texels, a sample per
-// two host texels
+// two host texels, each on the edge between them so it averages both instead of reading one
 const char* kBlurPrelude = R"(
 float4 BlurTap(Texture2D<float4> t, SamplerState s, float2 uv, float2 size) {
     int n = int(ceil(g_ext.x));
-    float2 gap = 2 * g_ext.x / n / size;
-    float2 first = uv - gap * (n - 1) * 0.5;
+    float2 edge = round(uv * size - n) + 1;
     float4 sum = 0;
     for (int y = 0; y < n; y++) {
-        for (int x = 0; x < n; x++) sum += t.SampleLevel(s, first + gap * float2(x, y), 0);
+        for (int x = 0; x < n; x++) sum += t.SampleLevel(s, (edge + 2 * float2(x, y)) / size, 0);
     }
     return sum / (n * n);
 }
