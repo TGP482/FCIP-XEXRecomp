@@ -248,8 +248,7 @@ constexpr uint32_t kListenerEnabled = 0x08u;
 constexpr uint32_t kListenerHelper = 0x10u;
 constexpr uint32_t kListenerBytes = 0x14u;
 constexpr uint32_t kStringBytes = 0x1Cu;
-// the UI manager: +0x340 its draw stack, whose +0x18 holds the input stack at +0xB8 and the drawn pages at +0x38
-constexpr uint32_t kUiDraw = 0x340u;
+// the game's UI is its draw stack, whose +0x18 holds the input stack at +0xB8 and the drawn pages at +0x38
 constexpr uint32_t kDrawInput = 0x18u;
 constexpr uint32_t kInputStack = 0xB8u;
 constexpr uint32_t kDrawnPages = 0x38u;
@@ -566,7 +565,7 @@ void AskDefaults(PPCContext& ctx) {
                       {boxes, 0, empty, text, kOkCancel, 0, listener, empty, empty, 0, 0, 0, 0xFFFFFFFFu});
 }
 
-uint32_t DrawStack() { return Read32(Read32(SYM_Game_pointer) + kUiDraw); }
+uint32_t DrawStack() { return Read32(Read32(SYM_Game_pointer) + SYM_Game_Ui); }
 uint32_t InputStack() { return Read32(DrawStack() + kDrawInput) + kInputStack; }
 
 void AddListener(PPCContext& ctx, uint32_t page, uint32_t listener) {

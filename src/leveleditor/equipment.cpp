@@ -44,8 +44,6 @@ constexpr const char* kUsed = "Used";
 constexpr const char* kWeapon = "Weapon";
 constexpr const char* kWeaponName = "Name";
 
-constexpr uint32_t kGameWeapons = 0x338;  // the game's weapon system
-
 // guest scratch: a name, a node reference, then the MaxAmmo script
 constexpr uint32_t kScratchName = 0x000;
 constexpr uint32_t kScratchNameBytes = 0x100;
@@ -132,7 +130,7 @@ void Load(PPCContext& ctx) {
     uint32_t used = XmlChild(weapons, kUsed);
     for (uint32_t i = 0; used && i < ChildCount(used); i++) {
         std::string name = XmlValue(ChildAt(used, i), kWeaponName);
-        CallGuest(ctx, SYM_Weapons_Load, {R32(game + kGameWeapons), NameText(name)});
+        CallGuest(ctx, SYM_Weapons_Load, {R32(game + SYM_Game_Weapons), NameText(name)});
     }
     if (weapons) LoadMaxAmmo(ctx, weapons);
     g_stale = true;

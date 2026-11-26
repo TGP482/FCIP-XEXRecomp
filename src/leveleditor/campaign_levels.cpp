@@ -79,13 +79,9 @@ constexpr uint32_t kFromTemplate = 0x1EC;
 constexpr uint32_t kTemplateDaytime = 1;
 constexpr uint32_t kTemplateFogDistance = 9;
 // the game: its menus, and the cheats the player update applies (8216F710); the editor sets 2 and 4, god mode
-constexpr uint32_t kGameMenus = 0x344;
 constexpr uint32_t kMenuSticks = 0x54;  // menus move with the sticks
-constexpr uint32_t kGameCheats = 0x410;
 constexpr uint32_t kCheatWeapons = 0x2;
 constexpr uint32_t kCheatGodMode = 0x4;
-// set once at start in ige (821175B4): levels then run the game type scripts instead of scripts/main.lua
-constexpr uint32_t kEditorGame = 0x3D4;
 // user map info, a new one per level started: 0x164 bytes at +0x30, named for the signed in profile
 constexpr uint32_t kUserMapInfo = 0x30;
 constexpr uint32_t kUserMapInfoBytes = 0x164;
@@ -177,11 +173,11 @@ void EnterEditor(PPCContext& ctx, uint32_t manager, uint32_t game) {
     W8(manager + kPlayerPlaced, 0);
     CallGuest(ctx, SYM_Editor_ShowHandler, {manager, SYM_EditorHandler_name});
     W8(manager + kCommonBanksLoaded, 1);
-    W8(R32(game + kGameMenus) + kMenuSticks, 0);
-    W32(game + kGameCheats, R32(game + kGameCheats) | kCheatGodMode);
+    W8(R32(game + SYM_Game_Menus) + kMenuSticks, 0);
+    W32(game + SYM_Game_Cheats, R32(game + SYM_Game_Cheats) | kCheatGodMode);
     uint32_t god = uint32_t(CallGuest(ctx, SYM_Console_FindVariable, {R32(SYM_Console_pointer), SYM_GodMode_name}));
     if (god) CallGuest(ctx, SYM_Console_SetVariable, {god, 1});
-    W32(game + kGameCheats, R32(game + kGameCheats) | kCheatWeapons);
+    W32(game + SYM_Game_Cheats, R32(game + SYM_Game_Cheats) | kCheatWeapons);
 }
 
 // the template fields the tools read; a campaign level matches no template, so environment and theme read "none"
@@ -531,10 +527,10 @@ PPC_FUNC(sub_8239D908) {
 PPC_FUNC(sub_82138CD8) {
     if (!g_loading) return __imp__sub_82138CD8(ctx, base);
     uint32_t game = uint32_t(ctx.r[3]);
-    uint8_t editor = R8(game + kEditorGame);
-    W8(game + kEditorGame, 0);
+    uint8_t editor = R8(game + SYM_Game_EditorGame);
+    W8(game + SYM_Game_EditorGame, 0);
     __imp__sub_82138CD8(ctx, base);
-    W8(game + kEditorGame, editor);
+    W8(game + SYM_Game_EditorGame, editor);
 }
 
 // a level's mission objects into the AI system (r5 the mission's XmlNodeRef); the mission is kept, a campaign level's

@@ -33,8 +33,7 @@ using namespace fcip::ui;
 
 namespace {
 
-// the message boxes, as CryPreGame's own (0x821B4518) reach them
-constexpr uint32_t kSystemUi = 0x340u;
+// the message boxes, as CryPreGame's own (0x821B4518) reach them through the game's UI
 constexpr uint32_t kUiMessageBoxes = 0x0Cu;
 constexpr uint32_t kYesNo = 4;
 constexpr uint32_t kAnyPad = 0xFFFFFFFFu;
@@ -88,7 +87,7 @@ uint32_t EmptyText() {
 }
 
 void Ask(PPCContext& ctx, uint32_t self, uint32_t id, const char* text) {
-    uint32_t boxes = Read32(Read32(Read32(SYM_Game_pointer) + kSystemUi) + kUiMessageBoxes);
+    uint32_t boxes = Read32(Read32(Read32(SYM_Game_pointer) + SYM_Game_Ui) + kUiMessageBoxes);
     uint32_t empty = EmptyText();
     uint32_t question = View(text);
     if (!boxes || !empty || !question) {

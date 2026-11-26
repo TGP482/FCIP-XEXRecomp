@@ -994,7 +994,7 @@ void JoinRow(const Row& r) {
 const char* const kPages[] = {"RECOMP SETTINGS", "MOUSE AND KEYBOARD", "CONTROLLER", "DEBUG"};
 
 // the debug page is default.xex's only, in debug builds
-int PageCount() { return diag::kDebug && g_load_level ? int(std::size(kPages)) : kDebugPage; }
+int PageCount() { return g_load_level ? int(std::size(kPages)) : kDebugPage; }
 
 // the bind row waiting for a key, -1 when idle, and its box: 0 the key, 1 the alternate
 int g_capture = -1;

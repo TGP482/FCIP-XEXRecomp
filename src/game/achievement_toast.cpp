@@ -29,14 +29,12 @@ constexpr uint32_t kGameHud = 0x7Cu;
 constexpr uint32_t kGameClients = 0x30u;  // client pointers, the count at +0x68
 constexpr uint32_t kGameClientCount = 0x68u;
 constexpr uint32_t kClientHudId = 0x38u;  // low 16 bits
-constexpr uint32_t kGameHuds = 0x340u;    // its +0x08 finds a HUD by id, vtable +0x38
+constexpr uint32_t kUiHuds = 0x08u;  // in the game's UI, finds a HUD by id with vtable +0x38
 constexpr uint32_t kFindHud = 0x38u;
 constexpr uint32_t kHudPage = 0x50u;  // the HUD page behind one pointer, holding ai_contextual_1 (821F99D4)
 constexpr uint32_t kHudSprites = 0x14u;
-constexpr uint32_t kHudSelector = 0x32Cu;  // ai_selector, whose i_item1 picture the icon copies
 
-// ai_contextual_1, whose element plays the box's area: faded in by key 4, fading out from key 6
-constexpr uint32_t kHudHelpBox = 0x37Cu;
+// ai_contextual_1 (Hud_HelpBox), whose element plays the box's area: faded in by key 4, fading out from key 6
 constexpr uint32_t kElementArea = 0x2Cu;  // its children at [+0x08, +0x0C), frames per key at +0x1C, u16
 constexpr uint32_t kAreaFramesPerKey = 0x1Cu;
 constexpr uint32_t kElementFrame = 0x64u;
@@ -97,7 +95,7 @@ const xam::Achievement* Find(const std::vector<xam::Achievement>& list, uint16_t
 uint32_t Hud(PPCContext& ctx, uint32_t game) {
     if (uint32_t hud = kernel::R32(game + kGameHud)) return hud;
     uint32_t client = kernel::R32(game + kGameClientCount) ? kernel::R32(game + kGameClients) : 0;
-    uint32_t huds = kernel::R32(kernel::R32(game + kGameHuds) + 0x08);
+    uint32_t huds = kernel::R32(kernel::R32(game + SYM_Game_Ui) + kUiHuds);
     if (!client || !huds) return 0;
     uint32_t id = kernel::R32(client + kClientHudId) & 0xFFFF;
     return uint32_t(kernel::CallGuest(ctx, kernel::R32(kernel::R32(huds) + kFindHud), {huds, id}));
@@ -127,7 +125,7 @@ void KeepShown(uint32_t widget) {
 
 // a copy of the selector's picture left of t_text
 uint32_t MakeIcon(PPCContext& ctx, uint32_t hud, uint32_t area, const int16_t (&rect)[4]) {
-    uint32_t selector = Read32(hud + kHudSelector);
+    uint32_t selector = Read32(hud + SYM_Hud_Selector);
     uint32_t item = FindWidget(Read32(Read32(selector + kWidgetElement) + kElementArea), kCrcItem);
     uint32_t icon = item ? CloneChild(ctx, area, item) : 0;
     if (!icon) return 0;
@@ -169,7 +167,7 @@ void FadeIcon() {
 
 // the game's box draws the children it shares with ours even when idle, in whatever state ours left them
 void HideIdleGameBox(uint32_t hud, bool showing) {
-    uint32_t game_box = Read32(hud + kHudHelpBox);
+    uint32_t game_box = Read32(hud + SYM_Hud_HelpBox);
     uint32_t element = AddrOk(game_box) ? Read32(game_box + kWidgetElement) : 0;
     if (AddrOk(element)) SetVisible(game_box, showing ? Read8(element + kElementPlaying) != 0 : g_game_box_visible);
 }
@@ -206,7 +204,7 @@ bool EnsureBox(PPCContext& ctx, uint32_t hud) {
     if (g_box.hud == hud) return g_box.widget != 0;
     g_box = {hud};
     g_extras = {};
-    uint32_t game_box = kernel::R32(hud + kHudHelpBox);
+    uint32_t game_box = kernel::R32(hud + SYM_Hud_HelpBox);
     uint32_t page = kernel::R32(kernel::R32(hud + kHudPage));
     uint32_t widget = game_box && page ? CloneChild(ctx, page, game_box) : 0;
     uint32_t element = widget ? kernel::R32(widget + kWidgetElement) : 0;
@@ -239,10 +237,10 @@ void Show(PPCContext& ctx, uint32_t hud, const xam::Achievement& a) {
     if (!g_extras.desc) title += "\n" + a.description;
     uint32_t text = View(title.c_str());  // after Text(): they share one buffer
     if (!text) return;
-    uint32_t game_box = kernel::R32(hud + kHudHelpBox);
-    kernel::W32(hud + kHudHelpBox, g_box.widget);
+    uint32_t game_box = kernel::R32(hud + SYM_Hud_HelpBox);
+    kernel::W32(hud + SYM_Hud_HelpBox, g_box.widget);
     kernel::CallGuest(ctx, SYM_Hud_ShowHelp, {hud, text, 1});
-    kernel::W32(hud + kHudHelpBox, game_box);
+    kernel::W32(hud + SYM_Hud_HelpBox, game_box);
     if (!g_showing) g_game_box_visible = Read8(game_box + kWidgetVisible) & 0x80;
     HideIdleGameBox(hud, true);
     g_showing = true;

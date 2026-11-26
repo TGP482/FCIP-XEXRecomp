@@ -139,8 +139,14 @@ Entity_Hide = 0x82130518  # (entity, hide, 0)
 
 # what src/leveleditor/campaign_levels.cpp reads and calls by address
 MapManagerHandler = 0x82971408
+Game_Menus = 0x344
+Game_Cheats = 0x410  # the cheats the player update applies (8216F710)
+Game_EditorGame = 0x3D4  # set once at start (821175B4): levels then run the game type scripts, not scripts/main.lua
 EditorHandler_name = 0x82067344  # "EditorInterfaceHandler"
 GodMode_name = 0x8206E344  # "GodMode"
+
+# what src/leveleditor/equipment.cpp reads and calls by address
+Game_Weapons = 0x338  # the game's weapon system
 
 # what src/leveleditor/sequences.cpp reads and calls by address
 Movie_FindSequence = 0x823A33E8  # (movie, name)

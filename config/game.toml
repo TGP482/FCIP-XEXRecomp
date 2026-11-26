@@ -244,8 +244,8 @@ UITransform_vtable = 0x82079188
 UIWidgetFocus_vtable = 0x82078BC4
 UIWidgetText_vtable = 0x82079880
 
-# CryGame: the game object, its cl_display_hud and cl_aimingHelper offsets, no menu flag, pad input, client count and
-# loading screen
+# CryGame: the game object, its cl_display_hud and cl_aimingHelper offsets, no menu flag, pad input, client count,
+# loading screen and UI (its draw stack, message boxes and HUDs)
 Game_AimingHelper = 0xA8
 Game_ClientCount = 0x68
 Game_DisplayHud = 0x9C
@@ -253,6 +253,7 @@ Game_Input = 0x24
 Game_LoadingScreen = 0x310
 Game_NoMenu = 0x379
 Game_pointer = 0x8291234C
+Game_Ui = 0x340
 
 # CryUI, menu input and text
 MenuManager_vtable = 0x82054644
@@ -350,6 +351,8 @@ PhongDraw_Constants = 0x825052B0  # sets a shader constant and a texture first
 
 # what src/game/achievement_toast.cpp reads and calls by address
 Hud_ShowHelp = 0x821FC620  # (hud, const std::wstring* text, 1), writes the HUD's help box
+Hud_HelpBox = 0x37C  # ai_contextual_1
+Hud_Selector = 0x32C  # ai_selector, whose i_item1 picture the icon copies
 UIElement_SetPicture = 0x82477458  # (element, child name crc, sprite)
 UIElement_SetText = 0x82477168  # (element, child name crc, const wchar_t*)
 
