@@ -109,7 +109,7 @@ void Compile(const ArchiveShader& a, const gpu::ShaderOptions& opt, gpu::ShaderI
     const wchar_t* profile = nullptr;
     std::string hlsl = gpu::VariantHlsl(stage, a.code.data(), a.code.size(), opt, info, profile);
     std::vector<uint8_t> dxil;
-    gpu::CompileHlsl(hlsl, profile, dxil);
+    if (gpu::CompileHlsl(hlsl, profile, dxil)) gpu::KeepTranslation(a.hash, opt, info, profile, hlsl);
 }
 
 // a light's shadow sampler, which draws give a kShadowOut mode whichever map they bind to it

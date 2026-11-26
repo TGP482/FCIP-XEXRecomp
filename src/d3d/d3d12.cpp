@@ -98,6 +98,28 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
+uint64_t VariantKey(uint64_t shader, const ShaderOptions& opt) { return Hash64(&opt, sizeof(opt), shader); }
+
+// variants the boot compile translated, so a draw's first use of one skips the translation
+struct Translated {
+    ShaderInfo info;
+    const wchar_t* profile = nullptr;
+    HlslKey hlsl;
+};
+std::mutex g_translated_lock;
+std::unordered_map<uint64_t, Translated> g_translated;
+
+// the boot compile's translation and DXIL; false when it has none
+bool TakeTranslation(uint64_t key, Variant& v) {
+    std::lock_guard lock(g_translated_lock);
+    auto it = g_translated.find(key);
+    if (it == g_translated.end() || !FindDxil(it->second.hlsl, v.dxil)) return false;
+    v.info = it->second.info;
+    v.profile = it->second.profile;
+    v.key = Hash64(v.dxil.data(), v.dxil.size());
+    return true;
+}
+
 constexpr int kFrames = 3;  // frames in flight, one more queued than the GPU runs
 constexpr uint64_t kUploadSize = 96ull << 20;  // per frame, more chunks while a frame needs them
 constexpr uint64_t kDrawUploads = 16ull << 20;  // a draw's indices, vertices and constants, at most
@@ -3304,12 +3326,13 @@ void BuildVariant(Variant& v, const std::string& hlsl, const wchar_t* profile) {
 }
 
 Variant* D3D12Backend::FindVariant(Shader* s, const ShaderOptions& opt) {
-    uint64_t key = Hash64(&opt, sizeof(opt), s->hash);
+    uint64_t key = VariantKey(s->hash, opt);
     auto& v = s->variants[key];
     if (v) return v.get();
     v = std::make_unique<Variant>();
     v->shader = s->hash;
     v->opt = opt;
+    if (TakeTranslation(key, *v)) return v.get();
     v->hlsl = VariantHlsl(s->stage, s->code.data(), s->code.size(), opt, v->info, v->profile);
     return v.get();
 }
@@ -3514,12 +3537,14 @@ void RecordPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps) 
 }
 
 // a recorded variant compiled as a draw compiles it, so its DXIL and hash match the draw's
-std::vector<uint8_t> ListedDxil(ShaderStage stage, const std::vector<uint32_t>& code, const ShaderOptions& opt) {
+std::vector<uint8_t> ListedDxil(ShaderStage stage, uint64_t shader, const std::vector<uint32_t>& code,
+                                const ShaderOptions& opt) {
     ShaderInfo info;
     const wchar_t* profile = nullptr;
     std::string hlsl = VariantHlsl(stage, code.data(), code.size(), opt, info, profile);
     std::vector<uint8_t> dxil;
-    if (!CompileHlsl(hlsl, profile, dxil)) dxil.clear();
+    if (!CompileHlsl(hlsl, profile, dxil)) return {};
+    KeepTranslation(shader, opt, info, profile, hlsl);
     return dxil;
 }
 
@@ -3532,9 +3557,9 @@ struct ListedCounts {
 ListedCounts g_listed;
 
 void BuildListed(const ListedPipeline& e, const std::vector<uint32_t>& vs_code, const std::vector<uint32_t>* ps_code) {
-    std::vector<uint8_t> vs = ListedDxil(ShaderStage::Vertex, vs_code, e.vs_opt);
+    std::vector<uint8_t> vs = ListedDxil(ShaderStage::Vertex, e.vs_shader, vs_code, e.vs_opt);
     std::vector<uint8_t> ps;
-    if (ps_code) ps = ListedDxil(ShaderStage::Pixel, *ps_code, e.ps_opt);
+    if (ps_code) ps = ListedDxil(ShaderStage::Pixel, e.ps_shader, *ps_code, e.ps_opt);
     if (vs.empty() || (ps_code && ps.empty())) return;
     PipelineKey k = e.key;
     k.vs = Hash64(vs.data(), vs.size());
@@ -7923,6 +7948,13 @@ bool D3D12Backend::QueryResult(uint32_t q, uint32_t& samples) {
 }  // namespace
 
 std::unique_ptr<Backend> CreateBackend() { return std::make_unique<D3D12Backend>(); }
+
+void KeepTranslation(uint64_t shader, const ShaderOptions& opt, const ShaderInfo& info, const wchar_t* profile,
+                     const std::string& hlsl) {
+    Translated t{info, profile, KeyHlsl(hlsl, profile)};
+    std::lock_guard lock(g_translated_lock);
+    g_translated.try_emplace(VariantKey(shader, opt), std::move(t));
+}
 
 size_t ListedPipelineCount() { return PipelineList().size(); }
 

@@ -76,7 +76,8 @@ add_custom_target(build_info
     BYPRODUCTS ${BUILD_INFO}
     VERBATIM)
 set_source_files_properties(src/common/version.rc PROPERTIES
-    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_BINARY_DIR} OBJECT_DEPENDS ${BUILD_INFO})
+    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_BINARY_DIR}
+    OBJECT_DEPENDS "${BUILD_INFO};${CMAKE_CURRENT_SOURCE_DIR}/src/d3d/pipeline_list.bin")
 foreach(target FCIP FCIPEditor)
     if(TARGET ${target})
         target_sources(${target} PRIVATE src/common/version.rc)

@@ -14,6 +14,10 @@ namespace gpu {
 std::string VariantHlsl(ShaderStage stage, const uint32_t* code, size_t dwords, const ShaderOptions& opt,
                         ShaderInfo& info, const wchar_t*& profile);
 
+// a variant the boot compile translated and compiled, handed to the draws that use it
+void KeepTranslation(uint64_t shader, const ShaderOptions& opt, const ShaderInfo& info, const wchar_t* profile,
+                     const std::string& hlsl);
+
 // the recorded pipelines, made ahead from the archive's shaders
 size_t ListedPipelineCount();
 void BuildListedPipeline(size_t i);
