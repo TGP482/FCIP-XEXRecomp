@@ -3479,8 +3479,6 @@ static_assert(sizeof(ListedPipeline) == 16 + 2 * sizeof(ShaderOptions) + sizeof(
 
 constexpr uint32_t kPipelineListHeader[2] = {0x314C5058, sizeof(ListedPipeline)};
 
-std::filesystem::path PipelineListPath() { return app::ExeDir() / "pipeline_list.bin"; }
-
 // header then whole entries, a cut off one dropped
 std::vector<ListedPipeline> ParsePipelineList(const char* bytes, size_t size) {
     std::vector<ListedPipeline> entries;
@@ -3500,40 +3498,6 @@ const std::vector<ListedPipeline>& PipelineList() {
         return ParsePipelineList(bytes, res ? SizeofResource(nullptr, res) : 0);
     }();
     return list;
-}
-
-// every pipeline a draw asks for, added to pipeline_list.bin beside the exe across runs, which starts from the built
-// in list; copied over src/d3d/pipeline_list.bin to ship it
-void RecordPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps) {
-    static std::unordered_set<uint64_t> seen;  // this run's keys, so a pipeline drawn again costs one lookup
-    static std::unordered_set<uint64_t> recorded;
-    static std::ofstream out;
-    if (!seen.insert(Hash64(&k, sizeof(k))).second) return;
-    if (!out.is_open()) {
-        std::vector<char> file = ReadWhole(PipelineListPath());
-        std::vector<ListedPipeline> earlier = ParsePipelineList(file.data(), file.size());
-        if (file.empty()) earlier = PipelineList();
-        out.open(PipelineListPath(), std::ios::binary | std::ios::trunc);
-        out.write(reinterpret_cast<const char*>(kPipelineListHeader), sizeof(kPipelineListHeader));
-        for (const ListedPipeline& e : earlier) {
-            if (recorded.insert(Hash64(&e, sizeof(e))).second) out.write(reinterpret_cast<const char*>(&e), sizeof(e));
-        }
-        LOGR("pipeline list: recording into %s, %zu pipelines so far", PipelineListPath().string().c_str(),
-             recorded.size());
-    }
-    ListedPipeline e;
-    e.vs_shader = vs.shader;
-    e.vs_opt = vs.opt;
-    if (ps) {
-        e.ps_shader = ps->shader;
-        e.ps_opt = ps->opt;
-    }
-    e.key = k;
-    e.key.vs = 0;
-    e.key.ps = 0;
-    if (!recorded.insert(Hash64(&e, sizeof(e))).second) return;
-    out.write(reinterpret_cast<const char*>(&e), sizeof(e));
-    out.flush();
 }
 
 // a recorded variant compiled as a draw compiles it, so its DXIL and hash match the draw's
@@ -3582,7 +3546,6 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PipelineKey& k, const Va
 
 // made at once even with async shaders: its shaders are built, and a draw skipped for it would vanish
 ID3D12PipelineState* D3D12Backend::FindPipeline(const PipelineKey& k, const Variant& vs, const Variant* ps) {
-    RecordPipeline(k, vs, ps);
     TakeBuilt();
     uint64_t key = Hash64(&k, sizeof(k));
     auto it = pipelines_.find(key);
@@ -3613,7 +3576,6 @@ ComPtr<ID3D12PipelineState> D3D12Backend::MakePipeline(const PipelineKey& k, D3D
 // true when made; else it is made on a build thread, as a first pipeline of new shaders can take the driver a
 // quarter of a second
 bool D3D12Backend::PipelineReady(const PipelineKey& k, const Variant& vs, const Variant* ps) {
-    RecordPipeline(k, vs, ps);
     TakeBuilt();
     uint64_t key = Hash64(&k, sizeof(k));
     auto it = pipelines_.find(key);
