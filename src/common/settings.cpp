@@ -160,7 +160,7 @@ void LoadSettings(const void* table) {
     s.gyro.button_mode = std::min(t["gyro_button_mode"].value_or(s.gyro.button_mode), uint32_t(gyro::kToggle));
     uint32_t last_button = uint32_t(std::size(gyro::kButtonNames) - 1);
     s.gyro.recenter_button = std::min(t["gyro_recenter_button"].value_or(s.gyro.recenter_button), last_button);
-    if (true) {
+    if (diag::kDebug) {
         s.invincible = t["invincibility"].value_or(s.invincible);
         s.noclip = t["noclip"].value_or(s.noclip);
     }

@@ -2021,7 +2021,7 @@ public:
     ~D3D12Backend() override;
     bool Init(uint32_t width, uint32_t height) override;
     Shader* CreateShader(ShaderStage stage, const uint32_t* code, size_t dwords) override;
-    bool MakeListed(const PipelineKey& k, D3D12_SHADER_BYTECODE vs, D3D12_SHADER_BYTECODE ps);
+    bool MakeListed(const PipelineKey& recorded, D3D12_SHADER_BYTECODE vs, D3D12_SHADER_BYTECODE ps);
     const ShaderInfo& Info(const Shader* s) const override { return s->info; }
     void Draw(const State& s, const DrawArgs& a) override;
     void Clear(const State& s, uint32_t flags, const float color[4], float z, uint32_t stencil,
@@ -2592,6 +2592,8 @@ private:
     uint32_t samplers_used_ = 0;
     std::ofstream pipeline_cache_;  // each pipeline appended as it is made
     std::unordered_set<uint64_t> cached_keys_;  // made from the cache at Init, read by the archive threads
+    std::mutex listed_lock_;
+    std::unordered_set<uint64_t> listed_;  // recorded pipelines made this run, at the current MSAA
     std::mutex pipeline_cache_lock_;
     // heavy pipelines made on the build threads while their draws go without what they add
     struct BuiltPipeline {
@@ -3598,9 +3600,17 @@ bool D3D12Backend::PipelineReady(const PipelineKey& k, const Variant& vs, const 
     return false;
 }
 
-// a recorded pipeline made on an archive thread; false when the cache made it at Init
-bool D3D12Backend::MakeListed(const PipelineKey& k, D3D12_SHADER_BYTECODE vs, D3D12_SHADER_BYTECODE ps) {
-    if (cached_keys_.count(Hash64(&k, sizeof(k)))) return false;
+// a recorded pipeline made on an archive thread; false when the cache made it at Init or another entry did
+bool D3D12Backend::MakeListed(const PipelineKey& recorded, D3D12_SHADER_BYTECODE vs, D3D12_SHADER_BYTECODE ps) {
+    PipelineKey k = recorded;
+    // only the title's multisampled targets were ever recorded past 1 sample
+    k.samples = HostSamples(recorded.samples);
+    uint64_t key = Hash64(&k, sizeof(k));
+    if (cached_keys_.count(key)) return false;
+    {
+        std::lock_guard lock(listed_lock_);
+        if (!listed_.insert(key).second) return false;
+    }
     BuiltPipeline b{k};
     b.pso = MakePipeline(k, vs, ps);
     if (b.pso) StorePipeline(k, vs, ps, b.pso.Get());
