@@ -524,6 +524,18 @@ call = "VirtualKeyboardAccept"
 on_true = 0x82171C98
 on_false = 0x82171EC8
 
+[[hook]]  # f2 = left X for the ring's angle when it reads under the dead zone, r9 the pad
+at = 0x821716F4
+call = "VirtualKeyboardRawX"
+regs = ["r9", "f2"]
+after = true
+
+[[hook]]  # f1 = left Y the same, r11 just past its bindings
+at = 0x82171728
+call = "VirtualKeyboardRawY"
+regs = ["r11", "f1"]
+after = true
+
 # instruction hooks, defined in src/game/profiles.cpp
 [[hook]]  # r4 = 1, the page CryProfile opens on; the list comes first
 at = 0x821E32C8

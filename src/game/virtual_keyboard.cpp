@@ -4,6 +4,7 @@
 #include "game/virtual_keyboard.h"
 
 #include <algorithm>
+#include <bit>
 #include <string>
 
 #include "common/keys.h"
@@ -53,6 +54,13 @@ constexpr uint32_t kErrorIoPending = 0x3E5;
 constexpr uint32_t kErrorCancelled = 0x4C7;
 
 constexpr uint32_t kMaxUnits = 256;
+
+// a pad key's two bindings (82312800), the left stick's at the pad's 0x504
+constexpr uint32_t kLeftXBindings = 0x504;
+constexpr uint32_t kBindingBound = 0x00;
+constexpr uint32_t kBindingRaw = 0x18;  // before the per axis dead zone (823122C0)
+constexpr uint32_t kBindingBytes = 0x28;
+constexpr uint32_t kBindingsPerKey = 2;
 
 // the real keyboard's control codes as the layout types them
 constexpr char16_t kBackspace = 0x08;
@@ -170,6 +178,15 @@ bool Type(PPCContext& ctx, char16_t c) {
     return true;
 }
 
+// the first bound binding's raw value, 0 with none
+double RawAxis(uint32_t bindings) {
+    for (uint32_t i = 0; i < kBindingsPerKey; i++) {
+        uint32_t binding = bindings + i * kBindingBytes;
+        if (R8(binding + kBindingBound)) return std::bit_cast<float>(R32(binding + kBindingRaw));
+    }
+    return 0.0;
+}
+
 bool OpenPage(PPCContext& ctx, uint32_t start, uint32_t info, uint32_t max_length, bool can_back) {
     uint32_t keyboard = R32(SYM_VirtualKeyboard_pointer);
     if (!keyboard || g_request.open) return false;
@@ -283,4 +300,14 @@ PPC_FUNC(GUEST(InGame_Destroy)) {
     }
     g_in_game = 0;
     GUEST_ORIG(InGame_Destroy)(ctx, base);
+}
+
+// the 360 pad zeroes a stick axis under 0.35, so near straight up or down the ring sat on a or n, never z or m
+
+// r9 the pad, f2 its left X held under the dead zone
+void VirtualKeyboardRawX(PPCContext& ctx, uint8_t*) { ctx.f[2] = RawAxis(uint32_t(ctx.r[9]) + kLeftXBindings); }
+
+// r11 just past left Y's bindings, f1 its value held under the dead zone
+void VirtualKeyboardRawY(PPCContext& ctx, uint8_t*) {
+    ctx.f[1] = RawAxis(uint32_t(ctx.r[11]) - kBindingsPerKey * kBindingBytes);
 }
