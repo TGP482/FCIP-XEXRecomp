@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "app/app.h"
 #include "common/render_pass.h"
 #include "common/settings.h"
 #include "core/log.h"
@@ -128,7 +129,10 @@ std::vector<uint8_t> ShadowModes() {
     bool soft = s.shadow_filter == fcip::kFilterSoft || s.shadow_filter == fcip::kFilterPcss;
     std::vector<uint8_t> modes;
     if (s.draw_distance > 1 && !soft) modes.push_back(fcip::kShadowCascades);
-    if (s.shadow_filter >= fcip::kFilterRay && gpu::RayTracing()) modes.push_back(fcip::kShadowTraced);
+    if (s.shadow_filter >= fcip::kFilterRay && gpu::RayTracing()) {
+        modes.push_back(fcip::kShadowTraced);
+        modes.push_back(app::Get().msaa > 1 ? fcip::kShadowMaskMs : fcip::kShadowMask);
+    }
     return modes;
 }
 
@@ -144,6 +148,7 @@ void CompileArchiveShader(const ArchiveShader& a, bool motion) {
     }
     opt.vpos_reg = a.vpos;
     bool ultra = fcip::Get().shadow_filter == fcip::kFilterRayUltra;
+    bool ray_shadows = fcip::Get().shadow_filter >= fcip::kFilterRay && gpu::RayTracing();
     for (bool alpha : {false, true}) {
         opt.alpha_test = alpha;
         Compile(a, opt, info);
@@ -151,15 +156,19 @@ void CompileArchiveShader(const ArchiveShader& a, bool motion) {
         for (uint8_t mode : ShadowModes()) {
             gpu::ShaderOptions shadow = opt;
             shadow.tex_flags[fcip::kShadowOut] = mode;
-            bool traced = mode == fcip::kShadowTraced;
-            if (traced && alpha && ultra) shadow.tex_flags[fcip::kRayCoarseOut] = 1;
+            if (mode == fcip::kShadowTraced && alpha && ultra) shadow.tex_flags[fcip::kRayCoarseOut] = 1;
             gpu::ShaderInfo shadow_info;
             Compile(a, shadow, shadow_info);
-            if (!traced || !alpha) continue;
-            gpu::ShaderOptions depth = shadow;
-            depth.tex_flags[fcip::kShadowOut] = 0;
-            depth.tex_flags[fcip::kDepthOut] = 1;
-            Compile(a, depth, shadow_info);
+        }
+        if (ray_shadows) {
+            gpu::ShaderOptions depth = opt;
+            gpu::ShaderInfo depth_info;
+            if (alpha) {
+                depth.tex_flags[fcip::kDepthOut] = 1;
+                Compile(a, depth, depth_info);
+            }
+            depth.tex_flags[fcip::kDepthOut] = fcip::kDepthAlphaOut;
+            Compile(a, depth, depth_info);
         }
     }
 }
@@ -200,9 +209,9 @@ void PrecompileShaderArchive() {
     g_shaders = ReadArchive(file);
     for (size_t i = 0; i < g_shaders.size(); i++) g_by_hash.emplace(g_shaders[i].hash, i);
     g_listed = gpu::ListedPipelineCount();
-    // motion vectors as Draw adds them: FSR, TAA or frame generation on and FSR's shaders present
-    g_motion_first = fcip::Motion() && fsr::Upscaling();
-    g_jobs = FirstPassJobs() + (fsr::Upscaling() && !g_motion_first ? g_shaders.size() : 0);
+    // motion vectors as Draw adds them: FSR, TAA, SMAA Temporal or frame generation
+    g_motion_first = fcip::Motion();
+    g_jobs = FirstPassJobs() + (!g_motion_first ? g_shaders.size() : 0);
     g_start = std::chrono::steady_clock::now();
     uint32_t threads = std::max(1u, std::thread::hardware_concurrency());
     for (uint32_t t = 0; t < threads; t++) std::thread(CompileArchive).detach();

@@ -20,12 +20,15 @@
                             "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL"}},
         {"name": "release", "displayName": "Release", "inherits": "base",
          "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}},
+        {"name": "release-avx2", "displayName": "Release (AVX2)", "inherits": "release",
+         "cacheVariables": {"CMAKE_C_FLAGS": "-march=x86-64-v3", "CMAKE_CXX_FLAGS": "-march=x86-64-v3"}},
         {"name": "relwithdebinfo", "displayName": "RelWithDebInfo", "inherits": "base",
          "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo"}}
     ],
     "buildPresets": [
         {"name": "debug", "configurePreset": "debug"},
         {"name": "release", "configurePreset": "release"},
+        {"name": "release-avx2", "configurePreset": "release-avx2"},
         {"name": "relwithdebinfo", "configurePreset": "relwithdebinfo"}
     ]
 }

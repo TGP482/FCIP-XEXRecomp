@@ -34,9 +34,10 @@ constexpr uint32_t kShadowFirstFetch = 5;  // light i's shadow map sampler 5 + i
 // maps where g_ext.y's bits (the sharper map count, then one per sampler) mark the far map; traced takes the scene of
 // slot sampler - kShadowFirstFetch where that slot's g_ext spread is not 0
 constexpr uint32_t kShadowOut = 24;
-enum : uint8_t { kShadowCascades = 1, kShadowTraced = 2 };
+enum : uint8_t { kShadowCascades = 1, kShadowTraced = 2, kShadowMask = 3, kShadowMaskMs = 4 };
 constexpr uint32_t kSunCountBits = 3;
 constexpr uint32_t kSunFirstSlot = 27;  // the pixel shader views the sharper maps are bound to, through 30
+constexpr uint32_t kSunMaskSlot = 31;   // t31: deferred screen-space sun shadow mask
 
 // the sun maps as the renderer reads them: receivers fetch the far one with kSunFetch, distance is its radius over the
 // stock one
@@ -65,8 +66,9 @@ constexpr uint8_t kShadowHalf = 8;     // that map drawn as one of four inside a
 constexpr uint8_t kSunPcss = 16;       // PCSS on, with kSunSoft or kShadowSoft
 constexpr uint32_t kRayScenes = 4;      // one per shadow sampler
 constexpr uint32_t kRayFirstSlot = 25;  // pixel shader views: casters, their records, then the scenes through 30
-// set on a ray traced draw's depth pass, past the textures such a draw may have: its shader keeps only the alpha test
+// set on a ray traced draw's depth pass, past the textures such a draw may have: 1 alpha test, 2 alpha-to-coverage
 constexpr uint32_t kDepthOut = 25;
+constexpr uint8_t kDepthAlphaOut = 2;
 // set on a ray traced draw that takes four shadow rays a pixel, no penumbra refinement
 constexpr uint32_t kRayCoarseOut = 26;
 // global illumination: a colour texture, never a shadow map, whose first fetch is the albedo; set on kAlbedoOut it

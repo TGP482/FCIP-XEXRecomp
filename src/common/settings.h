@@ -18,7 +18,7 @@ struct Settings {
     bool fps_counter = false;
     bool hdr_output = true;  // HDR10 on a display with Windows HDR on
     uint32_t colour_blind = 0;  // 0 off, 1 protanopia, 2 deuteranopia, 3 tritanopia
-    bool smaa = false;          // over the finished frame, HUD included; combines with MSAA
+    uint32_t smaa = 0;          // 0 off, 1 1X (HUD-free), 2 Temporal (T2x / true 4X with 2x MSAA / MSAA+T2x)
     bool taa = false;           // temporal anti aliasing in place of MSAA, at the render resolution
     bool fsr = false;           // AMD FSR in place of MSAA, the render resolution its input
     uint32_t frame_generation = 0;  // AMD FSR frames generated between each two rendered, 0 off to 3 (4X)
@@ -54,10 +54,15 @@ struct Settings {
 
 Settings& Get();
 
-// FSR or TAA: the camera's pass drawn jittered, with motion vectors
-inline bool Temporal() { return Get().fsr || Get().taa; }
+enum : uint32_t { kSmaaOff, kSmaa1x, kSmaaTemporal };
 
-// the camera's pass with motion vectors: FSR, TAA or frame generation
+// SMAA Temporal without TAA or FSR: 2-phase temporal jitter on the scene (T2x, true 4x with 2x MSAA, or MSAA+T2x)
+inline bool SmaaTemporal() { return Get().smaa == kSmaaTemporal && !Get().fsr && !Get().taa; }
+
+// FSR, TAA or SMAA Temporal: the camera's pass drawn jittered, with motion vectors
+inline bool Temporal() { return Get().fsr || Get().taa || SmaaTemporal(); }
+
+// the camera's pass with motion vectors: FSR, TAA, SMAA Temporal or frame generation
 inline bool Motion() { return Temporal() || Get().frame_generation; }
 
 // ray traced shadows cover what the game's do, Ultra also what it leaves out: vehicles, dropped weapons, bushes

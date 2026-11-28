@@ -37,6 +37,7 @@
 #include "d3d/fsr.h"
 #include "d3d/motion.h"
 #include "d3d/occlusion.h"
+#include "d3d/profiler.h"
 #include "d3d/readback.h"
 #include "d3d/shader_archive.h"
 #include "d3d/cas_shader.h"
@@ -55,6 +56,25 @@ std::atomic<bool> g_ray_tracing{false};
 std::atomic<bool> g_helper_lanes{false};  // shader model 6.6: traced shadows skip the pixels kept for derivatives
 
 bool RayTracing() { return g_ray_tracing; }
+
+namespace prof {
+
+std::atomic<bool> g_enabled{std::getenv("FCIP_PROFILE") != nullptr};
+std::mutex g_lock;
+Snapshot g_latest;
+
+bool Enabled() { return g_enabled.load(std::memory_order_relaxed); }
+void Toggle() { g_enabled.store(!g_enabled.load(std::memory_order_relaxed), std::memory_order_relaxed); }
+Snapshot Latest() {
+    std::lock_guard lock(g_lock);
+    return g_latest;
+}
+void Publish(const Snapshot& s) {
+    std::lock_guard lock(g_lock);
+    g_latest = s;
+}
+
+}  // namespace prof
 
 std::string VariantHlsl(ShaderStage stage, const uint32_t* code, size_t dwords, const ShaderOptions& opt,
                         ShaderInfo& info, const wchar_t*& profile) {
@@ -151,8 +171,8 @@ constexpr float kSdrWhiteUnit = 0.08f;   // Windows' SDR white level: 1000 is 80
 constexpr uint32_t kNullRtv = kRtvCount + kFrames;  // a target slot between bound ones, written nowhere
 constexpr DXGI_FORMAT kNullRtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr uint32_t kOutRtv = kNullRtv + 1;  // the HDR10 output's frame and panel targets
-constexpr int kSmaaTargets = 3;
-constexpr uint32_t kSmaaRtv = kOutRtv + kOutTargets;  // SMAA's edges, blend weights and blended frame
+constexpr int kSmaaTargets = 2;
+constexpr uint32_t kSmaaRtv = kOutRtv + kOutTargets;  // SMAA's edges and blend weights
 constexpr int kAoTargets = 2;
 constexpr uint32_t kAoRtv = kSmaaRtv + kSmaaTargets;  // ambient occlusion's raw pass and first blur
 constexpr uint32_t kMotionRtv = kAoRtv + kAoTargets;  // motion vectors as the draws wrote them, then completed
@@ -165,9 +185,13 @@ constexpr uint32_t kFogRtv = kGiRtv + kGiTargets;  // volumetric fog's medium, t
 constexpr int kFogTargets = 3;
 constexpr uint32_t kCloudRtv = kFogRtv + kFogTargets;  // volumetric clouds' march
 constexpr uint32_t kCausticsRtv = kCloudRtv + 1;       // the caustics' light
-constexpr uint32_t kTaaRtv = kCausticsRtv + 1;        // TAA's two histories, this frame's and the last
+constexpr uint32_t kTaaRtv = kCausticsRtv + 1;        // TAA / SMAA T2x's two histories, this frame's and the last
 constexpr uint32_t kMotionDepthRtv = kTaaRtv + 2;  // frame generation's depth: a multisampled scene's sample 0
-constexpr uint32_t kRtvSlots = kMotionDepthRtv + 1;
+constexpr uint32_t kSunMaskRtv = kMotionDepthRtv + 1;  // deferred screen-space sun shadow mask (raw/blur, then ping)
+constexpr uint32_t kSunMaskMsRtv = kSunMaskRtv + 2;    // per-sample MSAA refined sun shadow mask
+constexpr uint32_t kSmaaSepRtv = kSunMaskMsRtv + 1;    // separated 2x MSAA subsamples for True SMAA 4x
+constexpr uint32_t kRtvSlots = kSmaaSepRtv + 2;
+constexpr DXGI_FORMAT kSunMaskFormat = DXGI_FORMAT_R16G16_FLOAT;
 constexpr DXGI_FORMAT kAlbedoFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kGiFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 // a full float: the water's draws fade the light by the floor's distance less theirs, which half floats step through
@@ -494,6 +518,8 @@ struct UploadChunks {
     size_t at = 0;  // the chunk in use
 };
 
+constexpr uint32_t kMaxTsQueries = 2048;
+
 struct Frame {
     ComPtr<ID3D12CommandAllocator> alloc;
     UploadChunks ring;
@@ -501,6 +527,20 @@ struct Frame {
     uint32_t views = 0;
     uint64_t fence = 0;
     std::vector<ComPtr<ID3D12Resource>> garbage;
+    struct TsSpan {
+        uint8_t bucket;
+        uint16_t start_q;
+        uint16_t end_q;
+    };
+    std::vector<TsSpan> ts_spans;
+    uint16_t ts_used = 0;
+    uint16_t ts_resolved = 0;
+    uint32_t prof_draws = 0;
+    uint32_t prof_rt_draws = 0;
+    uint32_t prof_blas = 0;
+    uint32_t prof_resolves = 0;
+    uint32_t prof_caster_tris = 0;
+    float prof_upload_mb = 0;
 };
 
 UploadChunk MakeChunk(ID3D12Device* dev, uint64_t size) {
@@ -696,7 +736,7 @@ float4 hdr10(O i) : SV_Target {
 )";
 
 const char* kSmaaConfig = R"(
-cbuffer P : register(b1) { float4 metrics; };
+cbuffer P : register(b1) { float4 metrics; float4 subsample; };
 #define SMAA_RT_METRICS metrics
 #define SMAA_CUSTOM_SL
 #define SMAA_THRESHOLD 0.05
@@ -749,8 +789,89 @@ SmaaBlendV vs_blend(uint id : SV_VertexID) {
     return o;
 }
 float4 smaa_edges(SmaaEdgeV i) : SV_Target { return float4(SMAALumaEdgeDetectionPS(i.uv, i.o, tex0), 0, 0); }
-float4 smaa_weights(SmaaWeightV i) : SV_Target { return SMAABlendingWeightCalculationPS(i.uv, i.pix, i.o, tex0, tex1, tex2, 0); }
+float4 smaa_weights(SmaaWeightV i) : SV_Target { return SMAABlendingWeightCalculationPS(i.uv, i.pix, i.o, tex0, tex1, tex2, subsample); }
 float4 smaa_blend(SmaaBlendV i) : SV_Target { return SMAANeighborhoodBlendingPS(i.uv, i.o, tex0, tex1); }
+)";
+
+const char* kSmaaSeparateHlsl = R"(
+Texture2DMS<float4> ms : register(t0);
+float4 vs(uint id : SV_VertexID) : SV_Position {
+    float2 t = float2((id << 1) & 2, id & 2);
+    return float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+struct SepOut {
+    float4 s0 : SV_Target0;
+    float4 s1 : SV_Target1;
+};
+SepOut smaa_separate(float4 pos : SV_Position) {
+    int2 p = int2(pos.xy);
+    SepOut o;
+    o.s0 = ms.Load(p, 0);
+    o.s1 = ms.Load(p, 1);
+    return o;
+}
+)";
+
+// Non-recursive 2-frame SMAA T2x / 4x temporal resolve: reprojects only the previous SMAA frame with 3x3 YCoCg clip
+const char* kSmaaResolveHlsl = R"(
+cbuffer P : register(b1) { float4 p0; float4 p1; };
+Texture2D cur_tex : register(t0);
+Texture2D prev_tex : register(t1);
+Texture2D<float2> motion : register(t2);
+SamplerState ls : register(s0);
+float4 vs(uint id : SV_VertexID) : SV_Position {
+    float2 t = float2((id << 1) & 2, id & 2);
+    return float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+float3 ycocg(float3 c) {
+    return float3(dot(c, float3(0.25, 0.5, 0.25)), dot(c, float3(0.5, 0, -0.5)), dot(c, float3(-0.25, 0.5, -0.25)));
+}
+float3 rgb(float3 c) {
+    return float3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z);
+}
+float3 history_at(float2 uv, float2 size) {
+    float2 p = uv * size - 0.5;
+    float2 f = frac(p);
+    float2 c = (floor(p) + 0.5) / size;
+    float2 w0 = f * (-0.5 + f * (1 - 0.5 * f));
+    float2 w1 = 1 + f * f * (-2.5 + 1.5 * f);
+    float2 w2 = f * (0.5 + f * (2 - 1.5 * f));
+    float2 w3 = f * f * (-0.5 + 0.5 * f);
+    float2 at[3] = {c - 1 / size, c + w2 / (w1 + w2) / size, c + 2 / size};
+    float2 w[3] = {w0, w1 + w2, w3};
+    float3 r = 0;
+    for (int y = 0; y < 3; y++) {
+        for (int x = 0; x < 3; x++) r += prev_tex.SampleLevel(ls, float2(at[x].x, at[y].y), 0).rgb * w[x].x * w[y].y;
+    }
+    return max(r, 0);
+}
+float4 smaa_resolve(float4 pos : SV_Position) : SV_Target {
+    int2 px = int2(pos.xy);
+    float2 size;
+    cur_tex.GetDimensions(size.x, size.y);
+    float2 uv = pos.xy / size;
+    float4 cur = cur_tex.Load(int3(px, 0));
+    float2 mv = motion.Load(int3(px, 0));
+    float2 last = uv + mv;
+    if (p0.x > 0 || any(abs(mv) >= 2) || any(last != saturate(last))) return cur;
+    float3 c = ycocg(cur.rgb);
+    float3 sum = 0;
+    float3 sq = 0;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            float3 n = ycocg(cur_tex.Load(int3(clamp(px + int2(x, y), 0, int2(size) - 1), 0)).rgb);
+            sum += n;
+            sq += n * n;
+        }
+    }
+    float3 mean = sum / 9;
+    float3 spread = sqrt(max(sq / 9 - mean * mean, 0)) * 1.5 + 1e-5;
+    float3 h = ycocg(history_at(last, size));
+    float3 v = abs(h - mean) / spread;
+    float out_by = max(v.x, max(v.y, v.z));
+    if (out_by > 1) h = mean + (h - mean) / out_by;
+    return float4(max(rgb(lerp(c, h, 0.5)), 0), cur.a);
+}
 )";
 
 // the scene's view space from its depth, shared by ambient occlusion and global illumination
@@ -919,22 +1040,33 @@ float2 rtao(float4 pos : SV_Position) : SV_Target {
     ray.TMin = 0;
     ray.TMax = opt.x;
     float occluded = 0;
-    for (int i = 0; i < 4; i++) {
-        float u = (i + spread) / 4;
+    int rays = WaveActiveAllTrue(span < 3.0) ? 2 : 4;
+    for (int i = 0; i < rays; i++) {
+        float u = (i + spread) / rays;
         float phi = i * 2.3999632 + turn;
         float r = sqrt(u);
         ray.Direction = t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(1 - u);
         RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
         q.TraceRayInline(scene, RAY_FLAG_NONE, 0xFF, ray);
+        bool alpha_hit = false;
+        float alpha_t = opt.x;
         while (q.Proceed()) {
             uint caster = q.CandidateInstanceID() + q.CandidateGeometryIndex();
             float2 bary = q.CandidateTriangleBarycentrics();
-            if (CasterHit(caster, q.CandidatePrimitiveIndex(), bary)) q.CommitNonOpaqueTriangleHit();
+            if (CasterHit(caster, q.CandidatePrimitiveIndex(), bary)) {
+                alpha_t = q.CandidateTriangleRayT();
+                q.CommitNonOpaqueTriangleHit();
+                alpha_hit = true;
+            }
         }
-        float hit = q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? q.CommittedRayT() : opt.x;
-        occluded += saturate((opt.x - hit) / (opt.x * 0.615));
+        if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+            float hit = q.CommittedRayT();
+            float atten = 1 - smoothstep(0, opt.x, hit);
+            float w = (alpha_hit && abs(hit - alpha_t) < 1e-4) ? 0.45 : 1.0;
+            occluded += atten * w;
+        }
     }
-    return float2(pow(1 - occluded / 4, 2.2), c.z);
+    return float2(lerp(0.22, 1.0, pow(saturate(1 - occluded / rays), 1.6)), c.z);
 }
 #endif
 // opt.zw: step; 5 taps average the 4 pixel dither, depth edges left out
@@ -1004,6 +1136,7 @@ float FogLeft(float2 pos, float z) { return exp(-medium.Load(int3(pos, 0)).a * z
 const char* kGiHlsl = R"(
 static const float kHitLod = 4;    // mips down a hit's texture is read: its average colour, cheap
 static const float kOcclusion = 0.6;  // share of the blocked indirect light taken away
+static const float kBounce = 1.65;    // multi-bounce diffuse transport gain
 // the full resolution pixel a half resolution one traces for
 int2 Full(int2 h) { return h * 2; }
 // the screen's colour at p, a view space point, where the screen sees that point
@@ -1029,11 +1162,10 @@ float3 Bounced(uint caster, uint prim, float2 bary, float3 p, float3 dir) {
     if (dot(n, dir) > 0) n = -n;
     float3 albedo = 0.5;
     if (c.w & 8) {
-        float4 ta = asfloat(t_ray_records.Load4(at + 16));
-        float4 tb = asfloat(t_ray_records.Load4(at + 48));
-        float4 td = asfloat(t_ray_records.Load4(at + 80));
-        float4 tex = ta + (tb - ta) * bary.x + (td - ta) * bary.y;
-        float2 uv = float2(tex[c.w >> 4 & 3], tex[c.w >> 6 & 3]);
+        float2 ta = asfloat(t_ray_records.Load2(at + 16));
+        float2 tb = asfloat(t_ray_records.Load2(at + 48));
+        float2 td = asfloat(t_ray_records.Load2(at + 80));
+        float2 uv = ta + (tb - ta) * bary.x + (td - ta) * bary.y;
         albedo = t_heap[NonUniformResourceIndex(c.y)].SampleLevel(s_heap, uv, kHitLod).rgb;
     }
     albedo *= Unpack(lit.x);
@@ -1042,8 +1174,8 @@ float3 Bounced(uint caster, uint prim, float2 bary, float3 p, float3 dir) {
         float facing = saturate(dot(n, normalize(sun[2].xyz)));
         incoming += suncolour.rgb * facing * SunLit(sunmap, p + n * 0.05);
     }
-    // no brighter than the screen could show it: the sun's colour lights past 1 in the game's space
-    return Linear(saturate(albedo * incoming));
+    // keep sunlit HDR energy for bright doorway bounces while bounding extreme emissives
+    return Linear(min(albedo * incoming, 1.5));
 }
 // out: the light reaching the pixel, the share of its rays that reach the sky; -1 where no draw left an albedo
 float4 gi_trace(float4 pos : SV_Position) : SV_Target {
@@ -1081,6 +1213,7 @@ float4 gi_trace(float4 pos : SV_Position) : SV_Target {
         }
         if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
             sky += 1;
+            sum += Linear(height.xyz);
             continue;
         }
         float3 p = ray.Origin + ray.Direction * q.CommittedRayT();
@@ -1128,19 +1261,29 @@ float SunReach(float2 pos, float3 c, float3 albedo) {
     float light = dot(c, luma) / max(dot(albedo, luma), 0.02);
     return saturate((light - dot(amb.rgb, luma)) / (dot(suncolour.rgb, luma) * facing));
 }
-// the scene's colour lit again, written over it with its alpha kept; the half resolution light is taken up within
-// the pixel's depth
+// composited via OcclusionBlend (dst * src.a + src.rgb), keeping all MSAA subsamples and the glow mask alpha intact
 float4 gi_apply(float4 pos : SV_Position) : SV_Target {
+    int2 ipos = int2(pos.xy);
+    float4 a = Albedo(ipos);
+    if (a.a == 0) return float4(0, 0, 0, 1);
     float z = View(pos.xy).z;
-    float4 l = Smooth(int2(pos.xy) / 2, z);
-    float4 a = Albedo(int2(pos.xy));
     float keep = a.a * (1 - saturate(fog.x * z + fog.y)) * FogLeft(pos.xy, z);
-    float3 c = colour.Load(int3(pos.xy, 0)).rgb;
+    if (keep <= 0.001) return float4(0, 0, 0, 1);
+    float3 c = colour.Load(int3(ipos, 0)).rgb;
+    float4 l = Smooth(ipos / 2, z);
     // the pixel's indirect light: all of it in the sun's shadow, the game's ambient where the sun reaches
     float3 indirect = lerp(c, min(c, a.rgb * amb.rgb), SunReach(pos.xy, c, a.rgb));
-    float3 lit = c - indirect * (1 - l.w) * kOcclusion * keep;
-    float3 bounce = pow(a.rgb, 2.2) * l.rgb * keep;
-    return float4(pow(Linear(lit) + bounce, 1 / opt.y), 0);
+    float occ = height.w > 0 ? height.w : kOcclusion;
+    float3 lit = max(c - indirect * (1 - l.w) * occ * keep, 0);
+    float3 bounce = pow(a.rgb, 2.2) * l.rgb * kBounce * keep;
+    float3 target = pow(Linear(lit) + bounce, 1 / opt.y);
+    float m = 1;
+    if (c.r > 1e-4) m = min(m, lit.r / c.r);
+    if (c.g > 1e-4) m = min(m, lit.g / c.g);
+    if (c.b > 1e-4) m = min(m, lit.b / c.b);
+    m = saturate(m);
+    float3 add = max(target - c * m, 0);
+    return float4(add, m);
 }
 )";
 // Volumetric fog in place of the game's: humid height fog marched through the sun map and the terrain shade, thickest
@@ -1490,18 +1633,23 @@ float Ribbons(float2 q, float seconds, float blur) {
     return patch * saturate(0.75 * coarse + 0.25 * fine + 0.5 * coarse * fine);
 }
 // the light on the pixel at pos, c its view space point, a share of its own colour
-float3 CausticsLight(float2 pos, float3 c) {
+float3 CausticsLight(float2 pos, float3 c, bool check_sea) {
     float4 at = float4(c, 1);
     float3 world = float3(dot(at, terrain[0]), dot(at, terrain[1]), dot(at, height));
-    // the sheets lie on the sea's plane and fall along the sun
-    float2 q = world.xy - world.z * fog.xy / max(fog.z, 0.2);
-    float blur = length(fwidth(q)) + kDeepBlur * max(-world.z, 0);
+    if (check_sea && opt.y == 0 && world.z > 0.25) return 0;
     float3 n = Normal(pos, c);
     // a pixel with sky on both sides each way has no normal: taken as facing the camera
     if (!all(isfinite(n))) n = -normalize(c);
     if (dot(n, c) > 0) n = -n;
     float3 up = float3(dot(n, terrain[0].xyz), dot(n, terrain[1].xyz), dot(n, height.xyz));
-    float lit = saturate(dot(up, fog.xyz)) * (opt.x == 0 ? 1 : SunLit(sunmap, c));
+    float facing = saturate(dot(up, fog.xyz));
+    if (facing <= 0.001) return 0;
+    float lit = facing * (opt.x == 0 ? 1 : SunLit(sunmap, c));
+    if (lit <= 0.001) return 0;
+    // the sheets lie on the sea's plane and fall along the sun
+    float2 q = world.xy - world.z * fog.xy / max(fog.z, 0.2);
+    float px = c.z * max(proj.x * abs(ndc.x), proj.y * abs(ndc.y)) * 1.41421356 / max(abs(up.z), 0.2);
+    float blur = px + kDeepBlur * max(-world.z, 0);
     return Ribbons(q, fog.w, blur) * suncolour.rgb * kSea * kStrength * lit;
 }
 // a pixel's view space point; solid false where only sky lies behind it
@@ -1513,16 +1661,18 @@ float3 Floor(float2 pos, out bool solid) {
 float4 caustics_light(float4 pos : SV_Position) : SV_Target {
     bool solid;
     float3 c = Floor(pos.xy, solid);
-    float4 light = float4(CausticsLight(pos.xy, c), c.z);
-    return solid ? light : (float4)0;
+    if (!solid) return (float4)0;
+    return float4(CausticsLight(pos.xy, c, true), c.z);
 }
 // the camera under the sea: straight onto what lies under it
 float4 caustics_under(float4 pos : SV_Position) : SV_Target {
     bool solid;
     float3 c = Floor(pos.xy, solid);
+    if (!solid) return (float4)0;
     float depth = -dot(float4(c, 1), height);
-    float3 light = CausticsLight(pos.xy, c) * CausticsFade(max(depth, 0));
-    return solid ? float4(light, 0) : (float4)0;
+    if (depth <= 0) return (float4)0;
+    float3 light = CausticsLight(pos.xy, c, false) * CausticsFade(depth);
+    return float4(light, 0);
 }
 )";
 
@@ -1650,7 +1800,7 @@ int32_t CulledWinding(uint32_t su_mode) {
 
 // records' clip positions divided into a map's uv and depth, a triangle a thread: first record, count, then the uv
 // scale and offset over ndc x and y. In view mode the camera's view space instead, x and y scaled and offset by w, which
-// is the distance. A triangle whose area in the map's uv has cull's sign is left out, as the map's raster culls it
+// is the distance. When uv_pack bit 0 is set, the draw's selected UV channels are packed into bytes 16..23 per vertex
 const char* kDivideHlsl = R"(
 RWByteAddressBuffer records : register(u0);
 cbuffer C : register(b0) {
@@ -1660,6 +1810,7 @@ cbuffer C : register(b0) {
     float2 offset;
     uint view;
     int cull;
+    uint uv_pack;
 };
 float3 Divide(float4 p) {
     if (view) return float3(p.xy * scale + offset * p.w, p.w);
@@ -1673,14 +1824,151 @@ void main(uint id : SV_DispatchThreadID) {
     float3 a = Divide(asfloat(records.Load4(at)));
     float3 b = Divide(asfloat(records.Load4(at + 32)));
     float3 c = Divide(asfloat(records.Load4(at + 64)));
-    float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    if (cull != 0 && area * cull >= 0) a = asfloat(0x7FC00000u).xxx;
+    bool degen = all(a == b) || all(b == c) || all(c == a);
+    if (view) {
+        if (degen) a = asfloat(0x7FC00000u).xxx;
+    } else {
+        float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        float3 lo = min(a, min(b, c));
+        float3 hi = max(a, max(b, c));
+        bool outside = hi.x < -0.20 || lo.x > 1.20 || hi.y < -0.20 || lo.y > 1.20 || hi.z <= 0.0 || lo.z >= 1.0;
+        if (degen || area == 0 || (cull != 0 && area * cull >= 0) || outside) a = asfloat(0x7FC00000u).xxx;
+    }
     records.Store3(at, asuint(a));
     records.Store3(at + 32, asuint(b));
     records.Store3(at + 64, asuint(c));
+    if (uv_pack & 1) {
+        uint ux = (uv_pack >> 1) & 3;
+        uint uy = (uv_pack >> 3) & 3;
+        float4 ta = asfloat(records.Load4(at + 16));
+        float4 tb = asfloat(records.Load4(at + 48));
+        float4 tc = asfloat(records.Load4(at + 80));
+        records.Store2(at + 16, asuint(float2(ta[ux], ta[uy])));
+        records.Store2(at + 48, asuint(float2(tb[ux], tb[uy])));
+        records.Store2(at + 80, asuint(float2(tc[ux], tc[uy])));
+    }
 }
 )";
-constexpr uint32_t kDivideConstants = 8;
+constexpr uint32_t kDivideConstants = 9;
+
+// Screen-space sun RT shadow pass + 2-pass cross-bilateral denoiser + 4x MSAA edge refinement (concatenated after
+// kViewHlsl, kRtaoViewsHlsl, and fcip::kCasterHitHlsl when RT is defined)
+const char* kSunMaskHlsl = R"(
+Texture2D<float2> ao : register(t1);
+#ifdef RT
+RaytracingAccelerationStructure scene : register(t2);
+#endif
+
+float3 ViewAt(float2 px, float raw_d) {
+    float z = zp.x / (raw_d - zp.y);
+    float2 n = (int2(px) + 0.5) * ndc.xy + ndc.zw;
+    return float3((n - proj.zw) * proj.xy * z, z);
+}
+
+float3 ViewToSun(float3 p) {
+    float4 at = float4(p, 1);
+    float4 c = float4(dot(at, sun[0]), dot(at, sun[1]), dot(at, sun[2]), dot(at, sun[3]));
+    float3 n = c.w != 0 ? c.xyz / c.w : float3(0, 0, 2);
+    return float3(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5, n.z);
+}
+
+#ifdef RT
+bool SunRayLit(float3 p, float3 dir, float tmin) {
+    if (any(p.xy < 0) || any(p.xy > 1) || p.z + tmin >= 1) return true;
+    RayDesc ray;
+    ray.Origin = p;
+    ray.Direction = dir;
+    ray.TMin = tmin;
+    ray.TMax = 1 - p.z;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> qo;
+    qo.TraceRayInline(scene, RAY_FLAG_NONE, 0x01, ray);
+    qo.Proceed();
+    if (qo.CommittedStatus() != COMMITTED_NOTHING) return false;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> qa;
+    qa.TraceRayInline(scene, RAY_FLAG_NONE, 0x02, ray);
+    while (qa.Proceed()) {
+        uint caster = qa.CandidateInstanceID() + qa.CandidateGeometryIndex();
+        float2 bary = qa.CandidateTriangleBarycentrics();
+        if (CasterHit(caster, qa.CandidatePrimitiveIndex(), bary)) qa.CommitNonOpaqueTriangleHit();
+    }
+    return qa.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+float TraceSunPair(float2 frag, float3 p, float tmin) {
+    if (p.z + tmin >= 1 || any(p.xy < 0) || any(p.xy > 1)) return 1;
+    float turn = 6.2831853 * frac(52.9829189 * frac(dot(frag, float2(0.06711056, 0.00583715)))) + opt.y;
+    float2 cs;
+    sincos(turn, cs.y, cs.x);
+    float2 o = cs * 0.7071068;
+    float3 dir0 = float3(o * opt.x, 1);
+    float3 dir1 = float3(-o * opt.x, 1);
+    float lit = SunRayLit(p, dir0, tmin) ? 0.5 : 0.0;
+    lit += SunRayLit(p, dir1, tmin) ? 0.5 : 0.0;
+    return lit;
+}
+
+float2 sun_trace(float4 pos : SV_Position) : SV_Target {
+    int2 ipos = clamp(int2(pos.xy), int2(vp.xy), int2(vp.xy + vp.zw) - 1);
+    float raw_d = Raw(ipos);
+    if (raw_d <= 0) return float2(1, 0);
+    float3 c = ViewAt(ipos, raw_d);
+    float3 l = View(pos.xy - float2(1, 0));
+    float3 r = View(pos.xy + float2(1, 0));
+    float3 u = View(pos.xy - float2(0, 1));
+    float3 d = View(pos.xy + float2(0, 1));
+    float3 dx = abs(r.z - c.z) < abs(c.z - l.z) ? r - c : c - l;
+    float3 dy = abs(d.z - c.z) < abs(c.z - u.z) ? d - c : c - u;
+    float3 n = cross(dx, dy);
+    n = all(isfinite(n)) && dot(n, n) > 1e-12 ? normalize(n) : -normalize(c);
+    if (dot(n, c) > 0) n = -n;
+    float px_w = max(proj.x * abs(ndc.x), proj.y * abs(ndc.y)) * c.z;
+    float3 c_bias = c + n * (px_w * 0.75 + 0.01);
+    float3 tc = ViewToSun(c_bias);
+    float dz = max(abs(ViewToSun(c_bias + dx).z - tc.z), abs(ViewToSun(c_bias + dy).z - tc.z));
+    float tmin = clamp(dz + 1e-5, 1e-5, 0.01);
+    return float2(TraceSunPair(pos.xy, tc, tmin), c.z);
+}
+#endif
+
+float2 sun_blur(float4 pos : SV_Position) : SV_Target {
+    int2 p = int2(pos.xy);
+    int2 lo = int2(vp.xy);
+    int2 hi = int2(vp.xy + vp.zw) - 1;
+    float2 center = ao.Load(int3(p, 0));
+    if (center.y <= 0) return float2(1, 0);
+    static const float kW[4] = {1.0, 0.90, 0.65, 0.35};
+    float z_tol = max(0.05, center.y * 0.015);
+    float sum = center.x;
+    float wsum = 1.0;
+    for (int i = -3; i <= 3; i++) {
+        if (i == 0) continue;
+        float2 s = ao.Load(int3(clamp(p + i * int2(opt.zw), lo, hi), 0));
+        if (s.y <= 0) continue;
+        float w = kW[abs(i)] * saturate(1.0 - abs(s.y - center.y) / z_tol);
+        sum += s.x * w;
+        wsum += w;
+    }
+    return float2(sum / wsum, center.y);
+}
+
+#if defined(MS) && defined(RT)
+float2 sun_msaa(float4 pos : SV_Position, uint sid : SV_SampleIndex) : SV_Target {
+    int2 p = clamp(int2(pos.xy), int2(vp.xy), int2(vp.xy + vp.zw) - 1);
+    float d0 = depth.Load(p, 0);
+    float ds = depth.Load(p, sid);
+    float2 b0 = ao.Load(int3(p, 0));
+    if (sid == 0 || ds <= 0) return float2(b0.x, ds);
+    float z0 = d0 > 0 ? zp.x / (d0 - zp.y) : 0;
+    float zs = zp.x / (ds - zp.y);
+    if (d0 > 0 && abs(zs - z0) <= max(0.05, z0 * 0.015)) return float2(b0.x, ds);
+    float3 cs = ViewAt(pos.xy, ds);
+    float px_w = max(proj.x * abs(ndc.x), proj.y * abs(ndc.y)) * cs.z;
+    float3 cs_bias = cs - normalize(cs) * (px_w * 0.75 + 0.01);
+    float3 tc = ViewToSun(cs_bias);
+    return float2(TraceSunPair(pos.xy + float2(sid * 0.37, sid * 0.61), tc, 1e-4), ds);
+}
+#endif
+)";
 
 // a caster's clip position, then the interpolator its alpha test reads or nothing
 D3D12_STREAM_OUTPUT_DESC CasterOutput(uint32_t stream) {
@@ -2042,11 +2330,13 @@ public:
     void Unbind() override;
     ID3D12Resource* Feedback(Target& t) override;
     void Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect[4], bool gamma, bool alpha, uint32_t taps,
-              float mul, DXGI_FORMAT rtv) override;
+              float mul, DXGI_FORMAT rtv) override {
+        BlitSamples(src, fmt, uvrect, gamma, alpha, taps, mul, rtv, 1);
+    }
     void Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3D12_CPU_DESCRIPTOR_HANDLE rh, uint32_t w,
               uint32_t h, ID3D12Resource* const src[3], const DXGI_FORMAT fmt[3], const float p[8],
               float blend) override {
-        Pass(hlsl, "vs", entry, rtv, rh, w, h, src, fmt, p, blend);
+        Pass(hlsl, "vs", entry, rtv, rh, w, h, src, fmt, p, blend, 1);
     }
     void Capture(Target& t, const char* tag, float mul) override;
     float Scale() const override { return scale_; }
@@ -2186,7 +2476,9 @@ private:
     void RenderUi();
     void ShowFrame(const xenos::TextureFetch& t);
     void PresentHdr(const xenos::TextureFetch& t, D3D12_CPU_DESCRIPTOR_HANDLE bb);
-    ID3D12Resource* Smaa(ID3D12Resource* src, DXGI_FORMAT fmt, uint32_t w, uint32_t h);
+    void BlitSamples(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect[4], bool gamma, bool alpha, uint32_t taps,
+                     float mul, DXGI_FORMAT rtv, uint32_t samples);
+    void ApplySceneSmaa1x(const State& s);
     struct SmaaLookup {
         DXGI_FORMAT fmt;
         uint32_t w;
@@ -2196,9 +2488,13 @@ private:
     };
     bool EnsureSmaaLookups();
     bool CreateLookupTexture(ComPtr<ID3D12Resource>& r, const SmaaLookup& l);
-    bool EnsureSmaaTargets(DXGI_FORMAT fmt, uint32_t w, uint32_t h);
+    bool EnsureSmaaTargets(uint32_t w, uint32_t h);
     bool CreateSmaaTarget(int i, DXGI_FORMAT fmt, uint32_t w, uint32_t h);
-    bool DrawSmaaPasses(ID3D12Resource* src, DXGI_FORMAT fmt, uint32_t w, uint32_t h, const char* hlsl);
+    bool EnsureSmaaSepTargets(DXGI_FORMAT fmt, uint32_t w, uint32_t h);
+    bool SmaaInto(ID3D12Resource* src, DXGI_FORMAT src_fmt, uint32_t w, uint32_t h, DXGI_FORMAT dst_fmt,
+                  D3D12_CPU_DESCRIPTOR_HANDLE dst_rtv, uint32_t dst_samples, const float subsample[4], float blend);
+    bool SeparateSmaa(Target& scene, DXGI_FORMAT fmt);
+    void ResolveSmaaTemporal(Target& scene, Target& out);
     D3D12_CPU_DESCRIPTOR_HANDLE SmaaView(int i) { return Rtv(kSmaaRtv + i); }
     // one full screen pass of kAoHlsl, t0 the depth, t1 src, t2 RTAO's scene
     struct AoPass {
@@ -2223,9 +2519,19 @@ private:
         bool half = false;        // drawn to a target of half the depth's size
         bool caustics = false;    // kCausticsHlsl's, the sun map at t2
         bool lighten = false;     // CausticsBlend
+        bool sun_mask = false;    // kSunMaskHlsl's screen-space sun shadow mask
     };
     void Occlusion(const State& s, const OcclusionArgs& a);
     void BeginRayScene(const State& s);
+    void BeginSunMask(const State& s, const OcclusionArgs& a);
+    void EndSunMask();
+    bool EnsureSunMaskTargets(uint32_t w, uint32_t h, uint32_t samples);
+    void ComputeSunMask();
+    void ReplayWorldDraws();
+    void FlushSunMask();
+    ID3D12PipelineState* EnsureWorldDepthPass(const State& s, const ShaderOptions& ps_opt, const Variant& vs,
+                                              const PipelineKey& k, bool a2c, bool& no_rtv);
+    ID3D12Resource* SunMaskSrv() const { return sun_mask_.samples > 1 ? sun_mask_.ms.Get() : sun_mask_.tex[0].Get(); }
     void VolumetricFog(const State& s, const OcclusionArgs& a);
     bool EnsureFogTargets(uint32_t w, uint32_t h);
     ID3D12Resource* ShadeTexture();
@@ -2287,6 +2593,7 @@ private:
     D3D12_GPU_VIRTUAL_ADDRESS BuildRayScene(const OcclusionArgs& a);
     bool BuildStructure(ID3D12GraphicsCommandList4* cl4, const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& in,
                         ComPtr<ID3D12Resource>& dst);
+    bool BuildTlas(const D3D12_RAYTRACING_INSTANCE_DESC* instances, uint32_t count, ComPtr<ID3D12Resource>& top_out);
     bool Grow(ComPtr<ID3D12Resource>& r, uint64_t bytes, D3D12_RESOURCE_STATES state);
     bool MakeBuffer(ComPtr<ID3D12Resource>& r, uint64_t bytes, D3D12_RESOURCE_STATES state);
     bool CreateDividePipeline();
@@ -2294,13 +2601,19 @@ private:
     uint32_t CasterVertices(const State& s, const DrawArgs& a, const PipelineKey& k, D3D12_PRIMITIVE_TOPOLOGY topo,
                             uint32_t count, const Bound& b, bool alpha_test, CasterDraw& caster);
     void StreamOutCasters(CasterDraw caster, const DrawConstants& c);
+    void EnsureCasterCountersZeroed();
     void DropCasters(const Target* t);
     void BuildRayShadow(const Target& src, const ResolveArgs& r);
-    bool BuildCasterScene(const std::vector<CasterDraw>& draws, bool opaque, ComPtr<ID3D12Resource>& bottom_out,
-                          ComPtr<ID3D12Resource>& top_out);
+    struct RayShadow;
+    bool BuildShadowScene(const std::vector<CasterDraw>& draws, RayShadow& out);
+    bool BuildCasterBlas(const std::vector<CasterDraw>& draws, bool merge_opaque, ComPtr<ID3D12Resource>& bottom_out,
+                         uint32_t& first_out);
+    bool BuildCasterScene(const std::vector<CasterDraw>& draws, bool merge_opaque, ComPtr<ID3D12Resource>& bottom_out,
+                          ComPtr<ID3D12Resource>& top_out, uint32_t* first_out = nullptr);
     void DivideCasters(const std::vector<CasterDraw>& draws, const ResolveArgs& r);
     void BeginDivide();
-    void DivideRecords(uint32_t first, uint32_t count, const float scale_offset[4], uint32_t view, int32_t cull);
+    void DivideRecords(uint32_t first, uint32_t count, const float scale_offset[4], uint32_t view, int32_t cull,
+                       uint32_t uv_pack);
     void EndDivide();
     bool RayShadows(const State& s, const ShaderInfo& info, ShaderOptions& opt);
     void RayViews(uint32_t table, const D3D12_GPU_VIRTUAL_ADDRESS* rays);
@@ -2336,9 +2649,10 @@ private:
     // Pass with its own vertex shader entry; false when its pipeline cannot be made
     bool Pass(const char* hlsl, const char* vs_entry, const char* entry, DXGI_FORMAT rtv,
               D3D12_CPU_DESCRIPTOR_HANDLE rh, uint32_t w, uint32_t h, ID3D12Resource* const src[3],
-              const DXGI_FORMAT fmt[3], const float p[8], float blend);
+              const DXGI_FORMAT fmt[3], const float p[8], float blend, uint32_t samples = 1);
     ID3D12PipelineState* EnsurePassPipeline(const std::string& hlsl, const char* vs_entry, const char* entry,
-                                            DXGI_FORMAT rtv, float blend);
+                                            DXGI_FORMAT rtv, float blend, uint32_t samples = 1,
+                                            uint32_t num_rtv = 1);
     void ShaderView(ID3D12Resource* res, DXGI_FORMAT fmt, uint32_t slot);
     void FullScreen(ID3D12PipelineState* pso, uint32_t views, const float p[8]);
 
@@ -2367,13 +2681,17 @@ private:
     float peak_nits_ = kDefaultPeakNits;
     float paper_nits_ = kDefaultPaperNits;
     ComPtr<ID3D12Resource> out_[kOutTargets];
-    // SMAA: edges, blend weights and the blended frame, at the frame's size; its area and search lookups
+    // SMAA: edges and blend weights at the scene's size; lookups; separated subsamples for True SMAA 4x
     ComPtr<ID3D12Resource> smaa_[kSmaaTargets];
     ComPtr<ID3D12Resource> smaa_lut_[2];
+    ComPtr<ID3D12Resource> smaa_sep_[2];
     D3D12_RESOURCE_STATES smaa_state_[kSmaaTargets] = {};
+    D3D12_RESOURCE_STATES smaa_sep_state_[2] = {};
     uint32_t smaa_w_ = 0;
     uint32_t smaa_h_ = 0;
-    DXGI_FORMAT smaa_fmt_ = DXGI_FORMAT_UNKNOWN;
+    uint32_t smaa_sep_w_ = 0;
+    uint32_t smaa_sep_h_ = 0;
+    DXGI_FORMAT smaa_sep_fmt_ = DXGI_FORMAT_UNKNOWN;
     // ambient occlusion: the raw pass and its first blur, each with view distance beside it
     ComPtr<ID3D12Resource> ao_[kAoTargets];
     D3D12_RESOURCE_STATES ao_state_[kAoTargets] = {};
@@ -2438,9 +2756,13 @@ private:
         uint32_t mode = 0;     // the albedo draws take, kAlbedo*, 0 outside the camera's pass
         uint64_t rt_key = 0;   // the scene's colour target
         uint64_t ds_key = 0;   // and depth target, which depth only draws write alone
-        float ambient[3] = {};  // the game's, as the world's end brought it
+        float ambient[3] = {};    // the game's, as the world's end brought it
+        float sky_spill[3] = {};  // outdoor-minus-indoor ambient skylight spilling into interior openings
         std::vector<CasterDraw> draws;
         size_t divided = 0;  // draws in view space
+        uint64_t world_built_frame = ~0ull;
+        size_t world_draws = 0;
+        uint32_t world_first_caster = 0;
         ComPtr<ID3D12Resource> bottom;
         ComPtr<ID3D12Resource> top;
         ComPtr<ID3D12Resource> albedo;
@@ -2474,6 +2796,10 @@ private:
         uint32_t w = 0;
         uint32_t h = 0;
     } taa_;
+    uint32_t temporal_phase_ = 0;
+    uint32_t smaa_phase_ = 0;
+    bool taa_was_smaa_ = false;
+    uint32_t smaa_last_msaa_ = 0;
     // frame generation tells the HUD apart by the frame without it, in the back buffer's form
     struct Hudless {
         ComPtr<ID3D12Resource> frame;  // the target as the post effects left it, before the HUD
@@ -2500,11 +2826,73 @@ private:
     ComPtr<ID3D12Resource> ray_scratch_;
     // ray traced shadows: this frame's shadow map draws not yet resolved, and the scene each map's resolve built
     struct RayShadow {
-        ComPtr<ID3D12Resource> bottom;
+        ComPtr<ID3D12Resource> opaque_bottom;
+        ComPtr<ID3D12Resource> alpha_bottom;
         ComPtr<ID3D12Resource> top;
         uint64_t frame = 0;
     };
     std::unordered_map<uint32_t, RayShadow> ray_shadows_;  // by map address
+    // Phase 2B deferred screen-space sun shadow mask over the camera world pass
+    struct DeferredDraw {
+        ID3D12PipelineState* pso = nullptr;
+        D3D12_PRIMITIVE_TOPOLOGY topo = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        D3D12_INDEX_BUFFER_VIEW ibv{};
+        uint32_t count = 0;
+        int32_t base_vertex = 0;
+        D3D12_VIEWPORT vp{};
+        D3D12_RECT sc{};
+        float blend[4] = {};
+        uint32_t stencil_ref = 0;
+        TargetViews targets;
+        D3D12_GPU_VIRTUAL_ADDRESS vs_consts = 0;
+        D3D12_GPU_VIRTUAL_ADDRESS ps_consts = 0;
+        D3D12_GPU_VIRTUAL_ADDRESS flow = 0;
+        D3D12_GPU_VIRTUAL_ADDRESS draw = 0;
+        D3D12_GPU_VIRTUAL_ADDRESS fetch = 0;
+        D3D12_GPU_VIRTUAL_ADDRESS prev_consts = 0;
+        D3D12_GPU_VIRTUAL_ADDRESS motion_consts = 0;
+        D3D12_GPU_DESCRIPTOR_HANDLE vs_views{};
+        D3D12_GPU_DESCRIPTOR_HANDLE ps_views{};
+        D3D12_GPU_DESCRIPTOR_HANDLE vs_samplers{};
+        D3D12_GPU_DESCRIPTOR_HANDLE ps_samplers{};
+        bool motion = false;
+        bool albedo = false;
+        bool traced = false;
+        bool inline_rt = false;
+        bool has_caster = false;
+        CasterDraw caster;
+        DrawConstants draw_consts;
+    };
+    struct SunMask {
+        bool enabled = std::getenv("FCIP_DEFERRED_SHADOWS") == nullptr ||
+                       std::string_view(std::getenv("FCIP_DEFERRED_SHADOWS")) != "0";
+        bool deferring = false;
+        bool has_last_d = false;
+        bool last_d_from_z = false;
+        uint64_t rt_key = 0;
+        uint64_t ds_key = 0;
+        uint32_t w = 0;
+        uint32_t h = 0;
+        uint32_t samples = 1;
+        uint32_t guest_w = 0;
+        uint32_t guest_h = 0;
+        uint32_t sun_base = 0;
+        D3D12_GPU_VIRTUAL_ADDRESS sun_scene = 0;
+        float sun_spread = 0;
+        uint64_t pending_caster_verts = 0;
+        uint32_t pending_caster_slots = 0;
+        OcclusionArgs args;
+        FogView view;
+        DrawConstants last_d;
+        D3D12_RECT last_rect{};
+        ComPtr<ID3D12Resource> tex[2];
+        D3D12_RESOURCE_STATES tex_state[2] = {};
+        ComPtr<ID3D12Resource> ms;
+        D3D12_RESOURCE_STATES ms_state = D3D12_RESOURCE_STATE_COMMON;
+        std::vector<DeferredDraw> draws;
+    } sun_mask_;
+    ID3D12Resource* sun_mask_view_ = nullptr;
+    uint32_t sun_mask_samples_ = 1;
     bool fog_map_ = false;  // between kClearFogMap and kClearFogMapEnd
     bool blur_ = false;     // between kClearBlur and kClearBlurEnd
     float blur_scale_ = 1;  // the blurred resolve's host texels per title texel
@@ -2513,6 +2901,7 @@ private:
     uint64_t casters_used_ = 0;   // records this frame
     uint32_t caster_slots_ = 0;   // draws this frame, a stream output counter each
     uint32_t casters_built_ = 0;  // casters this frame's scenes hold
+    bool caster_counters_zeroed_ = false;
     ComPtr<ID3D12Resource> caster_records_;
     ComPtr<ID3D12Resource> caster_counters_;
     ComPtr<ID3D12Resource> casters_;
@@ -2634,8 +3023,15 @@ private:
             D3D12_GPU_VIRTUAL_ADDRESS rays[fcip::kRayScenes] = {};
             ID3D12Resource* fog = nullptr;
             ID3D12Resource* caustics = nullptr;
+            ID3D12Resource* sun_mask = nullptr;
+            uint32_t sun_mask_samples = 1;
         } stages[2];
     } binds_;
+    D3D12_INDEX_BUFFER_VIEW last_ibv_{};
+    D3D12_GPU_VIRTUAL_ADDRESS last_draw_cbv_ = 0;
+    D3D12_GPU_VIRTUAL_ADDRESS last_fetch_cbv_ = 0;
+    D3D12_GPU_VIRTUAL_ADDRESS last_prev_cbv_ = 0;
+    D3D12_GPU_VIRTUAL_ADDRESS last_motion_cbv_ = 0;
     // true where now differs from what the last draw set, which keeps it
     template <class T>
     bool Latch(T& last, const T& now) {
@@ -2654,12 +3050,46 @@ private:
     std::vector<KeptIndices> kept_indices_ = std::vector<KeptIndices>(kKeptUploads);
     uint64_t upload_epoch_ = 1;
     ID3D12Resource* vertex_chunk_ = nullptr;  // the ring chunk the bound vertex view covers
+    uint32_t vertex_view_table_ = UINT32_MAX;
+    ID3D12Resource* vertex_view_chunk_ = nullptr;
     uint64_t draw_fences_ = 0;  // DrawArgs::fences of the last draw
 
     ComPtr<ID3D12QueryHeap> query_heap_;
     ComPtr<ID3D12Resource> query_read_;
     Query queries_[kQueryCount];
     uint32_t open_queries_ = 0;
+
+    // GPU timestamp profiler (Phase 0)
+    struct ScopedGpuTimer {
+        D3D12Backend& b;
+        uint8_t bucket;
+        uint16_t start;
+        ScopedGpuTimer(D3D12Backend& backend, uint8_t bkt) : b(backend), bucket(bkt), start(0xFFFF) {
+            if (!b.prof_frame_) return;
+            b.FlushDrawBucket();
+            start = b.WriteTimestamp();
+        }
+        ~ScopedGpuTimer() {
+            if (start == 0xFFFF) return;
+            uint16_t end = b.WriteTimestamp();
+            if (end != 0xFFFF) b.CurrentFrame().ts_spans.push_back({bucket, start, end});
+        }
+    };
+    uint16_t WriteTimestamp();
+    void ResolveTimestamps();
+    void FlushDrawBucket();
+    void SetDrawBucket(uint8_t b);
+    void HarvestTimestamps(Frame& f, uint32_t slot_idx);
+    ComPtr<ID3D12QueryHeap> ts_heap_;
+    ComPtr<ID3D12Resource> ts_read_;
+    uint64_t ts_freq_ = 0;
+    bool prof_frame_ = false;
+    uint16_t prof_frame_start_ = 0xFFFF;
+    uint8_t prof_draw_bucket_ = prof::kBucketCount;
+    uint16_t prof_draw_start_ = 0xFFFF;
+    prof::Snapshot prof_avg_;
+    std::chrono::steady_clock::time_point prof_log_time_ = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point prof_last_present_ = std::chrono::steady_clock::now();
 
     std::chrono::steady_clock::time_point fps_start_ = std::chrono::steady_clock::now();
     uint32_t fps_frames_ = 0;
@@ -2702,6 +3132,10 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
         ext_->Reset(*this);
     }
     Begin();
+    prof_frame_ = prof::Enabled();
+    prof_draw_bucket_ = prof::kBucketCount;
+    prof_draw_start_ = 0xFFFF;
+    prof_frame_start_ = WriteTimestamp();
     LOGR("D3D12: %ux%u title, %ux%u window, render scale %.3f", width, height, swap_w_, swap_h_, scale_);
     return true;
 }
@@ -2891,6 +3325,13 @@ void D3D12Backend::CreateFrames() {
     D3D12_RESOURCE_DESC rd = BufferDesc(kQueryCount * sizeof(uint64_t));
     dev_->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                                   IID_PPV_ARGS(&query_read_));
+
+    queue_->GetTimestampFrequency(&ts_freq_);
+    D3D12_QUERY_HEAP_DESC tsd{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kFrames * kMaxTsQueries, 0};
+    dev_->CreateQueryHeap(&tsd, IID_PPV_ARGS(&ts_heap_));
+    D3D12_RESOURCE_DESC tsrd = BufferDesc(uint64_t(kFrames) * kMaxTsQueries * sizeof(uint64_t));
+    dev_->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &tsrd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                  IID_PPV_ARGS(&ts_read_));
 }
 
 std::filesystem::path PipelineCachePath() { return app::ExeDir() / "cache" / "pipelines.bin"; }
@@ -2992,6 +3433,9 @@ void D3D12Backend::Begin() {
 }
 
 void D3D12Backend::Submit(bool wait) {
+    FlushSunMask();
+    FlushDrawBucket();
+    if (!wait) ResolveTimestamps();
     cl_->Close();
     ID3D12CommandList* lists[] = {cl_.Get()};
     latency::Executed();
@@ -3002,6 +3446,12 @@ void D3D12Backend::Submit(bool wait) {
     f.fence = fence_value_;
     if (!wait) return;
     WaitFence(fence_value_);
+    f.ts_spans.clear();
+    f.ts_used = 0;
+    f.ts_resolved = 0;
+    prof_frame_start_ = 0xFFFF;
+    prof_draw_bucket_ = prof::kBucketCount;
+    prof_draw_start_ = 0xFFFF;
     f.alloc->Reset();
     f.garbage.clear();
     Recycle(f.ring);
@@ -3014,6 +3464,9 @@ void D3D12Backend::Submit(bool wait) {
 
 // what is recorded so far goes to the GPU, recording goes on in the same frame
 void D3D12Backend::Kick() {
+    FlushSunMask();
+    FlushDrawBucket();
+    ResolveTimestamps();
     cl_->Close();
     ID3D12CommandList* lists[] = {cl_.Get()};
     latency::Executed();
@@ -4245,6 +4698,9 @@ uint32_t D3D12Backend::BindTextures(const State& s, const ShaderInfo& info, Shad
     same = same && kept.fog == fog;
     ID3D12Resource* caustics = stage == ShaderStage::Pixel ? caustics_view_ : nullptr;
     same = same && kept.caustics == caustics;
+    ID3D12Resource* sun_mask = stage == ShaderStage::Pixel ? sun_mask_view_ : nullptr;
+    uint32_t sun_mask_s = sun_mask ? sun_mask_samples_ : 1;
+    same = same && kept.sun_mask == sun_mask && kept.sun_mask_samples == sun_mask_s;
     if (same && std::memcmp(kept.fetch, fetch, fetch_bytes) == 0) {
         samplers = kept.samplers;
         return kept.table;
@@ -4266,12 +4722,15 @@ uint32_t D3D12Backend::BindTextures(const State& s, const ShaderInfo& info, Shad
     }
     if (fog) ShaderView(fog, kGiFormat, table + first + fcip::kFogSlot);
     if (caustics) ShaderView(caustics, kCausticsFormat, table + first + fcip::kCausticsSlot);
+    if (sun_mask) TargetView(sun_mask, kSunMaskFormat, sun_mask_s, table + first + fcip::kSunMaskSlot);
     samplers = EnsureSamplers(descs);
     kept.info = &info;
     std::copy(sun, sun + fcip::kSunMaps, kept.sun);
     std::copy(rays, rays + fcip::kRayScenes, kept.rays);
     kept.fog = fog;
     kept.caustics = caustics;
+    kept.sun_mask = sun_mask;
+    kept.sun_mask_samples = sun_mask_s;
     kept.aniso = app::Get().aniso;
     std::memcpy(kept.fetch, fetch, fetch_bytes);
     kept.table = table;
@@ -4503,6 +4962,7 @@ bool D3D12Backend::UploadDirectIndices(const DrawArgs& a, uint32_t& min, uint32_
         min = kept.min;
         max = kept.max;
         D3D12_INDEX_BUFFER_VIEW v{kept.gpu, UINT(a.count) * 4, DXGI_FORMAT_R32_UINT};
+        last_ibv_ = v;
         cl_->IASetIndexBuffer(&v);
         return true;
     }
@@ -4517,6 +4977,7 @@ bool D3D12Backend::UploadDirectIndices(const DrawArgs& a, uint32_t& min, uint32_
     max = r.max;
     if (a.fenced) kept = {a.indices, a.count, format, upload_epoch_, ib.gpu, min, max};
     D3D12_INDEX_BUFFER_VIEW v{ib.gpu, UINT(a.count) * 4, DXGI_FORMAT_R32_UINT};
+    last_ibv_ = v;
     cl_->IASetIndexBuffer(&v);
     return true;
 }
@@ -4584,6 +5045,7 @@ bool D3D12Backend::UploadIndices(const DrawArgs& a, D3D12_PRIMITIVE_TOPOLOGY& to
     Alloc ib = Upload(list.size() * 4, 4);
     std::memcpy(ib.cpu, list.data(), list.size() * 4);
     D3D12_INDEX_BUFFER_VIEW v{ib.gpu, UINT(list.size() * 4), DXGI_FORMAT_R32_UINT};
+    last_ibv_ = v;
     cl_->IASetIndexBuffer(&v);
     return true;
 }
@@ -4673,8 +5135,10 @@ void D3D12Backend::BindConstants(const State& s, D3D12_GPU_VIRTUAL_ADDRESS fetch
     std::memcpy(flow, s.bools, 32);
     std::memcpy(flow + 32, s.loops, 128);
     bind(kRootFlow, flow, sizeof(flow));
-    cl_->SetGraphicsRootConstantBufferView(kRootDraw, UploadConstants(&c, sizeof(c)));
-    cl_->SetGraphicsRootConstantBufferView(kRootFetch, fetch);
+    last_draw_cbv_ = UploadConstants(&c, sizeof(c));
+    last_fetch_cbv_ = fetch;
+    cl_->SetGraphicsRootConstantBufferView(kRootDraw, last_draw_cbv_);
+    cl_->SetGraphicsRootConstantBufferView(kRootFetch, last_fetch_cbv_);
 }
 
 // a stage's float constants: only the blocks its shader reads are compared and swapped into the ring; an upload is
@@ -4717,12 +5181,16 @@ void D3D12Backend::BindViews(const State& s, const ShaderInfo& vs, const ShaderI
     const UploadChunks& ring = CurrentFrame().ring;
     const UploadChunk& chunk = ring.list[ring.at];
     vertex_chunk_ = chunk.res.Get();
-    if (ring.at == 0) {
-        uint32_t raw = kPsTextures + uint32_t(frame_ % kFrames);
-        dev_->CopyDescriptorsSimple(1, ViewCpu(vs_views), CopyView(raw), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    } else {
-        D3D12_SHADER_RESOURCE_VIEW_DESC raw = RawView(chunk);
-        dev_->CreateShaderResourceView(vertex_chunk_, &raw, ViewCpu(vs_views));
+    if (vs_views != vertex_view_table_ || vertex_chunk_ != vertex_view_chunk_) {
+        if (ring.at == 0) {
+            uint32_t raw = kPsTextures + uint32_t(frame_ % kFrames);
+            dev_->CopyDescriptorsSimple(1, ViewCpu(vs_views), CopyView(raw), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        } else {
+            D3D12_SHADER_RESOURCE_VIEW_DESC raw = RawView(chunk);
+            dev_->CreateShaderResourceView(vertex_chunk_, &raw, ViewCpu(vs_views));
+        }
+        vertex_view_table_ = vs_views;
+        vertex_view_chunk_ = vertex_chunk_;
     }
     if (Latch(binds_.roots[kRootVsViews], ViewGuest(vs_views).ptr)) {
         cl_->SetGraphicsRootDescriptorTable(kRootVsViews, ViewGuest(vs_views));
@@ -4792,14 +5260,40 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     }
     std::fill(std::begin(sun_), std::end(sun_), nullptr);
     bool sun = s.ps && SunCascade(s, s.ps->info, ps_opt);
-    std::fill(std::begin(ray_scenes_), std::end(ray_scenes_), 0);
-    bool traced = s.ps && RayShadows(s, s.ps->info, ps_opt);
-    bool ocean = s.ps && !sun && !traced && OceanFlags(s, s.ps->info, ps_opt);
-    fog_view_ = FogFlags(s, ps_opt) ? fog_[0].Get() : nullptr;
+    sun_mask_view_ = nullptr;
+    sun_mask_samples_ = 1;
     // the caustics take their own view and texture flag, so shadowed water takes them too
     caustics_under_ = false;
     bool caustics = s.ps && CausticsFlags(s, s.ps->info, ps_opt);
     caustics_view_ = caustics ? caustics_.Get() : nullptr;
+    if (sun_mask_.deferring) {
+        uint32_t w = TargetWidth(s);
+        uint64_t rtk = 0, dsk = 0;
+        bool has_rt = false;
+        if (s.ps) {
+            for (uint32_t i = 0; i < 4; i++) {
+                if ((s.ps->info.exports >> i & 1) && Bits(s.Reg(kRbColorMask), 4 * i, 4)) {
+                    TargetKeyOf(ColorSurface(s, i), false, w, rtk);
+                    has_rt = true;
+                    break;
+                }
+            }
+        }
+        bool has_ds = Bits(s.Reg(kRbDepthControl), 0, 3) != 0;
+        if (has_ds) {
+            uint32_t dinfo = s.Reg(kRbDepthInfo);
+            Surface dsf{Bits(dinfo, 0, 12), Bits(dinfo, 16, 1), SurfaceSamples(s), SurfacePitch(s)};
+            TargetKeyOf(dsf, true, w, dsk);
+        }
+        if (CurrentFrame().views + 1024 > kViewsPerFrame || open_queries_ || caustics_under_ || !has_ds ||
+            dsk != sun_mask_.ds_key || (has_rt && rtk != sun_mask_.rt_key)) {
+            FlushSunMask();
+        }
+    }
+    std::fill(std::begin(ray_scenes_), std::end(ray_scenes_), 0);
+    bool traced = s.ps && RayShadows(s, s.ps->info, ps_opt);
+    bool ocean = s.ps && !sun && !traced && OceanFlags(s, s.ps->info, ps_opt);
+    fog_view_ = FogFlags(s, ps_opt) ? fog_[0].Get() : nullptr;
     bool blur = s.ps && BlurFlags(s, s.ps->info, ps_opt);
     Variant* vs = VariantFor(s.vs, vs_opt);
     // no pixel shader: a depth only draw
@@ -4856,9 +5350,32 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     uint32_t caster_vertices = CasterVertices(s, a, k, topo, count, bound, ps_opt.alpha_test, caster);
     k.stream_out = caster.stream;
     extras_later = extras_later || (caster_vertices && Async());
+    bool defer_world = sun_mask_.deferring && !caustics_under_ && !open_queries_;
+    uint32_t orig_depth_control = k.depth_control;
+    uint32_t orig_color_control = k.color_control;
+    bool unblended = (k.blend[0] & 0x1FFF1FFF) == 0x00010001;
+    bool z_write_test = Bits(orig_depth_control, 0, 3) == 6;
+    bool a2c = Bits(orig_color_control, 4, 1) != 0;
+    bool want_z_prepass = defer_world && unblended && z_write_test && (!s.ps || !ps || !ps->info.writes_depth);
+    if (want_z_prepass) {
+        k.depth_control = (orig_depth_control & ~0x74u) | (2u << 4);  // Z_EQUAL, Z_WRITE = OFF
+        if (a2c) k.color_control &= ~(1u << 4);
+    }
     bool made = last_pso_ && std::memcmp(&k, &last_key_, sizeof(k)) == 0;
+    bool color_ok = ready && (made || !Async() || PipelineReady(k, *vs, ps));
+    ID3D12PipelineState* z_pso = nullptr;
+    bool z_no_rtv = false;
+    bool z_ok = !want_z_prepass;
+    if (want_z_prepass && ready) {
+        PipelineKey z_key = k;
+        z_key.depth_control = orig_depth_control;
+        z_key.color_control = orig_color_control;
+        z_pso = EnsureWorldDepthPass(s, ps_opt, *vs, z_key, a2c, z_no_rtv);
+        z_ok = (z_pso != nullptr);
+    }
     // the console's own draw meanwhile, whose variants the shader archive built and whose pipeline it drew with before
-    if (extras_later && (!ready || (!made && !PipelineReady(k, *vs, ps)))) {
+    bool fallback = (extras_later || (want_z_prepass && Async())) && (!ready || !color_ok || !z_ok);
+    if (fallback) {
         k = unbound;
         if (!BindDrawTargets(s, ps_info, k, bound, false, false)) return;
         vs_opt.motion = false;
@@ -4873,8 +5390,16 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         FinishKey(s, topo, k);
         caster = {};
         caster_vertices = 0;
+        traced = false;
+        z_pso = nullptr;
+        z_no_rtv = false;
+        want_z_prepass = false;
+    } else if (want_z_prepass && !z_pso) {
+        k.depth_control = orig_depth_control;
+        k.color_control = orig_color_control;
     }
-    ID3D12PipelineState* depth_pass = s.ps ? EnsureDepthPass(s, ps_opt, *vs, k) : nullptr;
+
+    ID3D12PipelineState* depth_pass = (!defer_world && s.ps) ? EnsureDepthPass(s, ps_opt, *vs, k) : nullptr;
     ID3D12PipelineState* caustics_pass = caustics_under_ ? EnsureCausticsPass(s, ps_opt, *vs, k) : nullptr;
     ID3D12PipelineState* pso = EnsurePipeline(k, *vs, ps);
     if (!pso) return;
@@ -4882,6 +5407,7 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
 
     DrawConstants c;
     FillDrawConstants(s, bound, c);
+    DrawConstants base_d = c;
     // the console's offset is in depth units, D3D12's constant bias on float depth scales with the depth
     if (Bits(k.su_mode, 11, 2)) c.ndc_offset[2] += s.RegF(kPaSuPolyOffsetFrontScale + 1);
     if (sun) {
@@ -4904,12 +5430,80 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
     if (bound.motion) BindMotion(s, a, vs->info);
     D3D12_VIEWPORT vp{0, 0, std::ceil(bound.w * bound.scale), std::ceil(bound.h * bound.scale), 0, 1};
     D3D12_RECT sc = HostRect(GuestScissor(s, bound.w, bound.h), bound.scale);
-    if (Latch(binds_.viewport, vp)) cl_->RSSetViewports(1, &vp);
-    if (Latch(binds_.scissor, sc)) cl_->RSSetScissorRects(1, &sc);
     float blend[4];
     for (uint32_t i = 0; i < 4; i++) blend[i] = s.RegF(kRbBlendRed + i);
-    if (Latch(binds_.blend, blend)) cl_->OMSetBlendFactor(blend);
     uint32_t stencil_ref = Bits(s.Reg(kRbStencilRefMask), 0, 8);
+    if (defer_world) {
+        if (!sun_mask_.has_last_d) {
+            sun_mask_.last_d = base_d;
+            sun_mask_.last_rect = sc;
+            sun_mask_.has_last_d = true;
+            sun_mask_.last_d_from_z = (z_pso != nullptr);
+        } else {
+            sun_mask_.last_rect.left = std::min(sun_mask_.last_rect.left, sc.left);
+            sun_mask_.last_rect.top = std::min(sun_mask_.last_rect.top, sc.top);
+            sun_mask_.last_rect.right = std::max(sun_mask_.last_rect.right, sc.right);
+            sun_mask_.last_rect.bottom = std::max(sun_mask_.last_rect.bottom, sc.bottom);
+            if (z_pso && !sun_mask_.last_d_from_z) {
+                sun_mask_.last_d = base_d;
+                sun_mask_.last_d_from_z = true;
+            }
+        }
+        DeferredDraw d{};
+        d.pso = pso;
+        d.topo = topo;
+        d.ibv = last_ibv_;
+        d.count = count;
+        d.base_vertex = a.base_vertex;
+        d.vp = vp;
+        d.sc = sc;
+        std::copy(std::begin(blend), std::end(blend), d.blend);
+        d.stencil_ref = stencil_ref;
+        d.targets = binds_.targets;
+        d.vs_consts = binds_.roots[kRootVsConsts];
+        d.ps_consts = binds_.roots[kRootPsConsts];
+        d.flow = binds_.roots[kRootFlow];
+        d.draw = last_draw_cbv_;
+        d.fetch = last_fetch_cbv_;
+        d.prev_consts = last_prev_cbv_;
+        d.motion_consts = last_motion_cbv_;
+        d.vs_views.ptr = binds_.roots[kRootVsViews];
+        d.ps_views.ptr = binds_.roots[kRootPsViews];
+        d.vs_samplers.ptr = binds_.roots[kRootVsSamplers];
+        d.ps_samplers.ptr = binds_.roots[kRootPsSamplers];
+        d.motion = bound.motion;
+        d.albedo = bound.albedo;
+        d.traced = traced;
+        d.inline_rt = traced && ps_opt.tex_flags[fcip::kShadowOut] == fcip::kShadowTraced;
+        d.has_caster = (caster_vertices != 0);
+        d.caster = caster;
+        d.draw_consts = c;
+        if (d.has_caster) {
+            sun_mask_.pending_caster_verts += caster.count;
+            sun_mask_.pending_caster_slots++;
+        }
+        sun_mask_.draws.push_back(d);
+        if (z_pso) {
+            if (z_no_rtv) {
+                D3D12_CPU_DESCRIPTOR_HANDLE dsv{binds_.targets.dsv};
+                cl_->OMSetRenderTargets(0, nullptr, FALSE, dsv.ptr ? &dsv : nullptr);
+                std::fill(std::begin(binds_.targets.rtv), std::end(binds_.targets.rtv), 0ull);
+            }
+            if (Latch(binds_.viewport, vp)) cl_->RSSetViewports(1, &vp);
+            if (Latch(binds_.scissor, sc)) cl_->RSSetScissorRects(1, &sc);
+            if (Latch(binds_.blend, blend)) cl_->OMSetBlendFactor(blend);
+            if (Latch(binds_.stencil_ref, stencil_ref)) cl_->OMSetStencilRef(stencil_ref);
+            if (Latch(binds_.pso, z_pso)) cl_->SetPipelineState(z_pso);
+            if (Latch(binds_.topology, topo)) cl_->IASetPrimitiveTopology(topo);
+            if (prof_frame_) SetDrawBucket(prof::kZPrepass);
+            cl_->DrawIndexedInstanced(count, 1, 0, a.base_vertex, 0);
+            binds_.valid = true;
+        }
+        return;
+    }
+    if (Latch(binds_.viewport, vp)) cl_->RSSetViewports(1, &vp);
+    if (Latch(binds_.scissor, sc)) cl_->RSSetScissorRects(1, &sc);
+    if (Latch(binds_.blend, blend)) cl_->OMSetBlendFactor(blend);
     if (Latch(binds_.stencil_ref, stencil_ref)) cl_->OMSetStencilRef(stencil_ref);
     if (Latch(binds_.pso, pso)) cl_->SetPipelineState(pso);
     if (Latch(binds_.topology, topo)) cl_->IASetPrimitiveTopology(topo);
@@ -4917,6 +5511,13 @@ void D3D12Backend::Draw(const State& s, const DrawArgs& a) {
         KeepShadowTarget(*bound.ds);
         if (bound.rt) KeepShadowTarget(*bound.rt);
         shadow_drawn_ = true;
+    }
+    if (prof_frame_) {
+        bool is_shadow = bound.ds && ShadowWidth(bound.ds->width);
+        uint8_t b = is_shadow ? prof::kShadowRaster : (traced ? prof::kForwardTraced : prof::kForwardOther);
+        SetDrawBucket(b);
+        CurrentFrame().prof_draws++;
+        if (traced) CurrentFrame().prof_rt_draws++;
     }
     if (depth_pass) {
         cl_->SetPipelineState(depth_pass);
@@ -4965,7 +5566,16 @@ void D3D12Backend::CapIllumination(const State& s, const PipelineKey& k, const B
 // D3D Clear, within the scissor: a whole target clear also clears the targets its EDRAM range holds
 void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], float z, uint32_t stencil,
                          const Rect* rect) {
+    if (flags & kClearSunMaskBegin) {
+        if (rect) BeginSunMask(s, UnpackOcclusion(color, z, stencil, *rect));
+        return;
+    }
+    if (flags & kClearSunMaskEnd) {
+        EndSunMask();
+        return;
+    }
     if (flags & kClearOcclusion) {
+        FlushSunMask();
         if (rect) Occlusion(s, UnpackOcclusion(color, z, stencil, *rect));
         return;
     }
@@ -4978,19 +5588,26 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         return;
     }
     if (flags & kClearIlluminationWorld) {
+        FlushSunMask();
         std::copy(color, color + 3, gi_.ambient);
+        gi_.sky_spill[0] = Channel(stencil, 16);
+        gi_.sky_spill[1] = Channel(stencil, 8);
+        gi_.sky_spill[2] = Channel(stencil, 0);
         gi_.capture = false;
         return;
     }
     if (flags & (kClearIlluminationUnlit | kClearIlluminationLit)) {
+        FlushSunMask();
         if (gi_.mode) gi_.mode = (flags & kClearIlluminationUnlit) ? kAlbedoClear : kAlbedoWrite;
         return;
     }
     if (flags & kClearIllumination) {
+        FlushSunMask();
         if (rect) Illumination(s, UnpackOcclusion(color, z, stencil, *rect));
         return;
     }
     if (flags & kClearFog) {
+        FlushSunMask();
         if (rect) VolumetricFog(s, UnpackOcclusion(color, z, stencil, *rect));
         return;
     }
@@ -4999,14 +5616,17 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         return;
     }
     if (flags & kClearClouds) {
+        FlushSunMask();
         if (rect) VolumetricClouds(s, UnpackOcclusion(color, z, stencil, *rect));
         return;
     }
     if (flags & kClearCaustics) {
+        FlushSunMask();
         if (rect) Caustics(s, UnpackOcclusion(color, z, stencil, *rect));
         return;
     }
     if (flags & (kClearCausticsWater | kClearCausticsDry)) {
+        FlushSunMask();
         caustics_water_ = (flags & kClearCausticsWater) != 0;
         return;
     }
@@ -5023,6 +5643,7 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         return;
     }
     if (flags & (kClearMotionPause | kClearMotionResume)) {
+        FlushSunMask();
         motion_.still = motion_.open && (flags & kClearMotionPause);
         if (cap_) std::fprintf(cap_, "motion %s\n", motion_.still ? "held still" : "resumed");
         return;
@@ -5032,14 +5653,18 @@ void D3D12Backend::Clear(const State& s, uint32_t flags, const float color[4], f
         return;
     }
     if (flags & kClearSceneEnd) {
+        FlushSunMask();
         EndMotion(s);
         EndScene();
         return;
     }
     if (flags & kClearHudBegin) {
+        FlushSunMask();
+        ApplySceneSmaa1x(s);
         KeepHudless(s);
         return;
     }
+    FlushSunMask();
     g_perf.clears++;
     uint32_t height = TargetHeight(s);
     uint32_t width = TargetWidth(s);
@@ -5100,6 +5725,7 @@ void D3D12Backend::Occlusion(const State& s, const OcclusionArgs& a) {
     OcclusionConstants(a, d, rect, rt->w, rt->h, c);
     // RTAO without inline ray tracing is GTAO
     D3D12_GPU_VIRTUAL_ADDRESS scene = traced ? BuildRayScene(a) : 0;
+    ScopedGpuTimer ao_timer(*this, prof::kAo);
     const char* entry = a.method == kAoSsao ? "occlusion" : "gtao";
     if (scene) entry = "rtao";
     AoPass raw{.entry = entry, .rtv = Rtv(kAoRtv), .scene = scene};
@@ -5143,7 +5769,7 @@ bool D3D12Backend::EnsureOcclusionTargets(uint32_t w, uint32_t h) {
 ID3D12PipelineState* D3D12Backend::EnsureOcclusionPipeline(const AoPass& p, bool ms_depth) {
     bool rt = p.scene != 0;
     uint64_t seed = uint64_t(p.out) | uint64_t(p.samples) << 8 | uint64_t(p.blend) << 16 | uint64_t(ms_depth) << 17;
-    seed |= uint64_t(p.rgb) << 18 | uint64_t(p.lighten) << 19;
+    seed |= uint64_t(p.rgb) << 18 | uint64_t(p.lighten) << 19 | uint64_t(p.sun_mask) << 20;
     auto& pso = ao_pipelines_[Hash64(p.entry, std::strlen(p.entry), seed)];
     if (pso) return pso.Get();
     std::string src = std::string(ms_depth ? "#define MS 1\n" : "") + (rt ? "#define RT 1\n" : "") + kViewHlsl;
@@ -5151,6 +5777,7 @@ ID3D12PipelineState* D3D12Backend::EnsureOcclusionPipeline(const AoPass& p, bool
     else if (p.fog) src += kFogHlsl;
     else if (p.clouds) src += kCloudHlsl;
     else if (p.caustics) src += std::string(fcip::kCausticsFadeHlsl) + kCausticsHlsl;
+    else if (p.sun_mask) src += (rt ? std::string(kRtaoViewsHlsl) + fcip::kCasterHitHlsl : std::string()) + kSunMaskHlsl;
     else if (rt) src += std::string(kRtaoViewsHlsl) + fcip::kCasterHitHlsl + kAoHlsl;
     else src += kAoHlsl;
     std::vector<uint8_t> vs;
@@ -5176,7 +5803,12 @@ ID3D12PipelineState* D3D12Backend::EnsureOcclusionPipeline(const AoPass& p, bool
     d.NumRenderTargets = 1;
     d.RTVFormats[0] = p.out;
     d.SampleDesc.Count = p.samples;
-    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return nullptr;
+    HRESULT hr = dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso));
+    if (FAILED(hr)) {
+        LOGE("D3D12: occlusion pipeline %s (out=%d, samples=%u) failed (hr=0x%08X)", p.entry, int(p.out),
+             p.samples, unsigned(hr));
+        return nullptr;
+    }
     return pso.Get();
 }
 
@@ -5252,6 +5884,7 @@ bool D3D12Backend::OcclusionPass(const AoPass& p, Target& depth, float c[kAoCons
 
 // fog marched through its own sun map, blended over the bound colour target
 void D3D12Backend::VolumetricFog(const State& s, const OcclusionArgs& a) {
+    ScopedGpuTimer fog_timer(*this, prof::kFog);
     uint32_t height = TargetHeight(s);
     Target* rt = ColorTarget(s, 0, height);
     Target* ds = DepthTarget(s, height);
@@ -5365,6 +5998,7 @@ bool D3D12Backend::EnsureFogTargets(uint32_t w, uint32_t h) {
 
 // clouds marched at half size, then blended into the bound colour target where its depth holds only sky
 void D3D12Backend::VolumetricClouds(const State& s, const OcclusionArgs& a) {
+    ScopedGpuTimer clouds_timer(*this, prof::kClouds);
     uint32_t height = TargetHeight(s);
     Target* rt = ColorTarget(s, 0, height);
     Target* ds = DepthTarget(s, height);
@@ -5427,6 +6061,7 @@ bool D3D12Backend::EnsureCloudTarget(uint32_t w, uint32_t h) {
 // the caustics' light over what the camera's pass drew so far, which the water's draws take; under the sea it goes
 // straight into the bound colour target
 void D3D12Backend::Caustics(const State& s, const OcclusionArgs& a) {
+    ScopedGpuTimer caustics_timer(*this, prof::kCaustics);
     caustics_lit_ = false;
     uint32_t height = TargetHeight(s);
     Target* rt = ColorTarget(s, 0, height);
@@ -5443,6 +6078,7 @@ void D3D12Backend::Caustics(const State& s, const OcclusionArgs& a) {
     float c[kAoConstants];
     OcclusionConstants(a, d, rect, rt->w, rt->h, c);
     c[16] = sun ? 1.0f : 0.0f;
+    c[17] = view.has_lake ? 1.0f : 0.0f;
     std::copy(std::begin(view.toward_sun), std::end(view.toward_sun), c + 20);
     std::copy(std::begin(view.light.sun), std::end(view.light.sun), c + 32);
     std::copy(std::begin(view.light.height), std::end(view.light.height), c + 48);
@@ -5494,6 +6130,9 @@ void D3D12Backend::BeginIllumination(const State& s) {
     gi_.mode = 0;
     gi_.draws.clear();
     gi_.divided = 0;
+    gi_.world_built_frame = ~0ull;
+    gi_.world_draws = 0;
+    gi_.world_first_caster = 0;
     if (!divide_pso_) return;
     uint32_t height = TargetHeight(s);
     Target* rt = ColorTarget(s, 0, height);
@@ -5525,7 +6164,40 @@ void D3D12Backend::Illumination(const State& s, const OcclusionArgs& a) {
     D3D12_RECT rect = HostRect(GuestScissor(s, b.w, b.h), b.scale);
     if (rect.right <= rect.left || rect.bottom <= rect.top) return;
     DivideView(a);
-    if (gi_.draws.empty() || !BuildCasterScene(gi_.draws, false, gi_.bottom, gi_.top)) return;
+    D3D12_GPU_VIRTUAL_ADDRESS scene = 0;
+    {
+        ScopedGpuTimer rt_timer(*this, prof::kRtBuild);
+        if (gi_.draws.empty()) return;
+        if (gi_.world_built_frame == frame_ && gi_.world_draws > 0 && gi_.world_draws <= gi_.draws.size() &&
+            ray_bottom_ && ray_top_) {
+            if (gi_.draws.size() == gi_.world_draws) {
+                scene = ray_top_->GetGPUVirtualAddress();
+            } else {
+                std::vector<CasterDraw> extra(gi_.draws.begin() + gi_.world_draws, gi_.draws.end());
+                uint32_t extra_first = 0;
+                if (BuildCasterBlas(extra, false, gi_.bottom, extra_first)) {
+                    D3D12_RAYTRACING_INSTANCE_DESC instances[2] = {};
+                    for (int idx = 0; idx < 2; idx++) {
+                        instances[idx].Transform[0][0] = 1;
+                        instances[idx].Transform[1][1] = 1;
+                        instances[idx].Transform[2][2] = 1;
+                        instances[idx].InstanceMask = 0xFF;
+                    }
+                    instances[0].InstanceID = gi_.world_first_caster;
+                    instances[0].AccelerationStructure = ray_bottom_->GetGPUVirtualAddress();
+                    instances[1].InstanceID = extra_first;
+                    instances[1].AccelerationStructure = gi_.bottom->GetGPUVirtualAddress();
+                    if (BuildTlas(instances, 2, gi_.top)) scene = gi_.top->GetGPUVirtualAddress();
+                } else {
+                    scene = ray_top_->GetGPUVirtualAddress();
+                }
+            }
+        } else if (BuildCasterScene(gi_.draws, false, gi_.bottom, gi_.top)) {
+            scene = gi_.top->GetGPUVirtualAddress();
+        }
+        if (!scene) return;
+    }
+    ScopedGpuTimer gi_timer(*this, prof::kGi);
     ID3D12Resource* colour = Feedback(*rt);
     if (!colour) return;
     float c[kAoConstants];
@@ -5539,16 +6211,19 @@ void D3D12Backend::Illumination(const State& s, const OcclusionArgs& a) {
     Resolved* sun = view.shadowed ? SunMap(fcip::SunMapsDrawn().far_base) : nullptr;
     c[31] = sun ? 1.0f : 0.0f;
     std::copy(std::begin(view.sun), std::end(view.sun), c + 32);
+    c[48] = gi_.sky_spill[0];
+    c[49] = gi_.sky_spill[1];
+    c[50] = gi_.sky_spill[2];
+    c[51] = fcip::Get().ambient_occlusion ? 0.38f : 0.60f;
     std::copy(std::begin(view.sun_colour), std::end(view.sun_colour), c + 52);
-    D3D12_GPU_VIRTUAL_ADDRESS scene = gi_.top->GetGPUVirtualAddress();
     AoPass trace{.entry = "gi_trace", .out = kGiFormat, .rtv = Rtv(kGiRtv), .scene = scene, .gi = true,
                  .colour = colour, .colour_format = rt->fmt, .sun = sun, .half = true};
     AoPass across{.entry = "gi_blur", .out = kGiFormat, .rtv = Rtv(kGiRtv + 1), .src = gi_.light[0].Get(),
                   .step_x = 1, .src_format = kGiFormat, .gi = true, .colour = colour, .colour_format = rt->fmt,
                   .half = true};
-    AoPass down{.entry = "gi_apply", .out = rt->fmt, .samples = rt->samples, .rtv = Rtv(rt->view),
-                .src = gi_.light[1].Get(), .step_y = 1, .src_format = kGiFormat, .rgb = true, .gi = true,
-                .colour = colour, .colour_format = rt->fmt};
+    AoPass down{.entry = "gi_apply", .out = rt->fmt, .samples = rt->samples, .blend = true, .rtv = Rtv(rt->view),
+                .src = gi_.light[1].Get(), .step_y = 1, .src_format = kGiFormat, .gi = true, .colour = colour,
+                .colour_format = rt->fmt};
     Transition(ds->res.Get(), ds->state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(gi_.albedo.Get(), gi_.albedo_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(gi_.light[0].Get(), gi_.light_state[0], D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -5765,6 +6440,8 @@ bool D3D12Backend::MotionWanted(const State& s, const ShaderInfo& ps) const {
 void D3D12Backend::BindMotion(const State& s, const DrawArgs& a, const ShaderInfo& vs) {
     if (motion_.still) {
         D3D12_GPU_VIRTUAL_ADDRESS cur = const_gpu_[kRootVsConsts];
+        last_prev_cbv_ = cur;
+        last_motion_cbv_ = motion_.consts[2];
         if (Latch(binds_.roots[kRootPrevConsts], cur)) cl_->SetGraphicsRootConstantBufferView(kRootPrevConsts, cur);
         D3D12_GPU_VIRTUAL_ADDRESS mc = motion_.consts[2];
         if (Latch(binds_.roots[kRootMotion], mc)) cl_->SetGraphicsRootConstantBufferView(kRootMotion, mc);
@@ -5808,6 +6485,8 @@ void D3D12Backend::BindMotion(const State& s, const DrawArgs& a, const ShaderInf
     bool attached = Bits(vte, 5, 1) && s.RegF(kPaClVportXScale + 5) >= 0.5f;
     uint32_t mode = last ? 1 : 0;
     if (!last && attached) mode = 3;
+    last_prev_cbv_ = consts;
+    last_motion_cbv_ = motion_.consts[mode];
     if (Latch(binds_.roots[kRootPrevConsts], consts)) cl_->SetGraphicsRootConstantBufferView(kRootPrevConsts, consts);
     D3D12_GPU_VIRTUAL_ADDRESS mc = motion_.consts[mode];
     if (Latch(binds_.roots[kRootMotion], mc)) cl_->SetGraphicsRootConstantBufferView(kRootMotion, mc);
@@ -5846,6 +6525,7 @@ void D3D12Backend::CapMotionMatch(const uint64_t (&read)[2], const uint8_t* now_
 
 // kMotionHlsl into the completed target; d maps the title's ndc over the depth target as its draws did
 void D3D12Backend::CompleteMotion(Target& depth, const DrawConstants& d) {
+    ScopedGpuTimer motion_timer(*this, prof::kUpscale);
     bool ms = motion_.samples > 1;
     ID3D12PipelineState* pso = EnsurePassPipeline(kMotionHlsl, "vs", ms ? "motion_ms" : "motion", kMotionFormat, -1);
     ID3D12PipelineState* resolve = nullptr;
@@ -5918,18 +6598,36 @@ float D3D12Backend::SceneScale() const {
 
 // the camera's pass begins: its full screen targets at the scene's scale, its draws offset by the next jitter
 void D3D12Backend::BeginScene() {
-    upscale_.scene = Fsr() || Taa();
+    bool smaa_t = fcip::SmaaTemporal();
+    upscale_.scene = Fsr() || Taa() || smaa_t;
     upscale_.motion = false;
     if (!upscale_.scene) {
         // frame generation alone: the title's own targets, unjittered
         jitter_[0] = 0;
         jitter_[1] = 0;
+        temporal_phase_ = 0;
+        return;
+    }
+    if (smaa_t) {
+        uint32_t p = (upscale_.jitters++) & 1;
+        temporal_phase_ = p;
+        smaa_phase_ = p;
+        // top-to-bottom pixel offsets (y negated vs bottom-to-top SMAA docs so projection matches subsampleIndices)
+        if (msaa_ <= 1) {
+            jitter_[0] = p ? -0.25f : 0.25f;
+            jitter_[1] = p ? -0.25f : 0.25f;
+        } else {
+            jitter_[0] = p ? -0.125f : 0.125f;
+            jitter_[1] = p ? 0.125f : -0.125f;
+        }
         return;
     }
     // Halton 2 and 3, eight phases for each output pixel a scene pixel covers
     float ratio = scale_ / scene_scale_;
     uint32_t phases = uint32_t(std::ceil(8 * ratio * ratio));
-    uint32_t i = upscale_.jitters++ % phases + 1;
+    uint32_t raw = upscale_.jitters++;
+    temporal_phase_ = raw & 1;
+    uint32_t i = raw % phases + 1;
     jitter_[0] = Halton(i, 2) - 0.5f;
     jitter_[1] = Halton(i, 3) - 0.5f;
 }
@@ -5942,9 +6640,10 @@ void LogUpscale(const std::string& what) {
     LOGR("FSR: %s", what.c_str());
 }
 
-// the camera's pass ends: its colour upscaled into the same surface at the render scale, which the title draws on,
-// and its depth and motion handed to frame generation
+// the camera's pass ends: its colour upscaled or temporally resolved into the same surface at the render scale, which
+// the title draws on, and its depth and motion handed to frame generation
 void D3D12Backend::EndScene() {
+    ScopedGpuTimer upscale_timer(*this, prof::kUpscale);
     fsr::Frame f;
     if (!std::exchange(upscale_.scene, false)) {
         auto drawn = targets_.find(upscale_.color);
@@ -5959,6 +6658,12 @@ void D3D12Backend::EndScene() {
     Target& in = color->second;
     Target* out = EnsureTarget(in.surface, false, in.width, in.height);
     if (!out) return;
+    if (fcip::SmaaTemporal()) {
+        bool inputs = generation_swap_ && EnsureSceneInputs(in, f);
+        ResolveSmaaTemporal(in, *out);
+        if (inputs) PrepareGeneration(f);
+        return;
+    }
     if (Taa()) {
         // read before the resolve, which sets the next reset
         bool inputs = generation_swap_ && EnsureSceneInputs(in, f);
@@ -6002,7 +6707,14 @@ bool D3D12Backend::EnsureSceneInputs(Target& color, fsr::Frame& f) {
     ID3D12Resource* depth_res = ms ? motion_.depth.Get() : ds.res.Get();
     D3D12_RESOURCE_STATES& depth_state = ms ? motion_.depth_state : ds.state;
     DXGI_FORMAT depth_format = ms ? DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
-    f.color = {color.res.Get(), uint32_t(ReadFormat(color)), color.w, color.h};
+    ID3D12Resource* color_res = color.res.Get();
+    if (color.samples > 1) {
+        color_res = Feedback(color);
+        if (!color_res) return false;
+    } else {
+        Transition(color_res, color.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    }
+    f.color = {color_res, uint32_t(ReadFormat(color)), color.w, color.h};
     f.depth = {depth_res, uint32_t(depth_format), ds.w, ds.h};
     f.motion = {motion_.done.Get(), 0, motion_.w, motion_.h};
     f.camera = upscale_.camera;
@@ -6015,7 +6727,6 @@ bool D3D12Backend::EnsureSceneInputs(Target& color, fsr::Frame& f) {
         CapFinite(depth_res, depth_state, "scene depth");
         CapFinite(motion_.done.Get(), motion_.done_state, "scene motion");
     }
-    Transition(color.res.Get(), color.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(depth_res, depth_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(motion_.done.Get(), motion_.done_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     return true;
@@ -6194,7 +6905,7 @@ void D3D12Backend::DrawUpscaled(ID3D12Resource* src, D3D12_RESOURCE_STATES& stat
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &sc);
     const float whole[4] = {0, 0, 1, 1};
-    Blit(src, fmt, whole, false, true, taps, 1, out.fmt);
+    BlitSamples(src, fmt, whole, false, true, taps, 1, out.fmt, out.samples);
 }
 
 // FSR's or TAA's output into the scene's target through AMD CAS, alpha from the scene; false when its pipeline cannot
@@ -6243,7 +6954,7 @@ bool D3D12Backend::EnsureHistory(uint32_t w, uint32_t h) {
 void D3D12Backend::ResolveTemporal(Target& scene, Target& out) {
     bool ok = upscale_.motion && EnsureHistory(scene.w, scene.h);
     // a history older than the last present shows another view
-    bool reset = upscale_.reset || presents_ - taa_.last > 1;
+    bool reset = upscale_.reset || presents_ - taa_.last > 1 || taa_was_smaa_;
     uint32_t prev = taa_.now;
     uint32_t now = prev ^ 1;
     if (ok) {
@@ -6263,9 +6974,73 @@ void D3D12Backend::ResolveTemporal(Target& scene, Target& out) {
     }
     taa_.now = now;
     taa_.last = presents_;
+    taa_was_smaa_ = false;
     if (!DrawSharpened(taa_.history[now].Get(), taa_.state[now], scene, out)) {
         DrawUpscaled(taa_.history[now].Get(), taa_.state[now], kUpscaledFormat, 1, out);
     }
+}
+
+void D3D12Backend::ResolveSmaaTemporal(Target& scene, Target& out) {
+    bool ok = upscale_.motion && EnsureHistory(scene.w, scene.h);
+    bool reset = upscale_.reset || presents_ - taa_.last > 1 || !taa_was_smaa_ || smaa_last_msaa_ != scene.samples;
+    uint32_t prev = taa_.now;
+    uint32_t now = prev ^ 1;
+    if (ok) {
+        DXGI_FORMAT src_fmt = scene.fmt;
+        if (scene.samples == 2) {
+            static constexpr float k4x[2][2][4] = {
+                {{5, 3, 1, 3}, {4, 6, 2, 3}},
+                {{3, 5, 1, 4}, {6, 4, 2, 4}},
+            };
+            ok = SeparateSmaa(scene, src_fmt);
+            if (ok) {
+                Transition(taa_.history[now].Get(), taa_.state[now], D3D12_RESOURCE_STATE_RENDER_TARGET);
+                ok = SmaaInto(smaa_sep_[0].Get(), src_fmt, scene.w, scene.h, kUpscaledFormat, Rtv(kTaaRtv + now), 1,
+                              k4x[smaa_phase_][0], -1.0f) &&
+                     SmaaInto(smaa_sep_[1].Get(), src_fmt, scene.w, scene.h, kUpscaledFormat, Rtv(kTaaRtv + now), 1,
+                              k4x[smaa_phase_][1], 0.5f);
+            }
+        } else if (scene.samples == 1) {
+            static constexpr float kT2x[2][4] = {{1, 1, 1, 0}, {2, 2, 2, 0}};
+            Transition(scene.res.Get(), scene.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+            Transition(taa_.history[now].Get(), taa_.state[now], D3D12_RESOURCE_STATE_RENDER_TARGET);
+            ok = SmaaInto(scene.res.Get(), src_fmt, scene.w, scene.h, kUpscaledFormat, Rtv(kTaaRtv + now), 1,
+                          kT2x[smaa_phase_], -1.0f);
+        } else {
+            static constexpr float kZero[4] = {};
+            ID3D12Resource* resolved = Feedback(scene);
+            Transition(taa_.history[now].Get(), taa_.state[now], D3D12_RESOURCE_STATE_RENDER_TARGET);
+            ok = resolved != nullptr &&
+                 SmaaInto(resolved, src_fmt, scene.w, scene.h, kUpscaledFormat, Rtv(kTaaRtv + now), 1, kZero, -1.0f);
+        }
+        if (ok) {
+            Transition(taa_.history[now].Get(), taa_.state[now], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+            Transition(taa_.history[prev].Get(), taa_.state[prev], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+            Transition(motion_.done.Get(), motion_.done_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+            Transition(out.res.Get(), out.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            ID3D12Resource* const src[3] = {taa_.history[now].Get(), taa_.history[prev].Get(), motion_.done.Get()};
+            const DXGI_FORMAT fmt[3] = {kUpscaledFormat, kUpscaledFormat, kMotionFormat};
+            const float p[8] = {reset ? 1.0f : 0.0f, 0, 0, 0, 0, 0, 0, 0};
+            ok = Pass(kSmaaResolveHlsl, "vs", "smaa_resolve", out.fmt, Rtv(out.view), out.w, out.h, src, fmt, p,
+                      -1.0f, out.samples);
+        }
+    }
+    upscale_.reset = !ok;
+    if (!ok) {
+        if (scene.samples > 1) {
+            if (ID3D12Resource* resolved = Feedback(scene)) {
+                D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+                DrawUpscaled(resolved, st, ReadFormat(scene), 1, out);
+            }
+        } else {
+            DrawUpscaled(scene.res.Get(), scene.state, ReadFormat(scene), 1, out);
+        }
+        return;
+    }
+    taa_.now = now;
+    taa_.last = presents_;
+    taa_was_smaa_ = true;
+    smaa_last_msaa_ = scene.samples;
 }
 
 // RTAO
@@ -6276,6 +7051,9 @@ void D3D12Backend::BeginRayScene(const State& s) {
     gi_.capture = false;
     gi_.draws.clear();
     gi_.divided = 0;
+    gi_.world_built_frame = ~0ull;
+    gi_.world_draws = 0;
+    gi_.world_first_caster = 0;
     uint32_t height = TargetHeight(s);
     Target* rt = ColorTarget(s, 0, height);
     Target* ds = DepthTarget(s, height);
@@ -6289,28 +7067,63 @@ void D3D12Backend::BeginRayScene(const State& s) {
 // the camera pass's world as its draws streamed it out, alpha tested ones kept for their test, in the view space
 // kAoHlsl's View() makes
 D3D12_GPU_VIRTUAL_ADDRESS D3D12Backend::BuildRayScene(const OcclusionArgs& a) {
+    ScopedGpuTimer rt_timer(*this, prof::kRtBuild);
     DivideView(a);
-    return BuildCasterScene(gi_.draws, false, ray_bottom_, ray_top_) ? ray_top_->GetGPUVirtualAddress() : 0;
+    bool merge_opaque = (gi_.mode == 0);
+    uint32_t first = 0;
+    if (!BuildCasterScene(gi_.draws, merge_opaque, ray_bottom_, ray_top_, &first)) return 0;
+    if (gi_.mode != 0) {
+        gi_.world_built_frame = frame_;
+        gi_.world_draws = gi_.draws.size();
+        gi_.world_first_caster = first;
+    }
+    return ray_top_->GetGPUVirtualAddress();
 }
 
-// in built into dst; the barriers keep it after the last reads of dst and the scratch, and before the next
+// built into dst; targeted UAV barriers keep it after any prior read of dst and before the next trace
 bool D3D12Backend::BuildStructure(ID3D12GraphicsCommandList4* cl4,
                                   const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& in,
                                   ComPtr<ID3D12Resource>& dst) {
     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info{};
     dev5_->GetRaytracingAccelerationStructurePrebuildInfo(&in, &info);
+    bool reused = dst && dst->GetDesc().Width >= info.ResultDataMaxSizeInBytes;
     if (!Grow(dst, info.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE)) return false;
-    if (!Grow(ray_scratch_, info.ScratchDataSizeInBytes, D3D12_RESOURCE_STATE_COMMON)) return false;
+    if (!Grow(ray_scratch_, info.ScratchDataSizeInBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)) return false;
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC d{};
     d.Inputs = in;
     d.DestAccelerationStructureData = dst->GetGPUVirtualAddress();
     d.ScratchAccelerationStructureData = ray_scratch_->GetGPUVirtualAddress();
-    D3D12_RESOURCE_BARRIER uav{};
-    uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    cl4->ResourceBarrier(1, &uav);
+    if (reused) {
+        D3D12_RESOURCE_BARRIER pre{};
+        pre.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        pre.UAV.pResource = dst.Get();
+        cl4->ResourceBarrier(1, &pre);
+    }
     cl4->BuildRaytracingAccelerationStructure(&d, 0, nullptr);
-    cl4->ResourceBarrier(1, &uav);
+    D3D12_RESOURCE_BARRIER post[2] = {};
+    post[0].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    post[0].UAV.pResource = dst.Get();
+    post[1].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    post[1].UAV.pResource = ray_scratch_.Get();
+    cl4->ResourceBarrier(2, post);
+    if (in.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL) CurrentFrame().prof_blas++;
     return true;
+}
+
+bool D3D12Backend::BuildTlas(const D3D12_RAYTRACING_INSTANCE_DESC* instances, uint32_t count,
+                             ComPtr<ID3D12Resource>& top_out) {
+    ComPtr<ID3D12GraphicsCommandList4> cl4;
+    if (!count || FAILED(cl_.As(&cl4))) return false;
+    uint64_t bytes = uint64_t(count) * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+    Alloc held = Upload(bytes, D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT);
+    std::memcpy(held.cpu, instances, size_t(bytes));
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS top{};
+    top.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    top.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+    top.NumDescs = count;
+    top.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    top.InstanceDescs = held.gpu;
+    return BuildStructure(cl4.Get(), top, top_out);
 }
 
 // r holds at least bytes, made a quarter bigger so a growing scene seldom makes it again
@@ -6376,10 +7189,11 @@ uint32_t D3D12Backend::CasterVertices(const State& s, const DrawArgs& a, const P
     if (!view && !shadow) return 0;
     fcip::FirstFetch f = s.ps ? s.ps->first_fetch : fcip::FirstFetch{};
     bool coverage = view && !alpha_test && Bits(k.color_control, 4, 1);
-    if (coverage && f.reg < 0) return 0;
+    if (view && (alpha_test || coverage) && f.reg < 0) return 0;
     uint32_t vertices = TriangleVertices(a, topo, count, k.strip_cut != 0);
     if (!vertices || !EnsureCasterBuffers()) return 0;
-    if (caster_slots_ >= kCasterDraws || casters_used_ + vertices > kCasterRecords) {
+    if (caster_slots_ + sun_mask_.pending_caster_slots >= kCasterDraws ||
+        casters_used_ + sun_mask_.pending_caster_verts + vertices > kCasterRecords) {
         static bool logged = false;
         if (view && !std::exchange(logged, true)) LOGR("D3D12: global illumination scene full, draws past it left out");
         return 0;
@@ -6469,15 +7283,19 @@ bool D3D12Backend::SceneCaster(const PipelineKey& k, const Bound& b) const {
     return MapKey(*b.rt) == gi_.rt_key && (k.blend[0] & 0x1FFF1FFF) == 0x00010001;
 }
 
+void D3D12Backend::EnsureCasterCountersZeroed() {
+    if (caster_counters_zeroed_) return;
+    uint64_t bytes = kCasterDraws * kRayCounter;
+    Alloc zeros = Upload(bytes, kRayCounter);
+    std::memset(zeros.cpu, 0, bytes);
+    Transition(caster_counters_.Get(), caster_counters_state_, D3D12_RESOURCE_STATE_COPY_DEST);
+    cl_->CopyBufferRegion(caster_counters_.Get(), 0, zeros.res, zeros.offset, bytes);
+    caster_counters_zeroed_ = true;
+}
+
 // the draw's records after the last one's, from a zeroed counter; c maps its ndc
 void D3D12Backend::StreamOutCasters(CasterDraw caster, const DrawConstants& c) {
-    if (!caster_slots_) {
-        uint64_t bytes = kCasterDraws * kRayCounter;
-        Alloc zeros = Upload(bytes, kRayCounter);
-        std::memset(zeros.cpu, 0, bytes);
-        Transition(caster_counters_.Get(), caster_counters_state_, D3D12_RESOURCE_STATE_COPY_DEST);
-        cl_->CopyBufferRegion(caster_counters_.Get(), 0, zeros.res, zeros.offset, bytes);
-    }
+    EnsureCasterCountersZeroed();
     Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_STREAM_OUT);
     Transition(caster_counters_.Get(), caster_counters_state_, D3D12_RESOURCE_STATE_STREAM_OUT);
     caster.info[0] = uint32_t(casters_used_);
@@ -6502,8 +7320,9 @@ void D3D12Backend::DropCasters(const Target* t) {
 }
 
 // the casters drawn into src since it last resolved or cleared, divided into the uv and depth of the map r makes and
-// built into that map's scene
+// built into that map's split opaque + alpha-tested scene
 void D3D12Backend::BuildRayShadow(const Target& src, const ResolveArgs& r) {
+    ScopedGpuTimer rt_timer(*this, prof::kRtBuild);
     std::vector<CasterDraw>& draws = caster_build_;
     draws.clear();
     std::erase_if(caster_draws_, [&](const CasterDraw& d) {
@@ -6514,30 +7333,187 @@ void D3D12Backend::BuildRayShadow(const Target& src, const ResolveArgs& r) {
     if (draws.empty() || casters_built_ + draws.size() > kCasterDraws) return;
     DivideCasters(draws, r);
     RayShadow& scene = ray_shadows_[r.dst_base];
-    if (BuildCasterScene(draws, false, scene.bottom, scene.top)) scene.frame = frame_;
+    if (BuildShadowScene(draws, scene)) scene.frame = frame_;
 }
 
-// the draws' divided casters built into one scene: the instance id is its first caster, a geometry per draw after it.
-// Opaque keeps only the draws without an alpha test, which take no caster
-bool D3D12Backend::BuildCasterScene(const std::vector<CasterDraw>& draws, bool opaque,
-                                    ComPtr<ID3D12Resource>& bottom_out, ComPtr<ID3D12Resource>& top_out) {
+bool D3D12Backend::BuildShadowScene(const std::vector<CasterDraw>& draws, RayShadow& out) {
     ComPtr<ID3D12GraphicsCommandList4> cl4;
     if (draws.empty() || FAILED(cl_.As(&cl4))) return false;
-    if (!opaque && casters_built_ + draws.size() > kCasterDraws) return false;
-    uint32_t first = casters_built_;
     D3D12_GPU_VIRTUAL_ADDRESS records = caster_records_->GetGPUVirtualAddress();
+    D3D12_RAYTRACING_INSTANCE_DESC instances[2] = {};
+    uint32_t inst_count = 0;
+
+    auto init_inst = [&](D3D12_RAYTRACING_INSTANCE_DESC& inst, uint32_t id, uint8_t mask,
+                         const ComPtr<ID3D12Resource>& blas) {
+        inst.Transform[0][0] = 1;
+        inst.Transform[1][1] = 1;
+        inst.Transform[2][2] = 1;
+        inst.InstanceID = id;
+        inst.InstanceMask = mask;
+        inst.AccelerationStructure = blas->GetGPUVirtualAddress();
+    };
+
+    // 1. Opaque shadow casters (InstanceMask 0x01): merged contiguous record runs, no CasterHit needed
     ray_geometry_.clear();
-    for (const CasterDraw& d : draws) {
-        if (opaque && d.alpha) continue;
+    uint32_t run_start = 0;
+    uint32_t run_count = 0;
+    auto flush_opaque = [&] {
+        if (!run_count) return;
         D3D12_RAYTRACING_GEOMETRY_DESC& g = ray_geometry_.emplace_back();
         g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-        g.Flags = d.alpha ? D3D12_RAYTRACING_GEOMETRY_FLAG_NONE : D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+        g.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
         g.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-        g.Triangles.VertexCount = d.count;
-        g.Triangles.VertexBuffer = {records + uint64_t(d.info[0]) * kCasterStride, kCasterStride};
+        g.Triangles.VertexCount = run_count;
+        g.Triangles.VertexBuffer = {records + uint64_t(run_start) * kCasterStride, kCasterStride};
+        run_count = 0;
+    };
+    for (const CasterDraw& d : draws) {
+        if (d.alpha) continue;
+        if (run_count && d.info[0] == run_start + run_count) {
+            run_count += d.count;
+        } else {
+            flush_opaque();
+            run_start = d.info[0];
+            run_count = d.count;
+        }
     }
-    if (ray_geometry_.empty()) return false;
-    if (!opaque) {
+    flush_opaque();
+    if (!ray_geometry_.empty()) {
+        Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottom{};
+        bottom.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+        bottom.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+        bottom.NumDescs = UINT(ray_geometry_.size());
+        bottom.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        bottom.pGeometryDescs = ray_geometry_.data();
+        if (!BuildStructure(cl4.Get(), bottom, out.opaque_bottom)) return false;
+        init_inst(instances[inst_count++], 0, 0x01, out.opaque_bottom);
+    }
+
+    // 2. Alpha-tested shadow casters (InstanceMask 0x02): merge contiguous runs with same texture/ref/compare
+    ray_geometry_.clear();
+    struct AlphaSpan {
+        uint32_t info[8];
+        uint32_t count;
+    };
+    std::vector<AlphaSpan> alpha_spans;
+    for (const CasterDraw& d : draws) {
+        if (!d.alpha) continue;
+        if (!alpha_spans.empty()) {
+            AlphaSpan& prev = alpha_spans.back();
+            if (d.info[0] == prev.info[0] + prev.count && d.info[1] == prev.info[1] && d.info[2] == prev.info[2] &&
+                (d.info[3] & 7u) == (prev.info[3] & 7u)) {
+                prev.count += d.count;
+                continue;
+            }
+        }
+        AlphaSpan span{};
+        std::copy(std::begin(d.info), std::end(d.info), std::begin(span.info));
+        span.count = d.count;
+        alpha_spans.push_back(span);
+    }
+    if (!alpha_spans.empty()) {
+        if (casters_built_ + alpha_spans.size() > kCasterDraws) return false;
+        uint32_t first_alpha = casters_built_;
+        casters_built_ += uint32_t(alpha_spans.size());
+        uint64_t bytes = alpha_spans.size() * kCasterBytes;
+        Alloc infos = Upload(bytes, kCasterBytes);
+        for (size_t i = 0; i < alpha_spans.size(); i++) {
+            const AlphaSpan& sp = alpha_spans[i];
+            std::memcpy(infos.cpu + i * kCasterBytes, sp.info, kCasterBytes);
+            D3D12_RAYTRACING_GEOMETRY_DESC& g = ray_geometry_.emplace_back();
+            g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+            g.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
+            g.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+            g.Triangles.VertexCount = sp.count;
+            g.Triangles.VertexBuffer = {records + uint64_t(sp.info[0]) * kCasterStride, kCasterStride};
+        }
+        Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_COPY_DEST);
+        cl_->CopyBufferRegion(casters_.Get(), uint64_t(first_alpha) * kCasterBytes, infos.res, infos.offset, bytes);
+        Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottom{};
+        bottom.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+        bottom.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+        bottom.NumDescs = UINT(ray_geometry_.size());
+        bottom.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        bottom.pGeometryDescs = ray_geometry_.data();
+        if (!BuildStructure(cl4.Get(), bottom, out.alpha_bottom)) return false;
+        init_inst(instances[inst_count++], first_alpha, 0x02, out.alpha_bottom);
+    }
+
+    return inst_count > 0 && BuildTlas(instances, inst_count, out.top);
+}
+
+// the draws' divided casters built into a bottom-level AS: alpha-tested draws (or all draws when !merge_opaque) get
+// per-draw caster records at first_out + geometry_index; opaque draws merge contiguous record spans when merge_opaque
+bool D3D12Backend::BuildCasterBlas(const std::vector<CasterDraw>& draws, bool merge_opaque,
+                                   ComPtr<ID3D12Resource>& bottom_out, uint32_t& first_out) {
+    ComPtr<ID3D12GraphicsCommandList4> cl4;
+    if (draws.empty() || FAILED(cl_.As(&cl4))) return false;
+    uint32_t first = casters_built_;
+    first_out = first;
+    D3D12_GPU_VIRTUAL_ADDRESS records = caster_records_->GetGPUVirtualAddress();
+    ray_geometry_.clear();
+    uint32_t uploaded = 0;
+    if (merge_opaque) {
+        for (const CasterDraw& d : draws) {
+            if (!d.alpha) continue;
+            D3D12_RAYTRACING_GEOMETRY_DESC& g = ray_geometry_.emplace_back();
+            g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+            g.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
+            g.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+            g.Triangles.VertexCount = d.count;
+            g.Triangles.VertexBuffer = {records + uint64_t(d.info[0]) * kCasterStride, kCasterStride};
+            uploaded++;
+        }
+        if (uploaded > 0) {
+            if (casters_built_ + uploaded > kCasterDraws) return false;
+            casters_built_ += uploaded;
+            uint64_t bytes = uint64_t(uploaded) * kCasterBytes;
+            Alloc infos = Upload(bytes, kCasterBytes);
+            size_t at = 0;
+            for (const CasterDraw& d : draws) {
+                if (!d.alpha) continue;
+                std::memcpy(infos.cpu + at * kCasterBytes, d.info, kCasterBytes);
+                at++;
+            }
+            Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_COPY_DEST);
+            cl_->CopyBufferRegion(casters_.Get(), uint64_t(first) * kCasterBytes, infos.res, infos.offset, bytes);
+        }
+        uint32_t run_start = 0;
+        uint32_t run_count = 0;
+        auto flush_run = [&] {
+            if (!run_count) return;
+            D3D12_RAYTRACING_GEOMETRY_DESC& g = ray_geometry_.emplace_back();
+            g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+            g.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+            g.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+            g.Triangles.VertexCount = run_count;
+            g.Triangles.VertexBuffer = {records + uint64_t(run_start) * kCasterStride, kCasterStride};
+            run_count = 0;
+        };
+        for (const CasterDraw& d : draws) {
+            if (d.alpha) continue;
+            if (run_count && d.info[0] == run_start + run_count) {
+                run_count += d.count;
+            } else {
+                flush_run();
+                run_start = d.info[0];
+                run_count = d.count;
+            }
+        }
+        flush_run();
+    } else {
+        if (casters_built_ + draws.size() > kCasterDraws) return false;
+        for (const CasterDraw& d : draws) {
+            D3D12_RAYTRACING_GEOMETRY_DESC& g = ray_geometry_.emplace_back();
+            g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+            g.Flags = d.alpha ? D3D12_RAYTRACING_GEOMETRY_FLAG_NONE : D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+            g.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+            g.Triangles.VertexCount = d.count;
+            g.Triangles.VertexBuffer = {records + uint64_t(d.info[0]) * kCasterStride, kCasterStride};
+        }
         casters_built_ += uint32_t(draws.size());
         uint64_t bytes = draws.size() * kCasterBytes;
         Alloc infos = Upload(bytes, kCasterBytes);
@@ -6547,15 +7523,24 @@ bool D3D12Backend::BuildCasterScene(const std::vector<CasterDraw>& draws, bool o
         Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_COPY_DEST);
         cl_->CopyBufferRegion(casters_.Get(), uint64_t(first) * kCasterBytes, infos.res, infos.offset, bytes);
     }
+    if (ray_geometry_.empty()) return false;
     Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottom{};
     bottom.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-    bottom.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+    bottom.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
     bottom.NumDescs = UINT(ray_geometry_.size());
     bottom.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     bottom.pGeometryDescs = ray_geometry_.data();
-    if (!BuildStructure(cl4.Get(), bottom, bottom_out)) return false;
+    return BuildStructure(cl4.Get(), bottom, bottom_out);
+}
+
+bool D3D12Backend::BuildCasterScene(const std::vector<CasterDraw>& draws, bool merge_opaque,
+                                    ComPtr<ID3D12Resource>& bottom_out, ComPtr<ID3D12Resource>& top_out,
+                                    uint32_t* first_out) {
+    uint32_t first = 0;
+    if (!BuildCasterBlas(draws, merge_opaque, bottom_out, first)) return false;
+    if (first_out) *first_out = first;
     D3D12_RAYTRACING_INSTANCE_DESC instance{};
     instance.Transform[0][0] = 1;
     instance.Transform[1][1] = 1;
@@ -6563,15 +7548,12 @@ bool D3D12Backend::BuildCasterScene(const std::vector<CasterDraw>& draws, bool o
     instance.InstanceID = first;
     instance.InstanceMask = 0xFF;
     instance.AccelerationStructure = bottom_out->GetGPUVirtualAddress();
-    Alloc held = Upload(sizeof(instance), D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT);
-    std::memcpy(held.cpu, &instance, sizeof(instance));
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS top{};
-    top.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-    top.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
-    top.NumDescs = 1;
-    top.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-    top.InstanceDescs = held.gpu;
-    return BuildStructure(cl4.Get(), top, top_out);
+    return BuildTlas(&instance, 1, top_out);
+}
+
+uint32_t CasterUvPack(const CasterDraw& d) {
+    if (!d.alpha && !(d.info[3] & kCasterTextured)) return 0;
+    return 1u | ((d.info[3] >> 4 & 3u) << 1) | ((d.info[3] >> 6 & 3u) << 3);
 }
 
 // each run of records over one target size divided into the map's uv and depth: the host's ndc spans the target's
@@ -6582,18 +7564,19 @@ void D3D12Backend::DivideCasters(const std::vector<CasterDraw>& draws, const Res
     float th = float(std::max(r.dst_height, 1u));
     for (size_t i = 0; i < draws.size();) {
         const CasterDraw& d = draws[i];
+        uint32_t pack = CasterUvPack(d);
         uint32_t count = d.count;
         size_t end = i + 1;
         // a draw into another target between them breaks the run
         while (end < draws.size() && draws[end].w == d.w && draws[end].h == d.h && draws[end].cull == d.cull &&
-               draws[end].info[0] == d.info[0] + count) {
+               CasterUvPack(draws[end]) == pack && draws[end].info[0] == d.info[0] + count) {
             count += draws[end].count;
             end++;
         }
         const float scale_offset[4] = {0.5f * float(d.w) / tw, -0.5f * float(d.h) / th,
                                        (0.5f * float(d.w) - float(r.rect.x1) + float(r.dst_x)) / tw,
                                        (0.5f * float(d.h) - float(r.rect.y1) + float(r.dst_y)) / th};
-        DivideRecords(d.info[0], count, scale_offset, 0, d.cull);
+        DivideRecords(d.info[0], count, scale_offset, 0, d.cull, pack);
         i = end;
     }
     EndDivide();
@@ -6606,17 +7589,18 @@ void D3D12Backend::DivideView(const OcclusionArgs& a) {
     BeginDivide();
     for (size_t i = gi_.divided; i < gi_.draws.size();) {
         const CasterDraw& d = gi_.draws[i];
+        uint32_t pack = CasterUvPack(d);
         uint32_t count = d.count;
         size_t end = i + 1;
         while (end < gi_.draws.size() && std::equal(d.ndc, d.ndc + 4, gi_.draws[end].ndc) &&
-               gi_.draws[end].info[0] == d.info[0] + count) {
+               CasterUvPack(gi_.draws[end]) == pack && gi_.draws[end].info[0] == d.info[0] + count) {
             count += gi_.draws[end].count;
             end++;
         }
         const float scale_offset[4] = {a.proj[0] / d.ndc[0], a.proj[1] / d.ndc[1],
                                        -a.proj[0] * (d.ndc[2] / d.ndc[0] + a.proj[2]),
                                        -a.proj[1] * (d.ndc[3] / d.ndc[1] + a.proj[3])};
-        DivideRecords(d.info[0], count, scale_offset, 1, 0);
+        DivideRecords(d.info[0], count, scale_offset, 1, 0, pack);
         i = end;
     }
     EndDivide();
@@ -6632,13 +7616,14 @@ void D3D12Backend::BeginDivide() {
 
 // count records from first, in dispatches of at most kDivideChunk
 void D3D12Backend::DivideRecords(uint32_t first, uint32_t count, const float scale_offset[4], uint32_t view,
-                                 int32_t cull) {
+                                 int32_t cull, uint32_t uv_pack) {
     for (uint32_t done = 0; done < count; done += kDivideChunk) {
         uint32_t n = std::min(count - done, kDivideChunk);
         uint32_t c[kDivideConstants] = {first + done, n};
         std::memcpy(c + 2, scale_offset, 4 * sizeof(float));
         c[6] = view;
         c[7] = uint32_t(cull);
+        c[8] = uv_pack;
         cl_->SetComputeRoot32BitConstants(1, kDivideConstants, c, 0);
         cl_->Dispatch((n / 3 + 63) / 64, 1, 1);
     }
@@ -6677,6 +7662,14 @@ bool D3D12Backend::RayShadows(const State& s, const ShaderInfo& info, ShaderOpti
         any = true;
     }
     if (!any) return false;
+    bool only_sun = !ray_scenes_[0] && !ray_scenes_[1] && !ray_scenes_[2] && ray_scenes_[3];
+    if (sun_mask_.deferring && only_sun && ray_scenes_[3] == sun_mask_.sun_scene) {
+        ray_scenes_[3] = 0;
+        opt.tex_flags[fcip::kShadowOut] = sun_mask_.samples > 1 ? fcip::kShadowMaskMs : fcip::kShadowMask;
+        sun_mask_view_ = SunMaskSrv();
+        sun_mask_samples_ = sun_mask_.samples;
+        return true;
+    }
     // which samplers are traced goes in the spreads, so it makes no variant of its own
     opt.tex_flags[fcip::kShadowOut] = fcip::kShadowTraced;
     // ultra's alpha tested receivers, the bushes among them, take no penumbra refinement
@@ -6687,24 +7680,24 @@ bool D3D12Backend::RayShadows(const State& s, const ShaderInfo& info, ShaderOpti
     return true;
 }
 
-// an alpha tested draw that traces shadows, depth tested and written without stencil, blending or alpha to coverage:
-// its depth goes first through its alpha test alone, then k tests equal without writing, so the traced pass
-// shades only the pixels the draw shows. None while a query counts samples
+// an alpha tested or A2C draw that traces shadows inline: depth prepass first, then Z_EQUAL color pass
 ID3D12PipelineState* D3D12Backend::EnsureDepthPass(const State& s, const ShaderOptions& ps_opt, const Variant& vs,
                                                    PipelineKey& k) {
     constexpr uint32_t kZTestAndWrite = 6;  // RB_DEPTHCONTROL bits 0 to 2: stencil off, z on, z write on
     constexpr uint32_t kZWriteAndFunc = 0x74;  // z write bit 2, z func bits 4 to 6
     constexpr uint32_t kZEqual = 2 << 4;
     uint32_t c = k.depth_control;
-    if (ps_opt.tex_flags[fcip::kShadowOut] != fcip::kShadowTraced || !ps_opt.alpha_test || open_queries_) return nullptr;
+    bool a2c = Bits(k.color_control, 4, 1) != 0;
+    if (ps_opt.tex_flags[fcip::kShadowOut] != fcip::kShadowTraced || (!ps_opt.alpha_test && !a2c) || open_queries_) {
+        return nullptr;
+    }
     if (Bits(c, 0, 3) != kZTestAndWrite) return nullptr;
-    if (Bits(k.color_control, 4, 1)) return nullptr;
     for (uint32_t i = 0; i < 4; i++) {
         if (k.rt_formats[i] && (k.blend[i] & 0x1FFF1FFF) != 0x00010001) return nullptr;
     }
     ShaderOptions opt = ps_opt;
     opt.tex_flags[fcip::kShadowOut] = 0;
-    opt.tex_flags[fcip::kDepthOut] = 1;
+    opt.tex_flags[fcip::kDepthOut] = a2c ? fcip::kDepthAlphaOut : 1;
     Variant* ps = EnsureVariant(s.ps, opt);
     if (!ps || ps->info.writes_depth) return nullptr;
     PipelineKey depth = k;
@@ -6714,8 +7707,272 @@ ID3D12PipelineState* D3D12Backend::EnsureDepthPass(const State& s, const ShaderO
     // an optimisation only: skipped until a build thread made it
     if (Async() && !PipelineReady(depth, vs, ps)) return nullptr;
     ID3D12PipelineState* pso = EnsurePipeline(depth, vs, ps);
-    if (pso) k.depth_control = (c & ~kZWriteAndFunc) | kZEqual;
+    if (pso) {
+        k.depth_control = (c & ~kZWriteAndFunc) | kZEqual;
+        if (a2c) k.color_control &= ~(1u << 4);
+    }
     return pso;
+}
+
+ID3D12PipelineState* D3D12Backend::EnsureWorldDepthPass(const State& s, const ShaderOptions& ps_opt, const Variant& vs,
+                                                        const PipelineKey& k, bool a2c, bool& no_rtv) {
+    PipelineKey depth = k;
+    depth.stream_out = 0;
+    depth.pass = kDepthPass;
+    if (!s.ps || (!ps_opt.alpha_test && !a2c)) {
+        no_rtv = true;
+        depth.ps = 0;
+        std::fill(std::begin(depth.rt_formats), std::end(depth.rt_formats), 0u);
+        depth.motion = 0;
+        depth.albedo = 0;
+        if (Async() && !PipelineReady(depth, vs, nullptr)) return nullptr;
+        return FindPipeline(depth, vs, nullptr);
+    }
+    no_rtv = false;
+    ShaderOptions opt = ps_opt;
+    opt.tex_flags[fcip::kShadowOut] = 0;
+    opt.tex_flags[fcip::kRayCoarseOut] = 0;
+    opt.tex_flags[fcip::kFogOut] = 0;
+    opt.tex_flags[fcip::kCausticsOut] = 0;
+    opt.tex_flags[fcip::kOceanOut] = 0;
+    opt.tex_flags[fcip::kBlurOut] = 0;
+    opt.tex_flags[fcip::kAlbedoOut] = 0;
+    for (uint32_t i = 0; i < fcip::kAlbedoOut; i++) opt.tex_flags[i] &= ~fcip::kAlbedoFetch;
+    opt.tex_flags[fcip::kDepthOut] = a2c ? fcip::kDepthAlphaOut : 1;
+    Variant* ps = EnsureVariant(s.ps, opt);
+    if (!ps || ps->info.writes_depth) return nullptr;
+    depth.ps = ps->key;
+    depth.albedo = 0;
+    if (Async() && !PipelineReady(depth, vs, ps)) return nullptr;
+    return FindPipeline(depth, vs, ps);
+}
+
+bool D3D12Backend::EnsureSunMaskTargets(uint32_t w, uint32_t h, uint32_t samples) {
+    if (sun_mask_.tex[1] && sun_mask_.w == w && sun_mask_.h == h && sun_mask_.samples == samples &&
+        (samples <= 1 || sun_mask_.ms)) {
+        return true;
+    }
+    sun_mask_.w = 0;
+    sun_mask_.h = 0;
+    sun_mask_.samples = 1;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(kSunMaskFormat, w, h);
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    for (int i = 0; i < 2; i++) {
+        if (sun_mask_.tex[i]) Release(std::move(sun_mask_.tex[i]));
+        sun_mask_.tex_state[i] = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, sun_mask_.tex_state[i], nullptr,
+                                                 IID_PPV_ARGS(&sun_mask_.tex[i])))) {
+            LOGE("D3D12: no %ux%u sun mask target", w, h);
+            return false;
+        }
+        dev_->CreateRenderTargetView(sun_mask_.tex[i].Get(), nullptr, Rtv(kSunMaskRtv + i));
+    }
+    if (sun_mask_.ms) Release(std::move(sun_mask_.ms));
+    if (samples > 1) {
+        d.SampleDesc.Count = samples;
+        sun_mask_.ms_state = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, sun_mask_.ms_state, nullptr,
+                                                 IID_PPV_ARGS(&sun_mask_.ms)))) {
+            LOGE("D3D12: no %ux%u %ux sun mask MSAA target", w, h, samples);
+            return false;
+        }
+        dev_->CreateRenderTargetView(sun_mask_.ms.Get(), nullptr, Rtv(kSunMaskMsRtv));
+    }
+    sun_mask_.w = w;
+    sun_mask_.h = h;
+    sun_mask_.samples = samples;
+    return true;
+}
+
+void D3D12Backend::BeginSunMask(const State& s, const OcclusionArgs& a) {
+    FlushSunMask();
+    if (!sun_mask_.enabled || !dev5_ || fcip::Get().shadow_filter < fcip::kFilterRay) return;
+    fcip::SunMaps sun = fcip::SunMapsDrawn();
+    auto scene = sun.far_base ? ray_shadows_.find(sun.far_base) : ray_shadows_.end();
+    if (scene == ray_shadows_.end() || scene->second.frame != frame_) return;
+    uint32_t height = TargetHeight(s);
+    Target* rt = ColorTarget(s, 0, height);
+    Target* ds = DepthTarget(s, height);
+    if (!rt || !ds || rt->w != ds->w || rt->h != ds->h || rt->samples != ds->samples) return;
+    FogView view = FogViewAt(a.method);
+    if (!view.shadowed) return;
+    if (!EnsureSunMaskTargets(rt->w, rt->h, rt->samples)) return;
+    uint64_t rtk = 0, dsk = 0;
+    if (!TargetKeyOf(rt->surface, false, rt->width, rtk) || !TargetKeyOf(ds->surface, true, ds->width, dsk)) return;
+    sun_mask_.deferring = true;
+    sun_mask_.has_last_d = false;
+    sun_mask_.last_d_from_z = false;
+    sun_mask_.rt_key = rtk;
+    sun_mask_.ds_key = dsk;
+    sun_mask_.guest_w = TargetWidth(s);
+    sun_mask_.guest_h = height;
+    sun_mask_.sun_base = sun.far_base;
+    sun_mask_.sun_scene = scene->second.top->GetGPUVirtualAddress();
+    sun_mask_.sun_spread = RaySpread(sun.far_base, sun);
+    sun_mask_.pending_caster_verts = 0;
+    sun_mask_.pending_caster_slots = 0;
+    sun_mask_.args = a;
+    sun_mask_.view = view;
+    sun_mask_.draws.clear();
+}
+
+void D3D12Backend::EndSunMask() { FlushSunMask(); }
+
+void D3D12Backend::ComputeSunMask() {
+    auto rtit = targets_.find(sun_mask_.rt_key);
+    auto dsit = targets_.find(sun_mask_.ds_key);
+    if (!sun_mask_.has_last_d || rtit == targets_.end() || dsit == targets_.end()) return;
+    Target& ds = dsit->second;
+    ScopedGpuTimer sun_timer(*this, prof::kSunMask);
+    float c[kAoConstants];
+    OcclusionConstants(sun_mask_.args, sun_mask_.last_d, sun_mask_.last_rect, ds.w, ds.h, c);
+    c[16] = sun_mask_.sun_spread;
+    c[17] = (fcip::Temporal() && temporal_phase_) ? 1.5707963f : 0.0f;
+    std::copy(std::begin(sun_mask_.view.sun), std::end(sun_mask_.view.sun), c + 32);
+    Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(ds.res.Get(), ds.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+
+    // Pass 1: 2 stratified sun rays/pixel into tex[0]
+    AoPass trace{.entry = "sun_trace", .out = kSunMaskFormat, .rtv = Rtv(kSunMaskRtv),
+                 .scene = sun_mask_.sun_scene, .sun_mask = true};
+    Transition(sun_mask_.tex[0].Get(), sun_mask_.tex_state[0], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    bool ok = OcclusionPass(trace, ds, c, sun_mask_.last_rect);
+    Transition(sun_mask_.tex[0].Get(), sun_mask_.tex_state[0], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+
+    // Pass 2a & 2b: separable 7-tap depth-aware bilateral denoiser (H then V -> tex[0])
+    AoPass blur_h{.entry = "sun_blur", .out = kSunMaskFormat, .rtv = Rtv(kSunMaskRtv + 1),
+                  .src = sun_mask_.tex[0].Get(), .step_x = 1, .src_format = kSunMaskFormat, .sun_mask = true};
+    Transition(sun_mask_.tex[1].Get(), sun_mask_.tex_state[1], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ok = ok && OcclusionPass(blur_h, ds, c, sun_mask_.last_rect);
+    Transition(sun_mask_.tex[1].Get(), sun_mask_.tex_state[1], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+
+    AoPass blur_v{.entry = "sun_blur", .out = kSunMaskFormat, .rtv = Rtv(kSunMaskRtv),
+                  .src = sun_mask_.tex[1].Get(), .step_y = 1, .src_format = kSunMaskFormat, .sun_mask = true};
+    Transition(sun_mask_.tex[0].Get(), sun_mask_.tex_state[0], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ok = ok && OcclusionPass(blur_v, ds, c, sun_mask_.last_rect);
+    Transition(sun_mask_.tex[0].Get(), sun_mask_.tex_state[0], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+
+    // Pass 3: 4x MSAA edge-sample refinement into sun_mask_.ms
+    if (ok && sun_mask_.samples > 1) {
+        AoPass msaa{.entry = "sun_msaa", .out = kSunMaskFormat, .samples = sun_mask_.samples,
+                    .rtv = Rtv(kSunMaskMsRtv), .src = sun_mask_.tex[0].Get(),
+                    .scene = sun_mask_.sun_scene, .src_format = kSunMaskFormat, .sun_mask = true};
+        Transition(sun_mask_.ms.Get(), sun_mask_.ms_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        OcclusionPass(msaa, ds, c, sun_mask_.last_rect);
+        Transition(sun_mask_.ms.Get(), sun_mask_.ms_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    }
+    Unbind();
+}
+
+void D3D12Backend::ReplayWorldDraws() {
+    auto rtit = targets_.find(sun_mask_.rt_key);
+    auto dsit = targets_.find(sun_mask_.ds_key);
+    if (rtit == targets_.end() || dsit == targets_.end()) return;
+    Target& rt = rtit->second;
+    Target& ds = dsit->second;
+    bool has_motion = false;
+    bool has_albedo = false;
+    bool uses_rt_views = false;
+    bool any_caster = false;
+    for (const DeferredDraw& d : sun_mask_.draws) {
+        has_motion = has_motion || d.motion;
+        has_albedo = has_albedo || d.albedo;
+        uses_rt_views = uses_rt_views || d.inline_rt;
+        any_caster = any_caster || d.has_caster;
+    }
+    Transition(rt.res.Get(), rt.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    Transition(ds.res.Get(), ds.state, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    if (has_motion && motion_.drawn) Transition(motion_.drawn.Get(), motion_.drawn_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (has_albedo && gi_.albedo) Transition(gi_.albedo.Get(), gi_.albedo_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (any_caster) EnsureCasterCountersZeroed();
+    if (uses_rt_views) {
+        Transition(casters_.Get(), casters_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    }
+    if (dev5_) {
+        D3D12_GPU_DESCRIPTOR_HANDLE heap = view_heap_->GetGPUDescriptorHandleForHeapStart();
+        if (Latch(binds_.roots[kRootHeap], heap.ptr)) cl_->SetGraphicsRootDescriptorTable(kRootHeap, heap);
+    }
+    for (const DeferredDraw& d : sun_mask_.draws) {
+        if (Latch(binds_.targets, d.targets)) {
+            uint32_t rtv_cnt = 0;
+            D3D12_CPU_DESCRIPTOR_HANDLE rtvs[fcip::kAlbedoTarget + 1];
+            for (uint32_t i = 0; i <= fcip::kAlbedoTarget; i++) {
+                if (!d.targets.rtv[i]) break;
+                rtvs[rtv_cnt++] = {d.targets.rtv[i]};
+            }
+            D3D12_CPU_DESCRIPTOR_HANDLE dsv{d.targets.dsv};
+            cl_->OMSetRenderTargets(rtv_cnt, rtv_cnt ? rtvs : nullptr, FALSE, dsv.ptr ? &dsv : nullptr);
+        }
+        if (Latch(binds_.roots[kRootVsConsts], d.vs_consts)) cl_->SetGraphicsRootConstantBufferView(kRootVsConsts, d.vs_consts);
+        if (Latch(binds_.roots[kRootPsConsts], d.ps_consts)) cl_->SetGraphicsRootConstantBufferView(kRootPsConsts, d.ps_consts);
+        if (Latch(binds_.roots[kRootFlow], d.flow)) cl_->SetGraphicsRootConstantBufferView(kRootFlow, d.flow);
+        cl_->SetGraphicsRootConstantBufferView(kRootDraw, d.draw);
+        cl_->SetGraphicsRootConstantBufferView(kRootFetch, d.fetch);
+        if (d.motion) {
+            if (Latch(binds_.roots[kRootPrevConsts], d.prev_consts)) {
+                cl_->SetGraphicsRootConstantBufferView(kRootPrevConsts, d.prev_consts);
+            }
+            if (Latch(binds_.roots[kRootMotion], d.motion_consts)) {
+                cl_->SetGraphicsRootConstantBufferView(kRootMotion, d.motion_consts);
+            }
+        }
+        if (Latch(binds_.roots[kRootVsViews], d.vs_views.ptr)) {
+            cl_->SetGraphicsRootDescriptorTable(kRootVsViews, d.vs_views);
+        }
+        if (Latch(binds_.roots[kRootPsViews], d.ps_views.ptr)) {
+            cl_->SetGraphicsRootDescriptorTable(kRootPsViews, d.ps_views);
+        }
+        if (Latch(binds_.roots[kRootVsSamplers], d.vs_samplers.ptr)) {
+            cl_->SetGraphicsRootDescriptorTable(kRootVsSamplers, d.vs_samplers);
+        }
+        if (Latch(binds_.roots[kRootPsSamplers], d.ps_samplers.ptr)) {
+            cl_->SetGraphicsRootDescriptorTable(kRootPsSamplers, d.ps_samplers);
+        }
+        if (Latch(binds_.viewport, d.vp)) cl_->RSSetViewports(1, &d.vp);
+        if (Latch(binds_.scissor, d.sc)) cl_->RSSetScissorRects(1, &d.sc);
+        if (Latch(binds_.blend, d.blend)) cl_->OMSetBlendFactor(d.blend);
+        if (Latch(binds_.stencil_ref, d.stencil_ref)) cl_->OMSetStencilRef(d.stencil_ref);
+        if (Latch(binds_.pso, d.pso)) cl_->SetPipelineState(d.pso);
+        if (Latch(binds_.topology, d.topo)) cl_->IASetPrimitiveTopology(d.topo);
+        cl_->IASetIndexBuffer(&d.ibv);
+        if (prof_frame_) {
+            SetDrawBucket(d.traced ? prof::kForwardTraced : prof::kForwardOther);
+            CurrentFrame().prof_draws++;
+            if (d.traced) CurrentFrame().prof_rt_draws++;
+        }
+        if (d.inline_rt && !d.has_caster) {
+            Transition(caster_records_.Get(), caster_records_state_, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        }
+        if (d.has_caster) StreamOutCasters(d.caster, d.draw_consts);
+        cl_->DrawIndexedInstanced(d.count, 1, 0, d.base_vertex, 0);
+        if (d.has_caster) cl_->SOSetTargets(0, 1, nullptr);
+        binds_.valid = true;
+    }
+}
+
+void D3D12Backend::FlushSunMask() {
+    bool was = sun_mask_.deferring;
+    sun_mask_.deferring = false;
+    if (sun_mask_.draws.empty()) {
+        if (was) {
+            sun_mask_.has_last_d = false;
+            sun_mask_.last_d_from_z = false;
+            sun_mask_.pending_caster_verts = 0;
+            sun_mask_.pending_caster_slots = 0;
+        }
+        return;
+    }
+    if (sun_mask_.last_d_from_z) ComputeSunMask();
+    ReplayWorldDraws();
+    sun_mask_.draws.clear();
+    sun_mask_.has_last_d = false;
+    sun_mask_.last_d_from_z = false;
+    sun_mask_.pending_caster_verts = 0;
+    sun_mask_.pending_caster_slots = 0;
+    Unbind();
 }
 
 // a water draw showing no screen behind it: its triangles first multiply the caustics' light into what lies under
@@ -6776,6 +8033,7 @@ void D3D12Backend::CasterViews(uint32_t at) {
 
 // D3D Resolve: the target's rect to the texture at dst_base, held on the host and read in place of guest memory
 void D3D12Backend::Resolve(const State& s, const ResolveArgs& r) {
+    FlushSunMask();
     g_perf.resolves++;
     uint32_t height = std::max<uint32_t>(TargetHeight(s), uint32_t(r.rect.y2));
     Target* src = r.source < 4 ? ColorTarget(s, r.source, height) : DepthTarget(s, height);
@@ -6956,6 +8214,7 @@ void D3D12Backend::KeepBlocks(Target& src, Resolved& dst, const ResolveArgs& r) 
 // the title's CPU reads src next, and a D3DX copy writes dst's top level: a resolve at src goes to guest memory first,
 // and dst is read from guest memory again
 void D3D12Backend::Copy(const CopyArgs& c) {
+    FlushSunMask();
     WriteResolved(c.src);
     xenos::TextureFetch dst = xenos::DecodeTextureFetch(c.dst);
     std::unique_lock lock(g_cpu.lock);
@@ -7117,6 +8376,8 @@ void D3D12Backend::WriteResolved(const uint32_t fetch[6]) {
 }
 
 void D3D12Backend::CopyResolve(Target& src, Resolved& dst, const ResolveArgs& r) {
+    ScopedGpuTimer resolve_timer(*this, prof::kResolve);
+    CurrentFrame().prof_resolves++;
     bool ms = src.samples > 1;
     ID3D12PipelineState* pso = EnsureResolvePipeline(dst.format, ms);
     if (!pso) return;
@@ -7276,15 +8537,6 @@ void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state,
                               D3D12_CPU_DESCRIPTOR_HANDLE target, UINT mapping, uint32_t w, uint32_t h) {
     ID3D12PipelineState* pso = EnsureResolvePipeline(rtv, false, true);
     if (!pso) return;
-    D3D12_RESOURCE_STATES* src_state = &state;
-    if (fcip::Get().smaa) {
-        Transition(src, state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-        if (ID3D12Resource* aa = Smaa(src, fmt, w, h)) {
-            src = aa;
-            src_state = &smaa_state_[2];
-        }
-        cl_->OMSetRenderTargets(1, &target, FALSE, nullptr);
-    }
     fcip::Box box = fcip::FrameBox(float(swap_w_), float(swap_h_));
     uint32_t views = AllocViews(kPsTextures);
     NullViews(views + 1, kPsTextures - 1);
@@ -7293,7 +8545,7 @@ void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state,
     v.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     v.Shader4ComponentMapping = mapping;
     v.Texture2D.MipLevels = 1;
-    Transition(src, *src_state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(src, state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
     dev_->CreateShaderResourceView(src, &v, ViewCpu(views));
     uint32_t mode = std::min(fcip::Get().colour_blind, 3u);
     float cb[20] = {0, 0, float(w), float(h), 1, 0, 0, mode ? 1.0f : 0.0f};
@@ -7320,13 +8572,19 @@ void D3D12Backend::BlitToSwap(ID3D12Resource* src, D3D12_RESOURCE_STATES& state,
     Unbind();
 }
 
-// src readable: SMAA's blend of it, null when it can't run
-ID3D12Resource* D3D12Backend::Smaa(ID3D12Resource* src, DXGI_FORMAT fmt, uint32_t w, uint32_t h) {
-    static const std::string hlsl = std::string(kSmaaConfig) + kSmaaHlsl + kSmaaPasses;
-    if (!EnsureSmaaLookups()) return nullptr;
-    if (!EnsureSmaaTargets(fmt, w, h)) return nullptr;
-    if (!DrawSmaaPasses(src, fmt, w, h, hlsl.c_str())) return nullptr;
-    return smaa_[2].Get();
+// Spatial SMAA 1x on the finished 3D scene before HUD draws and before KeepHudless
+void D3D12Backend::ApplySceneSmaa1x(const State& s) {
+    uint32_t mode = fcip::Get().smaa;
+    bool spatial = mode == fcip::kSmaa1x || (mode == fcip::kSmaaTemporal && !fcip::SmaaTemporal());
+    if (!spatial) return;
+    Target* rt = ColorTarget(s, 0, TargetHeight(s));
+    if (!rt) return;
+    ScopedGpuTimer post_timer(*this, prof::kPost);
+    ID3D12Resource* src = Feedback(*rt);
+    if (!src) return;
+    static constexpr float kZeroSub[4] = {};
+    Transition(rt->res.Get(), rt->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    SmaaInto(src, rt->fmt, rt->w, rt->h, rt->fmt, Rtv(rt->view), rt->samples, kZeroSub, -1.0f);
 }
 
 bool D3D12Backend::EnsureSmaaLookups() {
@@ -7358,14 +8616,14 @@ bool D3D12Backend::CreateLookupTexture(ComPtr<ID3D12Resource>& r, const SmaaLook
     return true;
 }
 
-// SMAA's own targets: edges, then blend weights, then the blended frame in the frame's format
+// SMAA's work targets: edges, then blend weights
 constexpr DXGI_FORMAT kSmaaEdgeFormat = DXGI_FORMAT_R8G8_UNORM;
 constexpr DXGI_FORMAT kSmaaWeightFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-bool D3D12Backend::EnsureSmaaTargets(DXGI_FORMAT fmt, uint32_t w, uint32_t h) {
-    if (smaa_[2] && smaa_w_ == w && smaa_h_ == h && smaa_fmt_ == fmt) return true;
+bool D3D12Backend::EnsureSmaaTargets(uint32_t w, uint32_t h) {
+    if (smaa_[1] && smaa_w_ == w && smaa_h_ == h) return true;
     smaa_w_ = smaa_h_ = 0;
-    const DXGI_FORMAT f[kSmaaTargets] = {kSmaaEdgeFormat, kSmaaWeightFormat, fmt};
+    const DXGI_FORMAT f[kSmaaTargets] = {kSmaaEdgeFormat, kSmaaWeightFormat};
     for (int i = 0; i < kSmaaTargets; i++) {
         if (!CreateSmaaTarget(i, f[i], w, h)) {
             for (auto& r : smaa_) {
@@ -7376,7 +8634,6 @@ bool D3D12Backend::EnsureSmaaTargets(DXGI_FORMAT fmt, uint32_t w, uint32_t h) {
     }
     smaa_w_ = w;
     smaa_h_ = h;
-    smaa_fmt_ = fmt;
     LOGR("D3D12: SMAA %ux%u", w, h);
     return true;
 }
@@ -7394,16 +8651,66 @@ bool D3D12Backend::CreateSmaaTarget(int i, DXGI_FORMAT fmt, uint32_t w, uint32_t
     return true;
 }
 
-// edges, blend weights, then the blend of src into smaa_[2], left readable
-bool D3D12Backend::DrawSmaaPasses(ID3D12Resource* src, DXGI_FORMAT fmt, uint32_t w, uint32_t h, const char* hlsl) {
-    // edge detection discards where there is no edge, so the edges start clear each frame
+bool D3D12Backend::EnsureSmaaSepTargets(DXGI_FORMAT fmt, uint32_t w, uint32_t h) {
+    if (smaa_sep_[1] && smaa_sep_w_ == w && smaa_sep_h_ == h && smaa_sep_fmt_ == fmt) return true;
+    smaa_sep_w_ = smaa_sep_h_ = 0;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC d = TextureDesc(fmt, w, h);
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    for (int i = 0; i < 2; i++) {
+        if (smaa_sep_[i]) Release(std::move(smaa_sep_[i]));
+        smaa_sep_state_[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, smaa_sep_state_[i], nullptr,
+                                                 IID_PPV_ARGS(&smaa_sep_[i])))) {
+            for (auto& r : smaa_sep_) {
+                if (r) Release(std::move(r));
+            }
+            return false;
+        }
+        dev_->CreateRenderTargetView(smaa_sep_[i].Get(), nullptr, Rtv(kSmaaSepRtv + i));
+    }
+    smaa_sep_w_ = w;
+    smaa_sep_h_ = h;
+    smaa_sep_fmt_ = fmt;
+    return true;
+}
+
+bool D3D12Backend::SeparateSmaa(Target& scene, DXGI_FORMAT fmt) {
+    if (!EnsureSmaaSepTargets(fmt, scene.w, scene.h)) return false;
+    ID3D12PipelineState* pso = EnsurePassPipeline(kSmaaSeparateHlsl, "vs", "smaa_separate", fmt, -1, 1, 2);
+    if (!pso) return false;
+    Transition(scene.res.Get(), scene.state, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(smaa_sep_[0].Get(), smaa_sep_state_[0], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    Transition(smaa_sep_[1].Get(), smaa_sep_state_[1], D3D12_RESOURCE_STATE_RENDER_TARGET);
+    uint32_t views = AllocViews(kPsTextures);
+    TargetView(scene.res.Get(), fmt, scene.samples, views);
+    NullViews(views + 1, kPsTextures - 1);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = {Rtv(kSmaaSepRtv), Rtv(kSmaaSepRtv + 1)};
+    cl_->OMSetRenderTargets(2, rtvs, FALSE, nullptr);
+    D3D12_VIEWPORT vp{0, 0, float(scene.w), float(scene.h), 0, 1};
+    D3D12_RECT sc{0, 0, LONG(scene.w), LONG(scene.h)};
+    cl_->RSSetViewports(1, &vp);
+    cl_->RSSetScissorRects(1, &sc);
+    const float zero[8] = {};
+    FullScreen(pso, views, zero);
+    Transition(smaa_sep_[0].Get(), smaa_sep_state_[0], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    Transition(smaa_sep_[1].Get(), smaa_sep_state_[1], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    return true;
+}
+
+// edges, blend weights, then neighborhood blend of src into dst_rtv (must be in RENDER_TARGET state)
+bool D3D12Backend::SmaaInto(ID3D12Resource* src, DXGI_FORMAT src_fmt, uint32_t w, uint32_t h, DXGI_FORMAT dst_fmt,
+                            D3D12_CPU_DESCRIPTOR_HANDLE dst_rtv, uint32_t dst_samples, const float subsample[4],
+                            float blend) {
+    static const std::string hlsl = std::string(kSmaaConfig) + kSmaaHlsl + kSmaaPasses;
+    if (!EnsureSmaaLookups() || !EnsureSmaaTargets(w, h)) return false;
     const float clear[4] = {};
-    float p[8] = {1.0f / w, 1.0f / h, float(w), float(h)};
+    float p[8] = {1.0f / w, 1.0f / h, float(w), float(h), subsample[0], subsample[1], subsample[2], subsample[3]};
     Transition(smaa_[0].Get(), smaa_state_[0], D3D12_RESOURCE_STATE_RENDER_TARGET);
     cl_->ClearRenderTargetView(SmaaView(0), clear, 0, nullptr);
     ID3D12Resource* const edges[3] = {src, nullptr, nullptr};
-    const DXGI_FORMAT edges_fmt[3] = {fmt, fmt, fmt};
-    if (!Pass(hlsl, "vs_edges", "smaa_edges", kSmaaEdgeFormat, SmaaView(0), w, h, edges, edges_fmt, p, -1)) {
+    const DXGI_FORMAT edges_fmt[3] = {src_fmt, src_fmt, src_fmt};
+    if (!Pass(hlsl.c_str(), "vs_edges", "smaa_edges", kSmaaEdgeFormat, SmaaView(0), w, h, edges, edges_fmt, p, -1)) {
         return false;
     }
     Transition(smaa_[0].Get(), smaa_state_[0], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
@@ -7411,16 +8718,14 @@ bool D3D12Backend::DrawSmaaPasses(ID3D12Resource* src, DXGI_FORMAT fmt, uint32_t
     cl_->ClearRenderTargetView(SmaaView(1), clear, 0, nullptr);
     ID3D12Resource* const weights[3] = {smaa_[0].Get(), smaa_lut_[0].Get(), smaa_lut_[1].Get()};
     const DXGI_FORMAT weights_fmt[3] = {kSmaaEdgeFormat, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8_UNORM};
-    if (!Pass(hlsl, "vs_weights", "smaa_weights", kSmaaWeightFormat, SmaaView(1), w, h, weights, weights_fmt, p, -1)) {
+    if (!Pass(hlsl.c_str(), "vs_weights", "smaa_weights", kSmaaWeightFormat, SmaaView(1), w, h, weights, weights_fmt,
+              p, -1)) {
         return false;
     }
     Transition(smaa_[1].Get(), smaa_state_[1], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-    Transition(smaa_[2].Get(), smaa_state_[2], D3D12_RESOURCE_STATE_RENDER_TARGET);
-    ID3D12Resource* const blend[3] = {src, smaa_[1].Get(), nullptr};
-    const DXGI_FORMAT blend_fmt[3] = {fmt, kSmaaWeightFormat, fmt};
-    if (!Pass(hlsl, "vs_blend", "smaa_blend", fmt, SmaaView(2), w, h, blend, blend_fmt, p, -1)) return false;
-    Transition(smaa_[2].Get(), smaa_state_[2], D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-    return true;
+    ID3D12Resource* const mix[3] = {src, smaa_[1].Get(), nullptr};
+    const DXGI_FORMAT mix_fmt[3] = {src_fmt, kSmaaWeightFormat, src_fmt};
+    return Pass(hlsl.c_str(), "vs_blend", "smaa_blend", dst_fmt, dst_rtv, w, h, mix, mix_fmt, p, blend, dst_samples);
 }
 
 void D3D12Backend::RenderUi() {
@@ -7463,19 +8768,28 @@ void D3D12Backend::PresentHdr(const xenos::TextureFetch& t, D3D12_CPU_DESCRIPTOR
 void D3D12Backend::ShowFrame(const xenos::TextureFetch& t) {
     uint32_t bi = swap_->GetCurrentBackBufferIndex();
     D3D12_RESOURCE_STATES bs = D3D12_RESOURCE_STATE_PRESENT;
-    Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    D3D12_CPU_DESCRIPTOR_HANDLE rh = Rtv(kRtvCount + bi);
-    float black[4] = {0, 0, 0, 1};
-    cl_->ClearRenderTargetView(rh, black, 0, nullptr);
-    if (!hdr_out_) {
-        cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
-        DrawFront(t, kSwapFormat, rh);
-        if (ext_) ext_->Presenting(*this);
-        RenderUi();
-    } else if (EnsureOutTargets()) {
-        PresentHdr(t, rh);
+    {
+        ScopedGpuTimer post_timer(*this, prof::kPost);
+        Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        D3D12_CPU_DESCRIPTOR_HANDLE rh = Rtv(kRtvCount + bi);
+        float black[4] = {0, 0, 0, 1};
+        cl_->ClearRenderTargetView(rh, black, 0, nullptr);
+        if (!hdr_out_) {
+            cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
+            DrawFront(t, kSwapFormat, rh);
+            if (ext_) ext_->Presenting(*this);
+            RenderUi();
+        } else if (EnsureOutTargets()) {
+            PresentHdr(t, rh);
+        }
+        if (generation_swap_ && hudless_.used == presents_) DrawHudless(t);
     }
-    if (generation_swap_ && hudless_.used == presents_) DrawHudless(t);
+    FlushDrawBucket();
+    if (prof_frame_ && prof_frame_start_ != 0xFFFF) {
+        uint16_t end_q = WriteTimestamp();
+        if (end_q != 0xFFFF) CurrentFrame().ts_spans.push_back({prof::kTotal, prof_frame_start_, end_q});
+        prof_frame_start_ = 0xFFFF;
+    }
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_PRESENT);
     Submit(false);
     bool vsync = app::Get().vsync;
@@ -7497,13 +8811,26 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     ShowFrame(t);
     latency::Submitted(fence_.Get(), CurrentFrame().fence);
 
-    for (const UploadChunk& c : CurrentFrame().ring.list) g_perf.upload_bytes += c.used;
+    CurrentFrame().prof_caster_tris = uint32_t(casters_used_ / 3);
+    float upload_mb = 0;
+    for (const UploadChunk& c : CurrentFrame().ring.list) {
+        g_perf.upload_bytes += c.used;
+        upload_mb += float(c.used) / (1024.0f * 1024.0f);
+    }
+    CurrentFrame().prof_upload_mb = upload_mb;
     presents_++;
     frame_++;
     HashAhead();
     frame_textures_.clear();
     Frame& next = CurrentFrame();
     WaitFence(next.fence);
+    if (!next.ts_spans.empty()) HarvestTimestamps(next, uint32_t(frame_ % kFrames));
+    next.prof_draws = 0;
+    next.prof_rt_draws = 0;
+    next.prof_blas = 0;
+    next.prof_resolves = 0;
+    next.prof_caster_tris = 0;
+    next.prof_upload_mb = 0;
     next.alloc->Reset();
     next.garbage.clear();
     Recycle(next.ring);
@@ -7513,6 +8840,10 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     next.views = 0;
     cl_->Reset(next.alloc.Get(), nullptr);
     Begin();
+    prof_frame_ = prof::Enabled();
+    prof_draw_bucket_ = prof::kBucketCount;
+    prof_draw_start_ = 0xFFFF;
+    prof_frame_start_ = WriteTimestamp();
     if (uint32_t side = fcip::SunShadowSide(); side != shadow_side_) {
         last_shadow_side_ = shadow_side_;
         shadow_side_ = side;
@@ -7523,12 +8854,23 @@ void D3D12Backend::Present(const uint32_t front[6]) {
     gi_.draws.clear();
     gi_.capture = false;
     gi_.mode = 0;
+    gi_.world_built_frame = ~0ull;
+    gi_.world_draws = 0;
+    gi_.world_first_caster = 0;
     casters_used_ = 0;
     caster_slots_ = 0;
     casters_built_ = 0;
+    caster_counters_zeroed_ = false;
+    sun_mask_.deferring = false;
+    sun_mask_.has_last_d = false;
+    sun_mask_.last_d_from_z = false;
+    sun_mask_.pending_caster_verts = 0;
+    sun_mask_.pending_caster_slots = 0;
+    sun_mask_.draws.clear();
     std::erase_if(ray_shadows_, [&](auto& entry) {
         if (frame_ - entry.second.frame <= kRayIdleFrames) return false;
-        Release(std::move(entry.second.bottom));
+        Release(std::move(entry.second.opaque_bottom));
+        Release(std::move(entry.second.alpha_bottom));
         Release(std::move(entry.second.top));
         return true;
     });
@@ -7556,6 +8898,7 @@ void D3D12Backend::Present(const uint32_t front[6]) {
         DropTargets();
         msaa_set_ = app::Get().msaa;
         msaa_ = Samples(msaa_set_);
+        upscale_.reset = true;
         if (ext_) ext_->Reset(*this);
     }
     if (ext_ && ext_->Settings()) {
@@ -7567,10 +8910,111 @@ void D3D12Backend::Present(const uint32_t front[6]) {
 
 // Extension passes
 
+uint16_t D3D12Backend::WriteTimestamp() {
+    if (!prof_frame_ || !ts_heap_ || !ts_freq_) return 0xFFFF;
+    Frame& f = CurrentFrame();
+    if (f.ts_used >= kMaxTsQueries) return 0xFFFF;
+    uint16_t q = f.ts_used++;
+    uint32_t slot = uint32_t(frame_ % kFrames) * kMaxTsQueries + q;
+    cl_->EndQuery(ts_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot);
+    return q;
+}
+
+void D3D12Backend::ResolveTimestamps() {
+    if (!ts_heap_) return;
+    Frame& f = CurrentFrame();
+    if (f.ts_used <= f.ts_resolved) return;
+    uint32_t base = uint32_t(frame_ % kFrames) * kMaxTsQueries + f.ts_resolved;
+    uint32_t n = f.ts_used - f.ts_resolved;
+    cl_->ResolveQueryData(ts_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, base, n, ts_read_.Get(),
+                          uint64_t(base) * sizeof(uint64_t));
+    f.ts_resolved = f.ts_used;
+}
+
+void D3D12Backend::FlushDrawBucket() {
+    if (prof_draw_bucket_ >= prof::kBucketCount || prof_draw_start_ == 0xFFFF) {
+        prof_draw_bucket_ = prof::kBucketCount;
+        prof_draw_start_ = 0xFFFF;
+        return;
+    }
+    uint16_t end_q = WriteTimestamp();
+    if (end_q != 0xFFFF) CurrentFrame().ts_spans.push_back({prof_draw_bucket_, prof_draw_start_, end_q});
+    prof_draw_bucket_ = prof::kBucketCount;
+    prof_draw_start_ = 0xFFFF;
+}
+
+void D3D12Backend::SetDrawBucket(uint8_t b) {
+    if (!prof_frame_ || prof_draw_bucket_ == b) return;
+    FlushDrawBucket();
+    prof_draw_start_ = WriteTimestamp();
+    if (prof_draw_start_ != 0xFFFF) prof_draw_bucket_ = b;
+}
+
+void D3D12Backend::HarvestTimestamps(Frame& f, uint32_t slot_idx) {
+    if (!ts_read_ || !ts_freq_ || f.ts_used == 0) {
+        f.ts_spans.clear();
+        f.ts_used = 0;
+        f.ts_resolved = 0;
+        return;
+    }
+    uint32_t base = slot_idx * kMaxTsQueries;
+    D3D12_RANGE range{uint64_t(base) * sizeof(uint64_t), uint64_t(base + f.ts_used) * sizeof(uint64_t)};
+    uint64_t* p = nullptr;
+    if (SUCCEEDED(ts_read_->Map(0, &range, reinterpret_cast<void**>(&p)))) {
+        double sum[prof::kBucketCount] = {};
+        const uint64_t* ts = p + base;
+        for (const auto& sp : f.ts_spans) {
+            if (sp.bucket >= prof::kBucketCount || sp.start_q >= f.ts_used || sp.end_q >= f.ts_used) continue;
+            uint64_t t0 = ts[sp.start_q];
+            uint64_t t1 = ts[sp.end_q];
+            if (t1 >= t0) sum[sp.bucket] += double(t1 - t0) * 1000.0 / double(ts_freq_);
+        }
+        D3D12_RANGE none{0, 0};
+        ts_read_->Unmap(0, &none);
+        auto now = std::chrono::steady_clock::now();
+        double dt_ms = std::chrono::duration<double, std::milli>(now - prof_last_present_).count();
+        prof_last_present_ = now;
+        float alpha = prof_avg_.valid ? 0.1f : 1.0f;
+        for (int i = 0; i < prof::kBucketCount; i++) {
+            prof_avg_.ms[i] = prof_avg_.ms[i] * (1.0f - alpha) + float(sum[i]) * alpha;
+        }
+        if (dt_ms > 0.1 && dt_ms < 2000.0) {
+            prof_avg_.cpu_ms = prof_avg_.cpu_ms * (1.0f - alpha) + float(dt_ms) * alpha;
+        }
+        prof_avg_.fps = float(fps_);
+        prof_avg_.draws = f.prof_draws;
+        prof_avg_.rt_draws = f.prof_rt_draws;
+        prof_avg_.blas_builds = f.prof_blas;
+        prof_avg_.caster_tris = f.prof_caster_tris;
+        prof_avg_.resolves = f.prof_resolves;
+        prof_avg_.upload_mb = f.prof_upload_mb;
+        prof_avg_.valid = true;
+        prof::Publish(prof_avg_);
+        if (prof::Enabled() && std::chrono::duration<double>(now - prof_log_time_).count() >= 2.0) {
+            prof_log_time_ = now;
+            LOGR("gpu-prof: %.1f fps | GPU %.2f ms (Shad %.2f, AS %.2f, ZPre %.2f, SunRT %.2f, FwdRT %.2f, Fwd %.2f, "
+                 "AO %.2f, GI %.2f, Fog %.2f, Cloud %.2f, Caus %.2f, Up %.2f, Res %.2f, Post %.2f) | draws %u (%u RT), "
+                 "blas %u, tris %u",
+                 prof_avg_.fps, prof_avg_.ms[prof::kTotal], prof_avg_.ms[prof::kShadowRaster],
+                 prof_avg_.ms[prof::kRtBuild], prof_avg_.ms[prof::kZPrepass], prof_avg_.ms[prof::kSunMask],
+                 prof_avg_.ms[prof::kForwardTraced], prof_avg_.ms[prof::kForwardOther], prof_avg_.ms[prof::kAo],
+                 prof_avg_.ms[prof::kGi], prof_avg_.ms[prof::kFog], prof_avg_.ms[prof::kClouds],
+                 prof_avg_.ms[prof::kCaustics], prof_avg_.ms[prof::kUpscale], prof_avg_.ms[prof::kResolve],
+                 prof_avg_.ms[prof::kPost], prof_avg_.draws, prof_avg_.rt_draws, prof_avg_.blas_builds,
+                 prof_avg_.caster_tris);
+        }
+    }
+    f.ts_spans.clear();
+    f.ts_used = 0;
+    f.ts_resolved = 0;
+}
+
 // the draw state set since is set again by the next draw
 void D3D12Backend::Unbind() {
     std::fill(std::begin(const_gpu_), std::end(const_gpu_), 0);
     binds_ = {};
+    vertex_view_table_ = UINT32_MAX;
+    vertex_view_chunk_ = nullptr;
 }
 
 // a copy of the target to read while drawing to it; a multisampled one is resolved into it
@@ -7581,11 +9025,15 @@ ID3D12Resource* D3D12Backend::Feedback(Target& t) {
         D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
         D3D12_RESOURCE_DESC d = t.res->GetDesc();
         d.Flags = D3D12_RESOURCE_FLAG_NONE;
-        d.SampleDesc.Count = 1;
+        d.SampleDesc = {1, 0};
+        d.Alignment = 0;
         if (ms) d.Format = t.fmt;
         t.fb_state = D3D12_RESOURCE_STATE_COPY_DEST;
-        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, t.fb_state, nullptr,
-                                                 IID_PPV_ARGS(&t.fb)))) {
+        HRESULT hr = dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, t.fb_state, nullptr,
+                                                   IID_PPV_ARGS(&t.fb));
+        if (FAILED(hr)) {
+            LOGE("D3D12: feedback target %ux%u fmt %d failed (hr=0x%08X)", UINT(d.Width), d.Height, int(d.Format),
+                 unsigned(hr));
             return nullptr;
         }
     }
@@ -7603,8 +9051,9 @@ ID3D12Resource* D3D12Backend::Feedback(Target& t) {
 
 // a full screen pipeline of hlsl's vs and entry, kept by its source; null when it cannot be made
 ID3D12PipelineState* D3D12Backend::EnsurePassPipeline(const std::string& hlsl, const char* vs_entry, const char* entry,
-                                                      DXGI_FORMAT rtv, float blend) {
-    uint64_t seed = uint64_t(rtv) << 1 | (blend >= 0 ? 1 : 0);
+                                                      DXGI_FORMAT rtv, float blend, uint32_t samples,
+                                                      uint32_t num_rtv) {
+    uint64_t seed = uint64_t(rtv) << 1 | (blend >= 0 ? 1 : 0) | uint64_t(samples) << 12 | uint64_t(num_rtv) << 20;
     uint64_t key = Hash64(entry, std::strlen(entry), Hash64(hlsl.data(), hlsl.size(), seed));
     key = Hash64(vs_entry, std::strlen(vs_entry), key);
     auto& pso = pass_pipelines_[key];
@@ -7617,22 +9066,29 @@ ID3D12PipelineState* D3D12Backend::EnsurePassPipeline(const std::string& hlsl, c
     d.pRootSignature = root_.Get();
     d.VS = {vs.data(), vs.size()};
     d.PS = {ps.data(), ps.size()};
-    D3D12_RENDER_TARGET_BLEND_DESC& b = d.BlendState.RenderTarget[0];
-    b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    if (blend >= 0) {
-        b.BlendEnable = TRUE;
-        b.SrcBlend = b.SrcBlendAlpha = D3D12_BLEND_BLEND_FACTOR;
-        b.DestBlend = b.DestBlendAlpha = D3D12_BLEND_INV_BLEND_FACTOR;
-        b.BlendOp = b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    for (uint32_t i = 0; i < num_rtv; i++) {
+        D3D12_RENDER_TARGET_BLEND_DESC& b = d.BlendState.RenderTarget[i];
+        b.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        if (blend >= 0) {
+            b.BlendEnable = TRUE;
+            b.SrcBlend = b.SrcBlendAlpha = D3D12_BLEND_BLEND_FACTOR;
+            b.DestBlend = b.DestBlendAlpha = D3D12_BLEND_INV_BLEND_FACTOR;
+            b.BlendOp = b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        }
+        d.RTVFormats[i] = rtv;
     }
     d.SampleMask = UINT_MAX;
     d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    d.NumRenderTargets = 1;
-    d.RTVFormats[0] = rtv;
-    d.SampleDesc.Count = 1;
-    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return nullptr;
+    d.NumRenderTargets = num_rtv;
+    d.SampleDesc.Count = samples;
+    HRESULT hr = dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso));
+    if (FAILED(hr)) {
+        LOGE("D3D12: pass pipeline %s (rtv=%d, samples=%u, rtvs=%u) failed (hr=0x%08X)", entry, int(rtv), samples,
+             num_rtv, unsigned(hr));
+        return nullptr;
+    }
     return pso.Get();
 }
 
@@ -7668,9 +9124,9 @@ void D3D12Backend::FullScreen(ID3D12PipelineState* pso, uint32_t views, const fl
     Unbind();
 }
 
-void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect[4], bool gamma, bool alpha,
-                        uint32_t taps, float mul, DXGI_FORMAT rtv) {
-    ID3D12PipelineState* pso = EnsurePassPipeline(kBlitHlsl, "vs", "blit", rtv, -1);
+void D3D12Backend::BlitSamples(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect[4], bool gamma, bool alpha,
+                               uint32_t taps, float mul, DXGI_FORMAT rtv, uint32_t samples) {
+    ID3D12PipelineState* pso = EnsurePassPipeline(kBlitHlsl, "vs", "blit", rtv, -1, samples);
     if (!pso) return;
     uint32_t views = AllocViews(kPsTextures);
     ShaderView(src, fmt, views);
@@ -7682,8 +9138,8 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
 
 bool D3D12Backend::Pass(const char* hlsl, const char* vs_entry, const char* entry, DXGI_FORMAT rtv,
                         D3D12_CPU_DESCRIPTOR_HANDLE rh, uint32_t w, uint32_t h, ID3D12Resource* const src[3],
-                        const DXGI_FORMAT fmt[3], const float p[8], float blend) {
-    ID3D12PipelineState* pso = EnsurePassPipeline(hlsl, vs_entry, entry, rtv, blend);
+                        const DXGI_FORMAT fmt[3], const float p[8], float blend, uint32_t samples) {
+    ID3D12PipelineState* pso = EnsurePassPipeline(hlsl, vs_entry, entry, rtv, blend, samples);
     if (!pso) return false;
     uint32_t views = AllocViews(kPsTextures);
     for (uint32_t i = 0; i < 3; i++) ShaderView(src[i], fmt[i], views + i);
@@ -7886,6 +9342,7 @@ void D3D12Backend::CapFinite(ID3D12Resource* res, D3D12_RESOURCE_STATES& state, 
 // Queries
 
 void D3D12Backend::BeginQuery(uint32_t q) {
+    FlushSunMask();
     q %= kQueryCount;
     if (!queries_[q].open) open_queries_++;
     queries_[q] = {0, true};
@@ -7893,6 +9350,7 @@ void D3D12Backend::BeginQuery(uint32_t q) {
 }
 
 void D3D12Backend::EndQuery(uint32_t q) {
+    FlushSunMask();
     q %= kQueryCount;
     if (!queries_[q].open) return;
     queries_[q].open = false;

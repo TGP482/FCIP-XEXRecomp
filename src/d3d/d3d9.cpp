@@ -699,12 +699,16 @@ void Illumination(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView&
     MarkView(dev, gpu::kClearIllumination, a, v);
 }
 
-void IlluminationWorld(uint32_t dev, const float ambient[3]) {
+void SunMaskBegin(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v) {
+    MarkView(dev, gpu::kClearSunMaskBegin, a, v);
+}
+
+void IlluminationWorld(uint32_t dev, const float ambient[3], uint32_t sky_spill) {
     const float color[4] = {ambient[0], ambient[1], ambient[2], 0};
     std::lock_guard lock(g_lock);
     gpu::State s;
     ReadRegisters(dev, s);
-    Backend()->Clear(s, gpu::kClearIlluminationWorld, color, 0, 0, nullptr);
+    Backend()->Clear(s, gpu::kClearIlluminationWorld, color, 0, sky_spill, nullptr);
 }
 
 void OcclusionScene(uint32_t dev) {
@@ -717,7 +721,7 @@ void OcclusionScene(uint32_t dev) {
 
 // the camera goes ahead of its marker, under the same lock, so the render thread takes them in order
 void MotionBegin(uint32_t dev, const gpu::MotionCamera& c) {
-    if (!fsr::Upscaling() || !R32(dev + kDevTargets) || !R32(dev + kDevDepth)) return;
+    if (!R32(dev + kDevTargets) || !R32(dev + kDevDepth)) return;
     const float color[4] = {};
     std::lock_guard lock(g_lock);
     gpu::PushMotionCamera(c);
@@ -745,6 +749,7 @@ void HudBegin(uint32_t dev) { Mark(dev, gpu::kClearHudBegin); }
 void MotionPause(uint32_t dev) { Mark(dev, gpu::kClearMotionPause); }
 void MotionResume(uint32_t dev) { Mark(dev, gpu::kClearMotionResume); }
 void IlluminationScene(uint32_t dev) { Mark(dev, gpu::kClearIlluminationScene); }
+void SunMaskEnd(uint32_t dev) { Mark(dev, gpu::kClearSunMaskEnd); }
 void VolumetricFogEnd(uint32_t dev) { Mark(dev, gpu::kClearFogEnd); }
 void IlluminationUnlit(uint32_t dev, bool unlit) {
     Mark(dev, unlit ? gpu::kClearIlluminationUnlit : gpu::kClearIlluminationLit);

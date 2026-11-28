@@ -24,6 +24,7 @@
 #include "common/menu.h"
 #include "common/settings.h"
 #include "core/input.h"
+#include "kernel/memory.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -118,7 +119,17 @@ uint64_t NowMs() {
     return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(since).count());
 }
 
-bool GuestOk(uint32_t addr) { return addr >= 0x10000u && addr < 0xC0000000u; }
+bool GuestReadable(uint32_t addr, uint32_t size) {
+    if (addr < 0x10000u || size == 0 || uint64_t(addr) + size > 0xC0000000u) return false;
+    uint32_t first = addr & ~(mem::kPage - 1);
+    uint32_t last = (addr + size - 1) & ~(mem::kPage - 1);
+    for (uint32_t p = first;; p += mem::kPage) {
+        if (!mem::IsCommitted(p)) return false;
+        if (p == last) return true;
+    }
+}
+
+bool GuestOk(uint32_t addr) { return GuestReadable(addr, 4); }
 
 void WF(uint32_t addr, float value) {
     uint32_t raw;
@@ -276,7 +287,7 @@ struct AutoAimOverride {
 };
 
 AutoAimOverride SuppressAutoAim(uint32_t player) {
-    if (!K::KbmActive() || !GuestOk(player)) return {};
+    if (!K::KbmActive() || !GuestReadable(player, kPlayerAutoAim + 1)) return {};
     AutoAimOverride over{player, R8(player + kPlayerAutoAim)};
     W8(player + kPlayerAutoAim, 0);
     return over;
@@ -287,7 +298,7 @@ void RestoreAutoAim(const AutoAimOverride& over) {
 }
 
 // the game takes no look or aim input in cutscenes, so nothing written straight into the command may either
-bool InCutscene(uint32_t player) { return GuestOk(player) && R8(player + kPlayerCutscene); }
+bool InCutscene(uint32_t player) { return GuestReadable(player, kPlayerCutscene + 1) && R8(player + kPlayerCutscene); }
 
 // cl_display_hud flips on each press of the toggle key, but not in cutscenes or while a scene hid the HUD
 void ToggleHud() {
@@ -311,8 +322,8 @@ bool RawLook() { return fcip::MouseLookActive() && K::KbmActive(); }
 
 // aiming down the sights or a scope
 bool Zoomed(uint32_t player) {
-    uint32_t zoom = GuestOk(player) ? R32(player + kPlayerZoom) : 0;
-    return GuestOk(zoom) && R8(zoom + kZoomOn);
+    uint32_t zoom = GuestReadable(player, kPlayerZoom + 4) ? R32(player + kPlayerZoom) : 0;
+    return GuestReadable(zoom, kZoomOn + 1) && R8(zoom + kZoomOn);
 }
 
 void MouseLook(uint32_t cmd) {
@@ -355,9 +366,12 @@ void GyroLook(uint32_t cmd, bool split) {
 }
 
 bool StandingCrouchPress(uint32_t player) {
-    if (!K::KbmActive() || !GuestOk(player) || R32(player + kPlayerStance) != 1) return false;
+    if (!K::KbmActive() || !GuestReadable(player, kPlayerStanceTracker + 4) || R32(player + kPlayerStance) != 1) {
+        return false;
+    }
     uint32_t tracker = R32(player + kPlayerStanceTracker);
-    return GuestOk(tracker) && GF(tracker + kTrackerTime) != 0.0f && !R8(tracker + kTrackerConsumed);
+    return GuestReadable(tracker, kTrackerConsumed + 1) && GF(tracker + kTrackerTime) != 0.0f &&
+           !R8(tracker + kTrackerConsumed);
 }
 
 // The analog branch of ProcessMovements takes |x| and |y| as they are, signed by the move action bits, so a keyboard
@@ -397,7 +411,7 @@ uint32_t CurrentSlot(uint32_t player) {
     if (pending >= 2 && pending <= 4) return pending - 1;
     uint32_t weapon = R32(player + kPlayerWeapon);
     uint32_t inv = R32(player + kPlayerInventory);
-    if (!GuestOk(inv)) return 0;
+    if (!GuestReadable(inv, kInvLast + 4)) return 0;
     uint32_t first = R32(inv + kInvFirst);
     uint32_t last = R32(inv + kInvLast);
     if (!GuestOk(first) || last < first || (last - first) / kInvEntry > 32) return 0;
@@ -431,7 +445,7 @@ void HoldToAim(uint32_t player, uint32_t cmd, bool held) {
     static bool exiting = false;
     static uint64_t retry_ms = 0;
     uint32_t zoom = R32(player + kPlayerZoom);
-    bool in = GuestOk(zoom) && R8(zoom + kZoomOn);
+    bool in = GuestReadable(zoom, kZoomLeaving + 1) && R8(zoom + kZoomOn);
     bool leaving = in && R8(zoom + kZoomLeaving);
     if (was_in && !in && held && !exiting) latched = true;
     if (!held) latched = false;
@@ -459,6 +473,12 @@ void Press(uint32_t tracker, float time) {
 namespace fcip {
 
 uint32_t LocalPlayer() { return g_local_player; }
+
+void ClearLocalPlayer() {
+    g_local_player = 0;
+    g_local_cmd = 0;
+    std::fill(std::begin(g_slot_players), std::end(g_slot_players), 0u);
+}
 
 bool MouseLookActive() {
     if (MenuOpen() || g_editor_shell || GetForegroundWindow() != static_cast<HWND>(app::Window())) return false;
