@@ -27,6 +27,7 @@ void NoteMenu(bool menu, bool title);
 bool InMenu();
 bool OnTitle();
 uint32_t LocalPlayer();  // the keyboard's CPlayer, in split screen the client on its port
+void ClearLocalPlayer();
 
 // default.xex's noclip: port 0 after the keys merged in, then the local player before its view is built
 inline void (*g_noclip_pad)(input::Pad& pad) = nullptr;

@@ -10,6 +10,7 @@
 #include "common/input.h"
 #include "common/render_pass.h"
 #include "common/settings.h"
+#include "kernel/memory.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -29,6 +30,7 @@ constexpr uint32_t kZoomOn = 0x04;
 constexpr uint32_t kZoomLevels = 0x0C;
 constexpr uint32_t kZoomMagnification = 0x10;
 constexpr uint32_t kZoomFirstLevel = 0x7C;
+constexpr uint32_t kMaxZoomLevels = (kZoomFirstLevel - kZoomMagnification) / 4;
 constexpr double kStockFov = 1.5707963267948966;
 constexpr double kWide = 16.0 / 9.0;
 // COcean::Update sizes its projected grid from the stock m_fov, which spans about 1.2x the true view in tan space;
@@ -44,12 +46,20 @@ void WF(uint32_t addr, float value) {
     W32(addr, raw);
 }
 
-bool GuestOk(uint32_t addr) { return addr >= 0x10000u && addr < 0xC0000000u; }
+bool GuestReadable(uint32_t addr, uint32_t size) {
+    if (addr < 0x10000u || size == 0 || uint64_t(addr) + size > 0xC0000000u) return false;
+    uint32_t first = addr & ~(mem::kPage - 1);
+    uint32_t last = (addr + size - 1) & ~(mem::kPage - 1);
+    for (uint32_t p = first;; p += mem::kPage) {
+        if (!mem::IsCommitted(p)) return false;
+        if (p == last) return true;
+    }
+}
 
 // the game's angle with the user's angle in degrees applied; false in cutscenes
 bool UserFov(double fov, double setting, double& out) {
     uint32_t player = fcip::LocalPlayer();
-    if (GuestOk(player) && R8(player + kPlayerCutscene)) return false;
+    if (GuestReadable(player, kPlayerCutscene + 1) && R8(player + kPlayerCutscene)) return false;
     if (!(fov > 0.0 && fov < 3.14)) return false;
     double user = setting * (3.14159265358979 / 180.0);
     out = 2.0 * std::atan(std::tan(fov * 0.5) * std::tan(user * 0.5));
@@ -59,12 +69,15 @@ bool UserFov(double fov, double setting, double& out) {
 // the first zoom level's angle while the local player is zoomed, else 0
 double FirstZoomFov() {
     uint32_t player = fcip::LocalPlayer();
-    uint32_t zoom = GuestOk(player) ? R32(player + kPlayerZoom) : 0;
-    if (!GuestOk(zoom) || !R8(zoom + kZoomOn)) return 0.0;
+    uint32_t zoom = GuestReadable(player, kPlayerZoom + 4) ? R32(player + kPlayerZoom) : 0;
+    if ((zoom & 3u) != 0 || !GuestReadable(zoom, kZoomFirstLevel + 4) || !R8(zoom + kZoomOn)) return 0.0;
+    uint32_t levels = R32(zoom + kZoomLevels);
     uint32_t level = R32(zoom + kZoomFirstLevel);
-    if (level >= R32(zoom + kZoomLevels)) return 0.0;
+    if (levels == 0 || levels > kMaxZoomLevels || level >= levels) return 0.0;
     float magnification = GF(zoom + kZoomMagnification + level * 4);
-    return magnification > 1.0f ? kStockFov / magnification : 0.0;
+    return std::isfinite(magnification) && magnification > 1.0f && magnification <= 64.0f
+               ? kStockFov / magnification
+               : 0.0;
 }
 
 // the camera's angle; above 90 the zoom levels keep their stock angles and the zoom blends into the user's angle
@@ -97,7 +110,8 @@ PPC_FUNC(GUEST(ShadowMaps_Update)) {
 // keeps the culling frustum exact on both axes; the projection then gets the real aspect back in PerspectiveFov
 PPC_FUNC(GUEST(CCamera_Update)) {
     uint32_t cam = uint32_t(ctx.r[3]);
-    float fov = cam && !g_light_cameras ? GF(cam + kCameraFov) : 0.0f;
+    bool cam_ok = GuestReadable(cam, kCameraAspect + 4);
+    float fov = cam_ok && !g_light_cameras ? GF(cam + kCameraFov) : 0.0f;
     float aspect = fov > 0.0f ? GF(cam + kCameraAspect) : 0.0f;
     bool valid = aspect > 0.1f && aspect < 10.0f;
     bool screen = std::fabs(aspect - fcip::DisplayAspect()) < 0.01f * aspect;
