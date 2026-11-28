@@ -105,6 +105,7 @@ thread_local uint32_t t_sort_list = 0;  // the camera pass's list while its keys
 thread_local Pipelines t_pipelines;
 thread_local uint32_t t_draw_list = 0;  // the camera pass's list while it is drawn, until occlusion went in
 thread_local uint32_t t_world_list = 0;  // the same while its world layers stream into global illumination's scene
+thread_local uint32_t t_sun_mask_list = 0;  // the same while the world draws into the deferred sun shadow mask
 thread_local uint32_t t_past_list = 0;   // the same past its world, whose draws but the ocean's keep their albedo
 thread_local bool t_unlit = false;       // the draws clear their albedo
 
@@ -120,6 +121,10 @@ bool Enabled() { return fcip::Get().ambient_occlusion && fcip::SubmittedPass() =
 bool Illuminated() { return fcip::Get().global_illumination && fcip::SubmittedPass() == fcip::kPassCamera; }
 bool Fogged() { return fcip::Get().volumetric_fog && fcip::SubmittedPass() == fcip::kPassCamera; }
 bool Caustic() { return fcip::Get().caustics && fcip::SubmittedPass() == fcip::kPassCamera; }
+bool SunMasked() {
+    return fcip::Get().shadow_filter >= fcip::kFilterRay && gpu::RayTracing() &&
+           fcip::SubmittedPass() == fcip::kPassCamera;
+}
 
 bool PhongDraw(uint32_t draw) {
     for (uint32_t d : {SYM_PhongDraw_Item, SYM_PhongDraw_Texture, SYM_PhongDraw_Entry, SYM_PhongDraw_Constants}) {
@@ -203,8 +208,8 @@ void Occlude() {
     d3d::Occlusion(R32(SYM_Device_pointer), a);
 }
 
-// the ambient at the camera, of the vis area holding it or outdoors
-bool Ambient(PPCContext& ctx, float out[3]) {
+// the ambient at the camera, of the vis area holding it or outdoors, and outdoor skylight spilling inside
+bool Ambient(PPCContext& ctx, float out[3], float sky_spill[3]) {
     uint32_t engine = R32(SYM_C3DEngine_pointer);
     uint32_t camera = Camera();
     uint32_t outdoor = R32(SYM_Ambient_pointer);
@@ -223,20 +228,29 @@ bool Ambient(PPCContext& ctx, float out[3]) {
     uint32_t fade = R32(engine + kEngineFade);
     if (fade) scale *= GF(fade + kFadeScale);
     for (uint32_t i = 0; i < 3; i++) {
-        float base = GF(outdoor + i * 4) + GF(engine + kEngineOutdoorAmbient + i * 4);
-        if (area) base = GF(area + kVisAreaAmbient + i * 4);
+        float tint = GF(engine + kEngineAmbientTint + i * 4);
         float floor = GF(outdoor + kAmbientFloor + i * 4);
-        out[i] = std::fmax(base * scale * GF(engine + kEngineAmbientTint + i * 4), floor);
+        float outdoor_base = GF(outdoor + i * 4) + GF(engine + kEngineOutdoorAmbient + i * 4);
+        float outdoor_val = std::fmax(outdoor_base * scale * tint, floor);
+        float area_val = area ? std::fmax(GF(area + kVisAreaAmbient + i * 4) * scale * tint, floor) : outdoor_val;
+        out[i] = area_val;
+        sky_spill[i] = std::fmax(outdoor_val - area_val, 0.0f);
     }
     return true;
+}
+
+uint32_t PackRgb(const float c[3]) {
+    auto ch = [](float v) { return uint32_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+    return ch(c[0]) << 16 | ch(c[1]) << 8 | ch(c[2]);
 }
 
 // the world ends where the first item past it is popped, else with the list; the ambient goes with it
 void EndWorld(PPCContext& ctx) {
     t_past_list = std::exchange(t_world_list, 0);
     float ambient[3] = {};
-    Ambient(ctx, ambient);
-    d3d::IlluminationWorld(R32(SYM_Device_pointer), ambient);
+    float sky_spill[3] = {};
+    Ambient(ctx, ambient, sky_spill);
+    d3d::IlluminationWorld(R32(SYM_Device_pointer), ambient, PackRgb(sky_spill));
 }
 
 // the moved characters clear their albedo, so global illumination doesn't show their low poly shapes
@@ -314,6 +328,11 @@ void Illuminate(PPCContext& ctx) {
     if (t_world_list) EndWorld(ctx);
     gpu::OcclusionArgs a;
     if (SceneArgs(a)) d3d::Illumination(R32(SYM_Device_pointer), a, SunView());
+}
+
+void FinishSunMask() {
+    t_sun_mask_list = 0;
+    d3d::SunMaskEnd(R32(SYM_Device_pointer));
 }
 
 // a vis area the sun doesn't light and its box's squared distance from the camera
@@ -464,6 +483,7 @@ struct CausticsSplit {
     uint32_t ocean = kNoPipeline;  // the water pipelines' registry indices
     uint32_t lake = kNoPipeline;
     bool under = false;           // the camera under the sea
+    bool has_lake = false;
     bool done = false;
     bool water = false;
 };
@@ -489,14 +509,24 @@ bool Water(uint32_t item) {
     return pipeline == t_caustics.ocean || pipeline == t_caustics.lake;
 }
 
-bool HoldsWater(uint32_t list) {
+bool HoldsWater(uint32_t list, bool& has_lake) {
     uint32_t count = R32(list);
     uint32_t entries = R32(list + kListEntries);
+    bool water = false;
+    has_lake = false;
     for (uint32_t i = 0; i < count; i++) {
         uint32_t entry = entries + i * kListEntrySize;
-        if (Water(R32(entry + kEntryItem))) return true;
+        uint32_t item = R32(entry + kEntryItem);
+        if (!item) continue;
+        uint32_t pipeline = R32(item + kItemPipeline);
+        if (pipeline == t_caustics.lake) {
+            has_lake = true;
+            water = true;
+            break;
+        }
+        if (pipeline == t_caustics.ocean) water = true;
     }
-    return false;
+    return water;
 }
 
 // before the camera's list: the caustics go in when it holds water or the camera is under the sea
@@ -504,7 +534,7 @@ void StartCaustics(uint32_t list) {
     t_caustics.ocean = PipelineNamed(SYM_ShaderName_Ocean);
     t_caustics.lake = PipelineNamed(SYM_ShaderName_Lake);
     t_caustics.under = fcip::SubmittedUnderWater();
-    bool water = HoldsWater(list);
+    bool water = HoldsWater(list, t_caustics.has_lake);
     if (t_caustics.under || water) t_caustics.list = list;
 }
 
@@ -525,6 +555,7 @@ void CausticsIn() {
     g_caustics_seconds += float(fcip::FrameTime());
     v.toward_sun[3] = g_caustics_seconds;
     v.under = t_caustics.under;
+    v.has_lake = t_caustics.has_lake;
     d3d::Caustics(R32(SYM_Device_pointer), a, v);
 }
 
@@ -603,6 +634,13 @@ PPC_FUNC(GUEST(Scene_Draw)) {
         t_world_list = uint32_t(ctx.r[3]) + kBlockList;
         d3d::IlluminationScene(R32(SYM_Device_pointer));
     }
+    if (SunMasked()) {
+        gpu::OcclusionArgs a;
+        if (SceneArgs(a)) {
+            t_sun_mask_list = uint32_t(ctx.r[3]) + kBlockList;
+            d3d::SunMaskBegin(R32(SYM_Device_pointer), a, SunView());
+        }
+    }
     // the volumetric fog replaces the game's: 82502D18 hands the list's draws a fog scale and bias of 0
     uint32_t block = uint32_t(ctx.r[3]);
     if (fogged) {
@@ -614,6 +652,7 @@ PPC_FUNC(GUEST(Scene_Draw)) {
     }
     if (Caustic()) StartCaustics(block + kBlockList);
     GUEST_ORIG(Scene_Draw)(ctx, base);
+    if (t_sun_mask_list) FinishSunMask();
     if (t_caustics.list) EndCaustics();
     if (t_draw_list) Occlude();
     if (lit) Illuminate(ctx);
@@ -631,6 +670,7 @@ PPC_FUNC(GUEST(Scene_Draw)) {
 // the next item of a list, r3 the list
 PPC_FUNC(GUEST(Scene_Pop)) {
     uint32_t list = uint32_t(ctx.r[3]);
+    if (t_sun_mask_list && t_sun_mask_list == list && PastWorld(list, false)) FinishSunMask();
     if (t_draw_list && t_draw_list == list && PastWorld(list, false)) Occlude();
     if (t_world_list && t_world_list == list && PastWorld(list, true)) EndWorld(ctx);
     if (t_world_list && t_world_list == list) UpdateCharacters(list);

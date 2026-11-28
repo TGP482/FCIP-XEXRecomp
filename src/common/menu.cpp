@@ -36,6 +36,7 @@
 #include "core/input.h"
 #include "d3d/fsr.h"
 #include "d3d/occlusion.h"
+#include "d3d/profiler.h"
 #include "xam/voice.h"
 
 namespace fcip {
@@ -168,7 +169,8 @@ constexpr Row kSettingsRows[] = {
      "Shades the world's creases and corners, SSAO, the more accurate GTAO or ray traced RTAO, characters and fog left alone"},
     {Kind::Value, kAntiAliasing, "ANTI ALIASING",
      "Smooths jagged edges with 2X, 4X or 8X MSAA in place of the game's own 2X, or TAA or AMD FSR 3 from the render resolution, both sharpened by AMD CAS"},
-    {Kind::Value, kSmaa, "SMAA", "Smooths jagged edges across the whole frame, foliage and fences included"},
+    {Kind::Value, kSmaa, "SMAA",
+     "Smooths jagged edges on the 3D scene without blurring the HUD; 1X is spatial, Temporal adds 2-frame SMAA T2x or true SMAA 4x with 2X MSAA"},
     {Kind::Value, kAniso, "ANISOTROPIC FILTERING", "Forces the selected anisotropic filtering level on all textures"},
     {Kind::Value, kShadowResolution, "SHADOW RESOLUTION", "Sun shadow map resolution from 1024x1024 to 8192x8192, 1344x1344 is stock, automatic follows the render resolution"},
     {Kind::Value, kShadowFilter, "SHADOW FILTERING",
@@ -413,7 +415,6 @@ bool* ToggleFlag(int id) {
         case kSkipIntros: return &g.skip_intros;
         case kFpsCounter: return &g.fps_counter;
         case kHdrOutput: return &g.hdr_output;
-        case kSmaa: return &g.smaa;
         case kGyroAiming: return &g.gyro.enabled;
         case kBlur: return &g.blur;
         case kInvincible: return &g.invincible;
@@ -476,6 +477,24 @@ void StepAntiAliasing(app::Settings& s, int step, char (&text)[64]) {
     if (i < kTaa) std::snprintf(text, sizeof(text), "%s", kMsaaNames[i]);
     else if (i == kTaa) std::snprintf(text, sizeof(text), "TAA");
     else std::snprintf(text, sizeof(text), "FSR3%s", fsr::StatusNote(fsr::UpscalingStatus()));
+}
+
+void StepSmaa(const app::Settings& s, int step, char (&text)[64]) {
+    uint32_t& mode = Get().smaa;
+    if (step) mode = uint32_t(StepIndex(int(std::min(mode, uint32_t(kSmaaTemporal))), step, 3));
+    if (mode == kSmaaOff) {
+        std::snprintf(text, sizeof(text), "OFF");
+        return;
+    }
+    if (mode == kSmaa1x) {
+        std::snprintf(text, sizeof(text), "1X");
+        return;
+    }
+    if (Get().taa || Get().fsr) std::snprintf(text, sizeof(text), "1X (T2X OFF WITH TAA/FSR)");
+    else if (s.msaa == 2) std::snprintf(text, sizeof(text), "4X (2X MSAA + T2X)");
+    else if (s.msaa == 4) std::snprintf(text, sizeof(text), "T2X (4X MSAA + T2X)");
+    else if (s.msaa == 8) std::snprintf(text, sizeof(text), "T2X (8X MSAA + T2X)");
+    else std::snprintf(text, sizeof(text), "T2X");
 }
 
 void StepFrameGeneration(int step, char (&text)[64]) {
@@ -689,6 +708,9 @@ void StepRow(int id, int step, app::Settings& s, char (&text)[64]) {
         }
         case kAntiAliasing:
             StepAntiAliasing(s, step, text);
+            break;
+        case kSmaa:
+            StepSmaa(s, step, text);
             break;
         case kFrameGeneration:
             StepFrameGeneration(step, text);
@@ -1277,6 +1299,35 @@ void OpenMenuPage(int page) {
     g_open = true;
 }
 
+void DrawProfiler() {
+    if (!gpu::prof::Enabled()) return;
+    gpu::prof::Snapshot s = gpu::prof::Latest();
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 12.0f, 12.0f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.75f);
+    constexpr ImGuiWindowFlags kProfFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                            ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                                            ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings;
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.08f, 0.80f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.92f, 0.94f, 0.96f, 1.0f));
+    if (ImGui::Begin("##gpu_profiler", nullptr, kProfFlags)) {
+        if (!s.valid) {
+            ImGui::TextUnformatted("GPU Profiler (F9) warming up...");
+        } else {
+            ImGui::Text("FPS: %.1f  |  CPU: %.2f ms  |  GPU: %.2f ms", s.fps, s.cpu_ms, s.ms[gpu::prof::kTotal]);
+            ImGui::Separator();
+            for (int i = 1; i < gpu::prof::kBucketCount; i++) {
+                if (s.ms[i] > 0.005f) ImGui::Text("%-16s %6.2f ms", gpu::prof::kBucketNames[i], s.ms[i]);
+            }
+            ImGui::Separator();
+            ImGui::Text("Draws: %u (%u RT)  |  BLAS: %u", s.draws, s.rt_draws, s.blas_builds);
+            ImGui::Text("RT Tris: %u  |  Resolves: %u  |  Up: %.1f MB", s.caster_tris, s.resolves, s.upload_mb);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleColor(2);
+}
+
 void DrawUi(double fps) {
     ImGuiIO& io = ImGui::GetIO();
     if (MenuOpen() || g_editor_mouse) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
@@ -1287,6 +1338,7 @@ void DrawUi(double fps) {
     if (g_capture >= 0) io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     else io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     g_editor_mouse = g_editor_ui && g_editor_ui(fps);
+    DrawProfiler();
     if (!g_open) return;
     PollCapture();
     DrawPanel();
@@ -1319,6 +1371,11 @@ bool MenuMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* 
         return true;
     }
     bool repeat = lp & (1 << 30);  // a held key's repeat
+    if (key_down && !capturing && !repeat && wp == VK_F9) {
+        gpu::prof::Toggle();
+        *result = 0;
+        return true;
+    }
     if (key_down && !capturing && !g_open && !repeat && BoundTo(keys::kToggleTextures, key)) {
         ToggleTextureReplacement();
         *result = 0;

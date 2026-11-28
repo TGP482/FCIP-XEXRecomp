@@ -10,6 +10,8 @@
 // colour, depth, stencil and rect
 namespace gpu {
 
+constexpr uint32_t kClearSunMaskBegin = 0x40;
+constexpr uint32_t kClearSunMaskEnd = 0x80;
 constexpr uint32_t kClearOcclusion = 0x100;
 constexpr uint32_t kClearOcclusionScene = 0x200;  // RTAO traces the world drawn from here to the occlusion
 // global illumination: the world's draws stream into its scene and write their albedo, the draws past the world write
@@ -96,6 +98,7 @@ struct CausticsView {
     float world_y[4] = {};
     float toward_sun[4] = {};  // in the world, w the seconds
     bool under = false;        // the camera under the sea
+    bool has_lake = false;     // the camera pass draws at least one elevated lake/river
 };
 // render thread: the view a kClearCaustics marker names
 CausticsView CausticsViewAt(uint32_t slot);
@@ -135,9 +138,12 @@ namespace d3d {
 void Occlusion(uint32_t dev, const gpu::OcclusionArgs& a);
 // on the title's thread before the world's draws RTAO traces
 void OcclusionScene(uint32_t dev);
+// on the title's thread around the camera pass's world draws for the deferred screen-space sun shadow mask
+void SunMaskBegin(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);
+void SunMaskEnd(uint32_t dev);
 // on the title's thread before the camera pass's list, after its world and after its last item
 void IlluminationScene(uint32_t dev);
-void IlluminationWorld(uint32_t dev, const float ambient[3]);
+void IlluminationWorld(uint32_t dev, const float ambient[3], uint32_t sky_spill = 0);
 // on the characters' first draw, then past the world on the ocean's first draw and the first after it
 void IlluminationUnlit(uint32_t dev, bool unlit);
 void Illumination(uint32_t dev, const gpu::OcclusionArgs& a, const gpu::FogView& v);

@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 
 namespace gpu {
 
@@ -312,13 +313,25 @@ static const float kFltMax = 3.402823466e38;
 
 bool BoolConst(uint i) { return ((g_bools[i >> 7][(i >> 5) & 3] >> (i & 31)) & 1) != 0; }
 uint LoopConst(uint i) { return g_loops[i >> 2][i & 3]; }
+)";
 
-// the console's multiply: zero or a denormal times anything is zero
-float xmul(float a, float b) { return (a == 0 || b == 0) ? 0 : a * b; }
+bool StrictXmul() {
+    static const bool strict = std::getenv("FCIP_STRICT_XMUL") != nullptr;
+    return strict;
+}
+
+// the console's multiply: zero or a denormal times anything is zero (strict mode); fast mode uses native FMA
+const char* const kXmulStrict = R"(float xmul(float a, float b) { return (a == 0 || b == 0) ? 0 : a * b; }
 float4 xmul(float4 a, float4 b) { return select(or(a == 0, b == 0), (float4)0, a * b); }
 float xdot4(float4 a, float4 b) { float4 m = xmul(a, b); return m.x + m.y + m.z + m.w; }
 float xdot3(float4 a, float4 b) { float4 m = xmul(a, b); return m.x + m.y + m.z; }
-int AddressReg(float v) { return clamp(int(floor(v + 0.5)), -256, 255); }
+)";
+const char* const kXmulFast = R"(float xmul(float a, float b) { return a * b; }
+float4 xmul(float4 a, float4 b) { return a * b; }
+float xdot4(float4 a, float4 b) { return dot(a, b); }
+float xdot3(float4 a, float4 b) { return dot(a.xyz, b.xyz); }
+)";
+const char* const kPrelude2 = R"(int AddressReg(float v) { return clamp(int(floor(v + 0.5)), -256, 255); }
 
 // s1 is the vector as zzxy: tc, sc, twice the major axis, face
 float4 Cube(float4 s1) {
@@ -380,8 +393,19 @@ float4 VertexFetch(uint k, float index) {
     uint fmt = d.z & 63;
     uint fl = (d.z >> 6) & 3;
     uint endian = (d.z >> 8) & 3;
-    uint4 w = uint4(Swap(g_vertices.Load(at), endian), Swap(g_vertices.Load(at + 4), endian),
-                    Swap(g_vertices.Load(at + 8), endian), Swap(g_vertices.Load(at + 12), endian));
+    uint4 w = 0;
+    if (fmt == 35 || fmt == 38) {
+        w = g_vertices.Load4(at);
+        w = uint4(Swap(w.x, endian), Swap(w.y, endian), Swap(w.z, endian), Swap(w.w, endian));
+    } else if (fmt == 57) {
+        w.xyz = g_vertices.Load3(at);
+        w.xyz = uint3(Swap(w.x, endian), Swap(w.y, endian), Swap(w.z, endian));
+    } else if (fmt == 26 || fmt == 32 || fmt == 34 || fmt == 37) {
+        w.xy = g_vertices.Load2(at);
+        w.xy = uint2(Swap(w.x, endian), Swap(w.y, endian));
+    } else {
+        w.x = Swap(g_vertices.Load(at), endian);
+    }
     float4 v = float4(0, 0, 0, 1);
     bool fixed_point = true;
     switch (fmt) {
@@ -585,7 +609,9 @@ static float g_ray_lit[4];
 
 // nothing between the point and the light, which lies along +z in the map's space: the title's depth is reversed, a
 // map is cleared to 0 and keeps its largest depth. Past its edge is lit, and as the map's raster the near plane clips
-// casters nearer than it, such as a lamp's own fitting around the light
+// casters nearer than it, such as a lamp's own fitting around the light.
+// Two-phase traversal: opaque casters (InstanceMask 0x01) exit in RT cores without visiting foliage or CasterHit;
+// alpha-tested casters (InstanceMask 0x02) run only if opaque geometry misses.
 bool RayLit(RaytracingAccelerationStructure scene, float3 p, float3 dir, float tmin) {
     if (any(p.xy < 0) || any(p.xy > 1) || p.z + tmin >= 1) return true;
     RayDesc ray;
@@ -594,36 +620,56 @@ bool RayLit(RaytracingAccelerationStructure scene, float3 p, float3 dir, float t
     ray.TMin = tmin;
     // dir.z is 1, so the ray ends at the near plane
     ray.TMax = 1 - p.z;
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
-    q.TraceRayInline(scene, RAY_FLAG_NONE, 0xFF, ray);
-    while (q.Proceed()) {
-        uint caster = q.CandidateInstanceID() + q.CandidateGeometryIndex();
-        float2 bary = q.CandidateTriangleBarycentrics();
-        if (CasterHit(caster, q.CandidatePrimitiveIndex(), bary)) q.CommitNonOpaqueTriangleHit();
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> qo;
+    qo.TraceRayInline(scene, RAY_FLAG_NONE, 0x01, ray);
+    qo.Proceed();
+    if (qo.CommittedStatus() != COMMITTED_NOTHING) return false;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> qa;
+    qa.TraceRayInline(scene, RAY_FLAG_NONE, 0x02, ray);
+    while (qa.Proceed()) {
+        uint caster = qa.CandidateInstanceID() + qa.CandidateGeometryIndex();
+        float2 bary = qa.CandidateTriangleBarycentrics();
+        if (CasterHit(caster, qa.CandidatePrimitiveIndex(), bary)) qa.CommitNonOpaqueTriangleHit();
     }
-    return q.CommittedStatus() == COMMITTED_NOTHING;
+    return qa.CommittedStatus() == COMMITTED_NOTHING;
 }
+
+static const float2 kRayDisc[8] = {
+    float2(0.8291562, 0.0),
+    float2(-0.8291562, 0.0),
+    float2(0.0, 0.5590170),
+    float2(0.0, -0.5590170),
+    float2(0.6846532, 0.6846532),
+    float2(-0.25, 0.25),
+    float2(-0.5, -0.5),
+    float2(0.6373774, -0.6373774),
+};
 
 // the share of the light a point sees, from rays spread over the light: spread > 0 a cone over the sun's disc, uv per
 // unit of depth toward it, so penumbrae widen with the distance to what casts them; < 0 parallel rays over a disc of
-// that radius in uv. The disc is turned per pixel; when the first four rays agree, or kRayRefine is off, the rest are
-// skipped
+// that radius in uv. The disc is turned per pixel; a wave-coherent 2-ray probe fast-exits uniform lit/shadowed warps,
+// and when the first four rays agree, or kRayRefine is off, the rest are skipped
 float RayShare(RaytracingAccelerationStructure scene, float3 p, float tmin, float spread) {
 #ifdef HELPER_LANES
     if (IsHelperLane()) return 1;
 #endif
+    if (p.z + tmin >= 1) return 1;
+    float pad = max(-spread, 0.0);
+    if (any(p.xy < -pad) || any(p.xy > 1 + pad)) return 1;
     float turn = PixelTurn();
+    float2 cs;
+    sincos(turn, cs.y, cs.x);
     float lit = 0;
     for (int i = 0; i < 8; i++) {
-        // golden angle turns, the same area per ray; radii in steps of 3 so the first four span the disc
-        float angle = i * 2.39996323 + turn;
-        float2 o = sqrt(((i * 3) % 8 + 0.5) / 8) * float2(cos(angle), sin(angle));
+        float2 d = kRayDisc[i];
+        float2 o = float2(d.x * cs.x - d.y * cs.y, d.x * cs.y + d.y * cs.x);
         float3 at = spread < 0 ? float3(p.xy - o * spread, p.z) : p;
         float3 dir = float3(spread > 0 ? o * spread : 0, 1);
         lit += RayLit(scene, at, dir, tmin) ? 1 : 0;
-        if (i == 3 && (!kRayRefine || lit == 0 || lit == 4)) return lit / 4;
+        if (i == 1 && (WaveActiveAllTrue(lit == 0) || WaveActiveAllTrue(lit == 2))) return lit * 0.5;
+        if (i == 3 && (!kRayRefine || lit == 0 || lit == 4)) return lit * 0.25;
     }
-    return lit / 8;
+    return lit * 0.125;
 }
 )";
 
@@ -657,6 +703,7 @@ private:
     void EmitSunMaps(uint32_t slot, uint32_t t, bool weights);
     void EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags);
     void EmitRayShadow(uint32_t slot, bool weights, int32_t oy);
+    void EmitSunMask(bool weights, int32_t oy);
     void EmitExport(const Alu& a, bool vector, bool scalar);
     void EmitWrite(const std::string& dst, uint32_t swizzle, const char* src);
 
@@ -688,6 +735,12 @@ private:
         bool shadow = fetch >= fcip::kShadowFirstFetch && fetch <= fcip::kSunFetch;
         return Pixel() && shadow ? opt_.tex_flags[fcip::kShadowOut] : 0;
     }
+    bool ShadowMask() const {
+        uint8_t m = opt_.tex_flags[fcip::kShadowOut];
+        return Pixel() && (m == fcip::kShadowMask || m == fcip::kShadowMaskMs);
+    }
+    bool ShadowMaskMs() const { return Pixel() && opt_.tex_flags[fcip::kShadowOut] == fcip::kShadowMaskMs; }
+    bool DepthAlphaOnly() const { return Pixel() && opt_.tex_flags[fcip::kDepthOut] == fcip::kDepthAlphaOut; }
     // pixel: colour 0 seen through the volumetric fog in front of it
     bool FogIn() const { return Pixel() && opt_.tex_flags[fcip::kFogOut] && (info_.exports & 1); }
 
@@ -700,6 +753,7 @@ private:
     int indent_ = 0;
     bool sun_maps_ = false;  // t_sun declared
     bool sun_soft_ = false;  // SunSoft declared
+    bool sun_mask_ = false;  // t_sun_mask declared
     uint32_t ray_slots_ = 0;  // a bit per scene traced
 };
 
@@ -744,13 +798,14 @@ std::string Translator::VectorExpr(const Alu& a) {
         case kFrac: return "frac(s1)";
         case kTrunc: return "trunc(s1)";
         case kFloor: return "floor(s1)";
-        case kMulAdd: return "xmul(s1, s2) + s3";
+        case kMulAdd: return StrictXmul() ? "xmul(s1, s2) + s3" : "mad(s1, s2, s3)";
         case kCndE: return "select(s1 == 0, s2, s3)";
         case kCndGte: return "select(s1 >= 0, s2, s3)";
         case kCndGt: return "select(s1 > 0, s2, s3)";
         case kDot4: return "xdot4(s1, s2).xxxx";
         case kDot3: return "xdot3(s1, s2).xxxx";
-        case kDot2Add: return "(xmul(s1.x, s2.x) + xmul(s1.y, s2.y) + s3.x).xxxx";
+        case kDot2Add: return StrictXmul() ? "(xmul(s1.x, s2.x) + xmul(s1.y, s2.y) + s3.x).xxxx"
+                                         : "(dot(s1.xy, s2.xy) + s3.x).xxxx";
         case kCube: return "Cube(s1)";
         case kMax4: return "max(max(s1.x, s1.y), max(s1.z, s1.w)).xxxx";
         case kPredSetEPush: return "PredPush(s1.w == 0 && s2.w == 0, s1.x == 0 && s2.x == 0, s1)";
@@ -761,7 +816,8 @@ std::string Translator::VectorExpr(const Alu& a) {
         case kKillGt: return "Kill(any(s1 > s2))";
         case kKillGte: return "Kill(any(s1 >= s2))";
         case kKillNe: return "Kill(any(s1 != s2))";
-        case kDst: return "float4(1, xmul(s1.y, s2.y), s1.z, s2.w)";
+        case kDst: return StrictXmul() ? "float4(1, xmul(s1.y, s2.y), s1.z, s2.w)"
+                                     : "float4(1, s1.y * s2.y, s1.z, s2.w)";
         case kMaxA: return "MaxA(s1, s2)";
         default:
             info_.unknown++;
@@ -787,14 +843,16 @@ std::string Translator::ScalarExpr(const Alu& a) {
         case kTruncS: return "trunc(sa)";
         case kFloorS: return "floor(sa)";
         case kExpIeee: return "exp2(sa)";
-        case kLogClamp: return "max(log2(sa), -kFltMax)";
-        case kLogIeee: return "log2(sa)";
-        case kRecipClamp: return "clamp(1 / sa, -kFltMax, kFltMax)";
+        case kLogClamp: return StrictXmul() ? "max(log2(sa), -kFltMax)" : "max(log2(max(sa, 1e-30)), -kFltMax)";
+        case kLogIeee: return StrictXmul() ? "log2(sa)" : "log2(max(sa, 1e-30))";
+        case kRecipClamp: return StrictXmul() ? "clamp(1 / sa, -kFltMax, kFltMax)"
+                                            : "clamp(1 / (sa == 0 ? 1e-30 : sa), -kFltMax, kFltMax)";
         case kRecipFf: return "Ff(1 / sa)";
         case kRecipIeee: return "1 / sa";
-        case kRecipSqClamp: return "clamp(rsqrt(sa), -kFltMax, kFltMax)";
-        case kRecipSqFf: return "Ff(rsqrt(sa))";
-        case kRecipSqIeee: return "rsqrt(sa)";
+        case kRecipSqClamp: return StrictXmul() ? "clamp(rsqrt(sa), -kFltMax, kFltMax)"
+                                              : "clamp(rsqrt(max(sa, 1e-30)), -kFltMax, kFltMax)";
+        case kRecipSqFf: return StrictXmul() ? "Ff(rsqrt(sa))" : "Ff(rsqrt(max(sa, 1e-30)))";
+        case kRecipSqIeee: return StrictXmul() ? "rsqrt(sa)" : "rsqrt(max(sa, 1e-30))";
         case kMaxAS: return "MaxAS(sa, sb, false)";
         case kMaxAFloorS: return "MaxAS(sa, sb, true)";
         case kSubS: return "sa - sb";
@@ -812,7 +870,7 @@ std::string Translator::ScalarExpr(const Alu& a) {
         case kKillGteS: return "Kill(sa >= 0)";
         case kKillNeS: return "Kill(sa != 0)";
         case kKillOne: return "Kill(sa == 1)";
-        case kSqrtIeee: return "sqrt(sa)";
+        case kSqrtIeee: return StrictXmul() ? "sqrt(sa)" : "sqrt(max(sa, 0))";
         case kMulConst0:
         case kMulConst1: return "xmul(sa, sb)";
         case kAddConst0:
@@ -1028,6 +1086,15 @@ void Translator::EmitTextureFetch(const Fetch& f) {
             Open("else");
             Line("ft = " + fetch + ";");
             Close();
+        } else if ((shadow == fcip::kShadowMask || shadow == fcip::kShadowMaskMs) &&
+                   sampler == fcip::kSunFetch) {
+            Line("float4 ft;");
+            Open(F("[branch] if (g_ext.%c != 0)", kComp[slot]));
+            EmitSunMask(op == kGetWeights, oy);
+            Close();
+            Open("else");
+            Line("ft = " + fetch + ";");
+            Close();
         } else if (soft) {
             EmitSunSoft(t, op == kGetWeights, oy, sun);
         } else {
@@ -1130,17 +1197,31 @@ void Translator::EmitSunSoft(uint32_t t, bool weights, int32_t oy, uint8_t flags
     Line("float2 slope = SunSlope(float3(uv, tc.z));");
     if (flags & fcip::kSunSoft) {
         bool pcss = flags & fcip::kSunPcss;
+        sun_maps_ = true;
         // the far map spans scale stock radii, map sk 2^sk
         Line("float scale = max(g_ext.x, 1);");
         // far map uv per unit of depth past a blocker
         if (pcss) Line(F("float spread = g_ext.w * %.9g;", kPcssSpread));
-        Line("float below = " + SunFilter(F("t%u", t), t, "uv", "slope", "scale", pcss) + ";");
-        OpenSunMap(F("3 / ns + %.9g / exp2(sk)", 2 * (pcss ? kPcssMax : kSoftRadius)));
+        // finest-to-coarsest cascade evaluation: skips coarser cascades and the far map once nw reaches 1
+        Line("float below = 0;");
+        Line("float rem = 1;");
+        Line(F("uint nmaps = asuint(g_ext.y) & %uu;", (1u << fcip::kSunCountBits) - 1));
+        Line("float2 sides = float2(floor(g_ext.z), frac(g_ext.z) * 2048) * 8;");
+        Open(F("[unroll] for (int sk = 0; sk < %u; sk++)", fcip::kSunMaps));
+        Open("if (sk < int(nmaps) && rem > 0)");
+        Line("float2 ns; t_sun[sk].GetDimensions(ns.x, ns.y);");
         Line("float nscale = exp2(sk);");
+        Line("float2 un = (tc.xy - 0.5 - 0.5 / sides.x) * (g_ext.x / nscale) + 0.5 + 0.5 / sides.y;");
+        Line(F("float2 ne = abs(un - 0.5) * 2 + 3 / ns + %.9g / nscale;", 2 * (pcss ? kPcssMax : kSoftRadius)));
+        Line("float nw = 1 - saturate((max(ne.x, ne.y) - 0.8) / 0.2);");
+        Open("if (nw > 0)");
         Line("float2 nslope = slope * nscale / scale;");
-        Line("if (nw > 0) below = lerp(below, " + SunFilter("t_sun[sk]", t, "un", "nslope", "nscale", pcss) + ", nw);");
+        Line("below += rem * nw * " + SunFilter("t_sun[sk]", t, "un", "nslope", "nscale", pcss) + ";");
+        Line("rem *= (1 - nw);");
         Close();
         Close();
+        Close();
+        Line("if (rem > 0) below += rem * " + SunFilter(F("t%u", t), t, "uv", "slope", "scale", pcss) + ";");
     } else if (flags & fcip::kSunPcss) {
         // a half side map's stock texels are twice as wide
         double scale = flags & fcip::kShadowHalf ? 2 : 1;
@@ -1172,6 +1253,18 @@ void Translator::EmitRayShadow(uint32_t slot, bool weights, int32_t oy) {
     Close();
     if (weights) Line(F("ft = float4(0, 1 - g_ray_lit[%u], 0, 0);", slot));
     else Line(F("ft = (tc.z + (g_ray_lit[%u] >= 0.5 ? -1 : 1)).xxxx;", slot));
+}
+
+// sun shadow sampled from the precomputed screen-space RT sun mask at t31 instead of inline ray tracing
+void Translator::EmitSunMask(bool weights, int32_t oy) {
+    sun_mask_ = true;
+    if (!weights && oy) {
+        Line(F("ft = (tc.z %c 1).xxxx;", oy > 0 ? '+' : '-'));
+        return;
+    }
+    Line("float slit = SunMaskLit(g_frag, g_frag_z);");
+    if (weights) Line("ft = float4(0, 1 - slit, 0, 0);");
+    else Line("ft = (tc.z + (slit >= 0.5 ? -1 : 1)).xxxx;");
 }
 
 void Translator::EmitExec(const Cf& cf) {
@@ -1307,6 +1400,8 @@ void Translator::EmitDispatch(const std::vector<Cf>& cfs) {
 // helpers the ALU expressions call, which set the pending predicate, address register and kill
 std::string Translator::Head() const {
     std::string s = kPrelude + Hooks().Constants() + kPreludeEnd;
+    s += (StrictXmul() ? kXmulStrict : kXmulFast);
+    s += kPrelude2;
     s += Pixel() ? kPixelPrelude : kVertexPrelude;
     s += R"(static bool pn;
 static bool pn_set;
@@ -1348,6 +1443,35 @@ void CommitAlu() {
     }
     if (sun_maps_) s += F("Texture2D<float4> t_sun[%u] : register(t%u);\n", fcip::kSunMaps, fcip::kSunFirstSlot);
     if (sun_soft_ || ray_slots_) s += kPixelTurnPrelude;
+    else if (sun_mask_) s += "static float2 g_frag;\n";
+    if (sun_mask_) {
+        s += "static float g_frag_z;\n";
+        if (ShadowMaskMs()) {
+            s += F("Texture2DMS<float2> t_sun_mask : register(t%u);\n", fcip::kSunMaskSlot);
+            s += R"(float SunMaskLit(float2 frag, float z) {
+    int2 p = int2(frag);
+    float2 m0 = t_sun_mask.Load(p, 0);
+    float best = abs(m0.y - z);
+    float lit = m0.x;
+    if (best > max(1e-5, z * 2e-3)) {
+        uint w, h, ns;
+        t_sun_mask.GetDimensions(w, h, ns);
+        [unroll] for (uint s = 1; s < 8; s++) {
+            if (s < ns) {
+                float2 ms = t_sun_mask.Load(p, s);
+                float dz = abs(ms.y - z);
+                if (dz < best) { best = dz; lit = ms.x; }
+            }
+        }
+    }
+    return lit;
+}
+)";
+        } else {
+            s += F("Texture2D<float2> t_sun_mask : register(t%u);\n", fcip::kSunMaskSlot);
+            s += "float SunMaskLit(float2 frag, float z) { return t_sun_mask.Load(int3(int2(frag), 0)).x; }\n";
+        }
+    }
     if (sun_soft_) s += kSunSoftPrelude;
     if (ray_slots_) {
         s += F("ByteAddressBuffer t_ray_casters : register(t%u);\n", fcip::kRayFirstSlot);
@@ -1481,10 +1605,10 @@ struct PIn {
 struct POut {
 )";
     for (uint32_t i = 0; i < kColorTargets; i++) {
-        if (info_.exports >> i & 1) s += F("    float4 c%u : SV_Target%u;\n", i, i);
+        if ((info_.exports >> i & 1) || (i == 0 && DepthAlphaOnly())) s += F("    float4 c%u : SV_Target%u;\n", i, i);
     }
     if (info_.writes_depth) s += "    float depth : SV_Depth;\n";
-    if (!info_.exports && !info_.writes_depth) s += "    float4 c0 : SV_Target0;\n";
+    if (!info_.exports && !info_.writes_depth && !DepthAlphaOnly()) s += "    float4 c0 : SV_Target0;\n";
     if (opt_.motion) s += F("    float4 motion : SV_Target%u;\n", kMotionTarget);
     if (Albedo()) s += F("    float4 albedo : SV_Target%u;\n", fcip::kAlbedoTarget);
     s += R"(};
@@ -1497,7 +1621,8 @@ POut main(PIn i) {
         s += "    float2 vpos = floor(i.pos.xy * g_vpos_scale);\n";
         s += F("    r[%d] = float4(i.front ? vpos.x : -vpos.x, vpos.y, 0, 0);\n", opt_.vpos_reg & 63);
     }
-    if (sun_soft_ || ray_slots_) s += "    g_frag = i.pos.xy;\n";
+    if (sun_soft_ || ray_slots_ || sun_mask_) s += "    g_frag = i.pos.xy;\n";
+    if (sun_mask_) s += "    g_frag_z = i.pos.z;\n";
     if (CausticsScreen() >= 0 || CausticsUnder()) s += "    g_pixel = i.pos;\n";
     if (CausticsUnder()) return s + "    POut o = (POut)0;\n    o.c0 = float4(CausticsUnder(), 0);\n    return o;\n}\n";
     s += "    Run();\n";
@@ -1518,7 +1643,8 @@ POut main(PIn i) {
     if (!pass) discard;
 )";
     }
-    // the alpha test is all a depth pass keeps, the rest compiles away
+    // the alpha test or alpha-to-coverage is all a depth pass keeps, the rest compiles away
+    if (DepthAlphaOnly()) return s + "    POut o = (POut)0;\n    o.c0 = float4(0, 0, 0, oC[0].a);\n    return o;\n}\n";
     if (DepthOnly()) return s + "    return (POut)0;\n}\n";
     if (FogIn()) s += FogOutput();
     s += "    POut o;\n";
@@ -1580,15 +1706,14 @@ const char* const fcip::kCasterHitHlsl = R"(
 Texture2D<float4> t_heap[] : register(t0, space3);
 SamplerState s_heap : register(s0, space3);
 
-// an alpha tested caster's test where the ray crosses its triangle prim
+// an alpha tested caster's test where the ray crosses its triangle prim; kDivideHlsl pre-packs uv in bytes 16..23
 bool CasterHit(uint caster, uint prim, float2 bary) {
     uint4 c = t_ray_casters.Load4(caster * 32);
     uint at = (c.x + prim * 3) * 32 + 16;
-    float4 a = asfloat(t_ray_records.Load4(at));
-    float4 b = asfloat(t_ray_records.Load4(at + 32));
-    float4 d = asfloat(t_ray_records.Load4(at + 64));
-    float4 tex = a + (b - a) * bary.x + (d - a) * bary.y;
-    float2 uv = float2(tex[c.w >> 4 & 3], tex[c.w >> 6 & 3]);
+    float2 a = asfloat(t_ray_records.Load2(at));
+    float2 b = asfloat(t_ray_records.Load2(at + 32));
+    float2 d = asfloat(t_ray_records.Load2(at + 64));
+    float2 uv = a + (b - a) * bary.x + (d - a) * bary.y;
     float alpha = t_heap[NonUniformResourceIndex(c.y)].SampleLevel(s_heap, uv, 0).a;
     float ref = asfloat(c.z);
     switch (c.w & 7) {

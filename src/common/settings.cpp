@@ -122,7 +122,8 @@ void LoadSettings(const void* table) {
     s.fps_counter = t["fps_counter"].value_or(s.fps_counter);
     s.hdr_output = t["hdr_output"].value_or(s.hdr_output);
     s.colour_blind = std::min(t["colour_blind"].value_or(s.colour_blind), 3u);
-    s.smaa = t["smaa"].value_or(s.smaa);
+    s.smaa = std::min(t["smaa"].value_or(s.smaa), uint32_t(kSmaaTemporal));
+    if (auto on = t["smaa"].value_exact<bool>()) s.smaa = *on ? kSmaa1x : kSmaaOff;
     s.taa = t["taa"].value_or(s.taa);
     s.fsr = t["fsr"].value_or(s.fsr);
     s.frame_generation = std::min(t["frame_generation"].value_or(s.frame_generation), fsr::kMaxGenerated);
@@ -178,7 +179,7 @@ void SaveSettings(void* table) {
     t.insert_or_assign("fps_counter", s.fps_counter);
     t.insert_or_assign("hdr_output", s.hdr_output);
     t.insert_or_assign("colour_blind", int64_t(s.colour_blind));
-    t.insert_or_assign("smaa", s.smaa);
+    t.insert_or_assign("smaa", int64_t(s.smaa));
     t.insert_or_assign("taa", s.taa);
     t.insert_or_assign("fsr", s.fsr);
     t.insert_or_assign("frame_generation", s.frame_generation);
